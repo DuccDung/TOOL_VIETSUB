@@ -6,6 +6,13 @@
 [Pp]ublish/
 artifacts/
 
+# Frontend dependencies and build output
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+/TOOL_VIETSUB_APP/wwwroot/
+
 # Visual Studio / IDE settings
 .vs/
 .vscode/
@@ -45,4 +52,3 @@ Desktop.ini
 !.env.example
 appsettings.Local.json
 appsettings.*.local.json
-

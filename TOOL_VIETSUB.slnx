@@ -1,3 +1,4 @@
 <Solution>
-  <Project Path="TOOL_VIETSUB/TOOL_VIETSUB.csproj" />
+  <Project Path="TOOL_VIETSUB/TOOL_VIETSUB_SERVER.csproj" />
+  <Project Path="TOOL_VIETSUB_APP/TOOL_VIETSUB_APP.csproj" Id="8e149324-0223-4c1c-946b-3f345257d565" />
 </Solution>

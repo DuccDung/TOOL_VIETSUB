@@ -1,0 +1,59 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ClientAppDir>$(MSBuildProjectDirectory)\ClientApp</ClientAppDir>
+    <WebUiOutputDir>$(MSBuildProjectDirectory)\wwwroot</WebUiOutputDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+  </ItemGroup>
+
+  <!-- WebView2 ships WPF and WinForms references together. This app only uses
+       WinForms, so remove the unused WPF assembly to avoid WindowsBase conflicts. -->
+  <Target Name="RemoveUnusedWebView2WpfReference"
+          BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)"
+                 Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="BuildWebUi"
+          BeforeTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <Exec WorkingDirectory="$(ClientAppDir)"
+          Command="npm ci"
+          Condition="!Exists('$(ClientAppDir)\node_modules')" />
+    <Exec WorkingDirectory="$(ClientAppDir)"
+          Command="npm run build" />
+  </Target>
+
+  <Target Name="CopyWebUiToOutput"
+          AfterTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <WebUiFiles Include="$(WebUiOutputDir)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(WebUiFiles)"
+          DestinationFiles="@(WebUiFiles->'$(TargetDir)wwwroot\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyWebUiToPublish"
+          AfterTargets="Publish"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <PublishedWebUiFiles Include="$(WebUiOutputDir)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PublishedWebUiFiles)"
+          DestinationFiles="@(PublishedWebUiFiles->'$(PublishDir)wwwroot\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

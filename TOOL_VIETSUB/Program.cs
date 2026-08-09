@@ -1,7 +1,16 @@
+using Microsoft.EntityFrameworkCore;
+using TOOL_VIETSUB.Data;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorPages();
+
+var connectionString = builder.Configuration.GetConnectionString("ToolVietSubDatabase")
+    ?? throw new InvalidOperationException("Connection string 'ToolVietSubDatabase' was not found.");
+
+builder.Services.AddDbContext<ToolVietSubDbContext>(options =>
+    options.UseSqlServer(connectionString));
 
 var app = builder.Build();
 

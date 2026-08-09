@@ -1,0 +1,227 @@
+import { useMemo, useState } from 'react'
+import {
+  AudioLines,
+  Captions,
+  CircleAlert,
+  FileUp,
+  ListFilter,
+  MessageSquareText,
+  MoreHorizontal,
+  Search,
+  SlidersHorizontal,
+  Sparkles,
+  WandSparkles,
+} from 'lucide-react'
+import { formatClock } from '../lib/format'
+import type { SubtitleSegment } from '../types'
+import { IconButton, SegmentTab } from './Ui'
+
+type Filter = 'all' | 'untranslated' | 'review' | 'missing-audio'
+
+type SubtitlePanelProps = {
+  segments: SubtitleSegment[]
+  selectedId: number | null
+  onSelect: (id: number) => void
+  onNotify: (title: string, description: string) => void
+}
+
+const statusLabels: Record<SubtitleSegment['status'], string> = {
+  translated: 'Đã dịch',
+  review: 'Cần chú ý',
+  'missing-audio': 'Thiếu audio',
+}
+
+export function SubtitlePanel({
+  segments,
+  selectedId,
+  onSelect,
+  onNotify,
+}: SubtitlePanelProps) {
+  const [tab, setTab] = useState<'subtitles' | 'properties'>('subtitles')
+  const [filter, setFilter] = useState<Filter>('all')
+  const [query, setQuery] = useState('')
+
+  const visibleSegments = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase('vi')
+    return segments.filter((segment) => {
+      const matchesFilter =
+        filter === 'all' ||
+        (filter === 'untranslated'
+          ? segment.translated.trim().length === 0
+          : segment.status === filter)
+      const matchesQuery =
+        !normalizedQuery ||
+        segment.original.toLocaleLowerCase('vi').includes(normalizedQuery) ||
+        segment.translated.toLocaleLowerCase('vi').includes(normalizedQuery)
+      return matchesFilter && matchesQuery
+    })
+  }, [segments, filter, query])
+
+  const selectedSegment = segments.find((segment) => segment.id === selectedId)
+
+  return (
+    <aside className="panel subtitle-panel" aria-label="Danh sách phụ đề">
+      <div className="panel-mode-tabs panel-mode-tabs--right" role="tablist">
+        <SegmentTab
+          active={tab === 'subtitles'}
+          icon={<Captions size={16} />}
+          label="Phụ đề"
+          onClick={() => setTab('subtitles')}
+        />
+        <SegmentTab
+          active={tab === 'properties'}
+          icon={<SlidersHorizontal size={16} />}
+          label="Thuộc tính"
+          onClick={() => setTab('properties')}
+        />
+      </div>
+
+      {tab === 'subtitles' ? (
+        <>
+          <div className="subtitle-heading">
+            <div>
+              <span className="eyebrow">DANH SÁCH PHỤ ĐỀ</span>
+              <small>{segments.length} phân đoạn</small>
+            </div>
+          </div>
+
+          <div className="search-row">
+            <label className="search-box">
+              <Search size={15} />
+              <input
+                type="search"
+                value={query}
+                placeholder="Tìm trong phụ đề..."
+                aria-label="Tìm trong phụ đề"
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+            <IconButton label="Tùy chọn tìm kiếm" size="small">
+              <ListFilter size={15} />
+            </IconButton>
+          </div>
+
+          <div className="filter-tabs" role="group" aria-label="Lọc phụ đề">
+            {[
+              { id: 'all' as const, label: 'Tất cả' },
+              { id: 'untranslated' as const, label: 'Chưa dịch' },
+              { id: 'review' as const, label: 'Cần chú ý' },
+              { id: 'missing-audio' as const, label: 'Thiếu audio' },
+            ].map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={filter === item.id ? 'is-active' : ''}
+                onClick={() => setFilter(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="subtitle-actions">
+            <button
+              type="button"
+              onClick={() => onNotify('Dịch phần còn thiếu', 'Chưa nối dịch thuật trong giai đoạn UI.')}
+            >
+              <WandSparkles size={15} />
+              <span>Dịch thiếu</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onNotify('Tạo giọng', 'Chưa nối TTS trong giai đoạn UI.')}
+            >
+              <AudioLines size={15} />
+              <span>Tạo giọng</span>
+            </button>
+            <button
+              type="button"
+              className="is-accent"
+              onClick={() => onNotify('Nhập phụ đề', 'Trình chọn tệp SRT sẽ được nối sau.')}
+            >
+              <FileUp size={15} />
+              <span>Nhập SRT</span>
+            </button>
+          </div>
+
+          <div className="subtitle-list" aria-live="polite">
+            {segments.length === 0 ? (
+              <div className="empty-subtitles">
+                <span><MessageSquareText size={26} /></span>
+                <strong>Chưa có bản chép lời</strong>
+                <p>Nhập video và chọn “Nhận dạng” để bắt đầu.</p>
+              </div>
+            ) : visibleSegments.length === 0 ? (
+              <div className="empty-subtitles empty-subtitles--compact">
+                <span><Search size={22} /></span>
+                <strong>Không tìm thấy kết quả</strong>
+                <p>Thử thay đổi từ khóa hoặc bộ lọc.</p>
+              </div>
+            ) : (
+              visibleSegments.map((segment) => (
+                <button
+                  type="button"
+                  key={segment.id}
+                  className={`subtitle-card ${selectedId === segment.id ? 'is-selected' : ''}`}
+                  onClick={() => onSelect(segment.id)}
+                >
+                  <span className="subtitle-card__index">{String(segment.id).padStart(2, '0')}</span>
+                  <span className="subtitle-card__content">
+                    <span className="subtitle-card__meta">
+                      <time>{formatClock(segment.start)} — {formatClock(segment.end)}</time>
+                      <span className={`status-badge status-badge--${segment.status}`}>
+                        {segment.status !== 'translated' ? <CircleAlert size={11} /> : null}
+                        {statusLabels[segment.status]}
+                      </span>
+                    </span>
+                    <span className="subtitle-original">{segment.original}</span>
+                    <span className="subtitle-translated">{segment.translated}</span>
+                  </span>
+                  <MoreHorizontal size={16} className="subtitle-card__more" />
+                </button>
+              ))
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="properties-panel">
+          {selectedSegment ? (
+            <>
+              <div className="properties-title">
+                <span className="properties-icon"><Sparkles size={17} /></span>
+                <div>
+                  <strong>Phân đoạn {String(selectedSegment.id).padStart(2, '0')}</strong>
+                  <small>{formatClock(selectedSegment.start)} — {formatClock(selectedSegment.end)}</small>
+                </div>
+              </div>
+              <label>
+                <span>Nội dung gốc</span>
+                <textarea defaultValue={selectedSegment.original} rows={3} />
+              </label>
+              <label>
+                <span>Bản dịch tiếng Việt</span>
+                <textarea defaultValue={selectedSegment.translated} rows={4} />
+              </label>
+              <label>
+                <span>Giọng đọc</span>
+                <select defaultValue="voice-01">
+                  <option value="voice-01">Minh Anh · Nữ miền Bắc</option>
+                  <option value="voice-02">Hoàng Nam · Nam miền Nam</option>
+                </select>
+              </label>
+              <button type="button" className="save-segment-button">
+                Lưu thay đổi
+              </button>
+            </>
+          ) : (
+            <div className="empty-subtitles">
+              <span><SlidersHorizontal size={25} /></span>
+              <strong>Chưa chọn phân đoạn</strong>
+              <p>Chọn một câu phụ đề để chỉnh sửa thuộc tính.</p>
+            </div>
+          )}
+        </div>
+      )}
+    </aside>
+  )
+}
