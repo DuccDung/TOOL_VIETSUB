@@ -1,10 +1,88 @@
-﻿@page
+@page
 @model IndexModel
 @{
-    ViewData["Title"] = "Home page";
+    ViewData["Title"] = "Tổng quan hệ thống";
 }
 
-<div class="text-center">
-    <h1 class="display-4">Welcome</h1>
-    <p>Learn about <a href="https://learn.microsoft.com/aspnet/core">building Web apps with ASP.NET Core</a>.</p>
-</div>
+<section class="server-hero">
+    <div>
+        <span class="server-eyebrow">TRUNG TÂM ĐIỀU HÀNH</span>
+        <h1>Server quản lý an toàn cho TOOL VIETSUB.</h1>
+        <p>Quản lý tài khoản, phiên đăng nhập, gói sử dụng và lịch sử đồng bộ của ứng dụng desktop.</p>
+        <div class="hero-actions">
+            @if (Model.RequiresSetup)
+            {
+                <a class="primary-link" asp-page="/Setup">Khởi tạo quản trị viên <span>→</span></a>
+            }
+            else
+            {
+                <span class="system-ready">✓ Hệ thống đã được khởi tạo</span>
+                <a class="primary-link" asp-page="/Admin/Subscriptions">Nâng cấp tài khoản <span>→</span></a>
+            }
+            <a class="secondary-link" href="/openapi/v1.json">Xem hợp đồng API</a>
+        </div>
+    </div>
+    <div class="server-flow" aria-label="Luồng kiến trúc">
+        <div><span>01</span><strong>Desktop App</strong><small>Xử lý video cục bộ</small></div>
+        <i></i>
+        <div><span>02</span><strong>HTTPS API</strong><small>Xác thực và đồng bộ</small></div>
+        <i></i>
+        <div><span>03</span><strong>SQL Server</strong><small>Dữ liệu trung tâm</small></div>
+    </div>
+</section>
+
+@if (Model.SetupCompleted)
+{
+    <div class="server-notice success-notice">✓ Quản trị viên đầu tiên đã được tạo. Bạn có thể dùng tài khoản này để đăng nhập App.</div>
+}
+
+@if (Model.RequiresSetup)
+{
+    <div class="server-notice warning-notice">
+        <strong>Cần hoàn tất bước khởi tạo</strong>
+        <span>Database chưa có người dùng. Hãy tạo quản trị viên đầu tiên trước khi đăng nhập App.</span>
+    </div>
+}
+
+<section class="metric-grid" aria-label="Trạng thái hệ thống">
+    <article>
+        <span class="metric-icon">◎</span>
+        <div><small>Người dùng</small><strong>@Model.UserCount</strong><span>Tài khoản đang tồn tại</span></div>
+    </article>
+    <article>
+        <span class="metric-icon">↻</span>
+        <div><small>Phiên hoạt động</small><strong>@Model.ActiveSessionCount</strong><span>Refresh session hợp lệ</span></div>
+    </article>
+    <article>
+        <span class="metric-icon">◇</span>
+        <div><small>Phiên bản API</small><strong>V1</strong><span>JWT Bearer + rotation</span></div>
+    </article>
+    <article>
+        <span class="metric-icon">✓</span>
+        <div><small>Database</small><strong>V2</strong><span>Auth và service plans</span></div>
+    </article>
+</section>
+
+<section class="server-content-grid">
+    <article class="server-panel">
+        <header><div><span>▤</span><strong>API đã triển khai</strong></div><small>/api/v1</small></header>
+        <div class="endpoint-list">
+            <div><span class="method post">POST</span><code>/auth/login</code><em>Đăng nhập</em></div>
+            <div><span class="method post">POST</span><code>/auth/refresh</code><em>Xoay refresh token</em></div>
+            <div><span class="method get">GET</span><code>/account/me</code><em>Thông tin tài khoản</em></div>
+            <div><span class="method get">GET</span><code>/account/entitlements</code><em>Gói và quyền</em></div>
+            <div><span class="method post">POST</span><code>/usage/events</code><em>Ghi nhận sử dụng</em></div>
+            <div><span class="method get">GET</span><code>/usage/history</code><em>Lịch sử đồng bộ</em></div>
+        </div>
+    </article>
+
+    <article class="server-panel security-panel">
+        <header><div><span>◈</span><strong>Lớp bảo vệ</strong></div><small>SECURITY</small></header>
+        <ul>
+            <li><span>✓</span><div><strong>Refresh token rotation</strong><small>Phát hiện và khóa token bị dùng lại.</small></div></li>
+            <li><span>✓</span><div><strong>Session validation</strong><small>Phiên bị thu hồi không thể tiếp tục gọi API.</small></div></li>
+            <li><span>✓</span><div><strong>Rate limiting</strong><small>Giới hạn đăng nhập và refresh theo IP.</small></div></li>
+            <li><span>✓</span><div><strong>Security audit</strong><small>Lưu sự kiện đăng nhập, refresh và logout.</small></div></li>
+        </ul>
+    </article>
+</section>

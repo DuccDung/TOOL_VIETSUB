@@ -4,6 +4,7 @@ import {
   ChevronDown,
   Download,
   Gauge,
+  FolderOpen,
   Library,
   Maximize2,
   Minimize2,
@@ -17,15 +18,20 @@ import {
   X,
 } from 'lucide-react'
 import { postToHost } from '../lib/host'
-import type { VideoInfo } from '../types'
+import type { ProjectInfo, VideoInfo } from '../types'
+import type { AccountInfo } from '../types'
 import { IconButton } from './Ui'
 
 type HeaderProps = {
   video: VideoInfo | null
   maximized: boolean
   activeNav: string
+  account: AccountInfo
+  currentProject: ProjectInfo | null
   onNavChange: (nav: string) => void
+  onOpenProjects: () => void
   onOpenVideo: () => void
+  onExportVideo: () => void
   onNotify: (title: string, description: string) => void
 }
 
@@ -41,8 +47,12 @@ export function Header({
   video,
   maximized,
   activeNav,
+  account,
+  currentProject,
   onNavChange,
+  onOpenProjects,
   onOpenVideo,
+  onExportVideo,
   onNotify,
 }: HeaderProps) {
   return (
@@ -64,7 +74,7 @@ export function Header({
 
         <div className="title-status">
           <span className="status-dot" />
-          <span>Sẵn sàng</span>
+          <span>{account.displayName}</span>
         </div>
 
         <div className="window-actions">
@@ -97,10 +107,16 @@ export function Header({
       </div>
 
       <div className="navigation-bar">
-        <div className="nav-brand">
+        <button
+          type="button"
+          className="nav-brand project-switcher"
+          onClick={onOpenProjects}
+          title={currentProject ? `Dự án: ${currentProject.name}` : 'Mở danh sách dự án'}
+        >
           <span className="nav-brand__icon"><Video size={18} /></span>
-          <span>VIETSUB</span>
-        </div>
+          <span>Dự án</span>
+          <FolderOpen size={13} />
+        </button>
 
         <nav className="primary-nav" aria-label="Điều hướng chính">
           {navItems.map(({ id, label, icon: Icon }) => (
@@ -111,7 +127,7 @@ export function Header({
               aria-current={activeNav === id ? 'page' : undefined}
               onClick={() => {
                 onNavChange(id)
-                if (id !== 'subtitle') {
+                if (id !== 'subtitle' && id !== 'account') {
                   onNotify(label, 'Màn hình này sẽ được hoàn thiện ở bước UI tiếp theo.')
                 }
               }}
@@ -152,7 +168,7 @@ export function Header({
             type="button"
             className="export-button"
             disabled={!video}
-            onClick={() => onNotify('Xuất video', 'UI xuất video đã sẵn sàng để nối pipeline.')}
+            onClick={onExportVideo}
           >
             <Upload size={17} />
             <span>Xuất video</span>

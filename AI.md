@@ -109,5 +109,19 @@ lại pipeline.
 - Project Web: `TOOL_VIETSUB/TOOL_VIETSUB_SERVER.csproj`.
 - Project WinForms: `TOOL_VIETSUB_APP/TOOL_VIETSUB_APP.csproj`.
 - Database schema V1: `TOOL_VIETSUB_V1.sql`.
+- Authentication schema V2: `TOOL_VIETSUB_AUTH_V2.sql`.
+- Registration schema V3: `TOOL_VIETSUB_REGISTRATION_V3.sql`.
+- Quota reservation schema V4: `TOOL_VIETSUB_QUOTA_V4.sql`.
 - EF Core DbContext của Server: `TOOL_VIETSUB.Data.ToolVietSubDbContext`.
-
+- Kiến trúc logic thực tế: `LOGIC_ARCHITECTURE.md`.
+- Trạng thái kiểm duyệt từng gate: `LOGIC_IMPLEMENTATION_TASKS.md`.
+- Nền tảng project/media/job/quota, playback, timeline, trích xuất audio và SRT đã được triển khai.
+- Pipeline V1 đã chốt phương pháp local, không dùng API key AI: Whisper.net,
+  PaddleOCR, Argos Translate và Piper. Không thay provider/model hoặc chuyển nội
+  dung media lên cloud nếu chưa được người dùng xác nhận.
+- Đã triển khai STT, OCR phụ đề cứng, dịch English -> Vietnamese, giọng Việt,
+  fit timeline, duck/mix audio và xuất MP4/SRT. Xem trạng thái đã kiểm thử tại
+  `LOCAL_PIPELINE_TASKS.md`, cách cài tại `LOCAL_AI_SETUP.md` và license tại
+  `THIRD_PARTY_NOTICES.md`.
+- Các model/runtime phải tiếp tục đi qua registry/download có checksum; không
+  thêm URL tải tùy ý hoặc thực thi binary chưa xác minh.

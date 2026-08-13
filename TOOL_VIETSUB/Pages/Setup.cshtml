@@ -1,0 +1,52 @@
+@page
+@model SetupModel
+@{
+    ViewData["Title"] = "Khởi tạo quản trị viên";
+}
+
+<section class="setup-layout">
+    <div class="setup-intro">
+        <span class="server-eyebrow">THIẾT LẬP LẦN ĐẦU</span>
+        <h1>Tạo tài khoản quản trị an toàn.</h1>
+        <p>Đây là tài khoản đầu tiên dùng để đăng nhập TOOL VIETSUB App và quản trị hệ thống.</p>
+        <ul>
+            <li><span>01</span><div><strong>Mật khẩu được băm</strong><small>Server không lưu mật khẩu dạng văn bản.</small></div></li>
+            <li><span>02</span><div><strong>Gói PRO mặc định</strong><small>Quản trị viên đầu tiên được mở đầy đủ quyền V1.</small></div></li>
+            <li><span>03</span><div><strong>Chỉ thực hiện một lần</strong><small>Trang này tự khóa sau khi có người dùng đầu tiên.</small></div></li>
+        </ul>
+    </div>
+
+    <form method="post" class="setup-card">
+        <div class="setup-card-heading">
+            <span class="setup-icon">◇</span>
+            <div><small>TOOL VIETSUB SERVER</small><h2>Khởi tạo quản trị viên</h2></div>
+        </div>
+
+        <div asp-validation-summary="ModelOnly" class="validation-summary"></div>
+
+        <label class="server-field">
+            <span asp-for="Input.DisplayName">Tên hiển thị</span>
+            <input asp-for="Input.DisplayName" autocomplete="name" placeholder="Ví dụ: Dũng Developer" />
+            <small asp-validation-for="Input.DisplayName"></small>
+        </label>
+        <label class="server-field">
+            <span asp-for="Input.Email">Email quản trị</span>
+            <input asp-for="Input.Email" autocomplete="username" placeholder="admin@example.com" />
+            <small asp-validation-for="Input.Email"></small>
+        </label>
+        <label class="server-field">
+            <span asp-for="Input.Password">Mật khẩu</span>
+            <input asp-for="Input.Password" autocomplete="new-password" placeholder="Tối thiểu 12 ký tự" />
+            <small asp-validation-for="Input.Password"></small>
+        </label>
+        <label class="server-field">
+            <span asp-for="Input.ConfirmPassword">Xác nhận mật khẩu</span>
+            <input asp-for="Input.ConfirmPassword" autocomplete="new-password" placeholder="Nhập lại mật khẩu" />
+            <small asp-validation-for="Input.ConfirmPassword"></small>
+        </label>
+
+        <div class="setup-security-note"><span>✓</span>Dữ liệu được gửi qua HTTPS và mật khẩu không xuất hiện trong log.</div>
+        <button type="submit" class="setup-submit"><span>Tạo quản trị viên</span><span>→</span></button>
+        <a class="setup-back" asp-page="/Index">← Quay lại tổng quan</a>
+    </form>
+</section>

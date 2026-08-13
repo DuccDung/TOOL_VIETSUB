@@ -1,0 +1,40 @@
+@page
+@model TOOL_VIETSUB.Pages.Admin.LoginModel
+@{
+    ViewData["Title"] = "Đăng nhập quản trị";
+}
+
+<section class="admin-login-layout">
+    <div class="admin-login-intro">
+        <span class="server-eyebrow">QUẢN TRỊ GÓI DỊCH VỤ</span>
+        <h1>Nâng cấp đúng tài khoản, có kiểm soát.</h1>
+        <p>Đăng nhập bằng tài khoản ADMIN để tìm người dùng theo email, thay đổi gói và theo dõi lịch sử thao tác.</p>
+        <ul>
+            <li><span>01</span><div><strong>Phân quyền quản trị</strong><small>Người dùng thường không thể truy cập chức năng nâng cấp.</small></div></li>
+            <li><span>02</span><div><strong>Thao tác nguyên tử</strong><small>Gói cũ được đóng và gói mới được kích hoạt trong cùng transaction.</small></div></li>
+            <li><span>03</span><div><strong>Audit đầy đủ</strong><small>Lưu người thao tác, thời gian và thay đổi subscription.</small></div></li>
+        </ul>
+    </div>
+
+    <form method="post" class="admin-login-card">
+        <input asp-for="ReturnUrl" type="hidden" />
+        <div class="admin-card-heading">
+            <span class="admin-card-icon">◆</span>
+            <div><small>SECURE ADMIN</small><h2>Đăng nhập quản trị</h2></div>
+        </div>
+        <div asp-validation-summary="ModelOnly" class="validation-summary"></div>
+        <label class="server-field">
+            <span>Email quản trị</span>
+            <input asp-for="Input.Email" type="email" autocomplete="username" placeholder="admin@example.com" autofocus />
+            <small><span asp-validation-for="Input.Email"></span></small>
+        </label>
+        <label class="server-field">
+            <span>Mật khẩu</span>
+            <input asp-for="Input.Password" type="password" autocomplete="current-password" placeholder="••••••••••••" />
+            <small><span asp-validation-for="Input.Password"></span></small>
+        </label>
+        <div class="admin-security-note"><span>✓</span> Phiên quản trị tự hết hạn sau 8 giờ và chỉ hoạt động qua HTTPS.</div>
+        <button class="setup-submit" type="submit"><span>Đăng nhập an toàn</span><span>→</span></button>
+        <a class="setup-back" asp-page="/Index">← Quay lại tổng quan Server</a>
+    </form>
+</section>

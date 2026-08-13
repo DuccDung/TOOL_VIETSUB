@@ -79,6 +79,7 @@ type ToggleProps = {
   label: string
   description?: string
   icon?: ReactNode
+  disabled?: boolean
   onChange: (checked: boolean) => void
 }
 
@@ -87,6 +88,7 @@ export function Toggle({
   label,
   description,
   icon,
+  disabled = false,
   onChange,
 }: ToggleProps) {
   return (
@@ -95,6 +97,7 @@ export function Toggle({
       role="switch"
       aria-checked={checked}
       className="toggle-row"
+      disabled={disabled}
       onClick={() => onChange(!checked)}
     >
       <span className="toggle-copy">
@@ -156,6 +159,7 @@ type RangeProps = {
   step?: number
   suffix?: string
   icon: ReactNode
+  disabled?: boolean
   onChange: (value: number) => void
 }
 
@@ -167,6 +171,7 @@ export function CompactRange({
   step = 1,
   suffix = '',
   icon,
+  disabled = false,
   onChange,
 }: RangeProps) {
   const progress = ((value - min) / (max - min)) * 100
@@ -181,6 +186,7 @@ export function CompactRange({
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
         style={{ '--range-progress': `${progress}%` } as React.CSSProperties}
         onChange={(event) => onChange(Number(event.target.value))}
       />

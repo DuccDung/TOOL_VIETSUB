@@ -1,13 +1,29 @@
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.EntityFrameworkCore;
+using TOOL_VIETSUB.Data;
 
-namespace TOOL_VIETSUB.Pages
+namespace TOOL_VIETSUB.Pages;
+
+public sealed class IndexModel(ToolVietSubDbContext database) : PageModel
 {
-    public class IndexModel : PageModel
-    {
-        public void OnGet()
-        {
+    public bool RequiresSetup { get; private set; }
 
-        }
+    public int UserCount { get; private set; }
+
+    public int ActiveSessionCount { get; private set; }
+
+    public bool SetupCompleted => string.Equals(
+        Request.Query["setup"],
+        "complete",
+        StringComparison.OrdinalIgnoreCase);
+
+    public async Task OnGetAsync(CancellationToken cancellationToken)
+    {
+        var nowUtc = DateTime.UtcNow;
+        UserCount = await database.Users.AsNoTracking()
+            .CountAsync(item => item.DeletedAtUtc == null, cancellationToken);
+        ActiveSessionCount = await database.AuthSessions.AsNoTracking()
+            .CountAsync(item => item.RevokedAtUtc == null && item.ExpiresAtUtc > nowUtc, cancellationToken);
+        RequiresSetup = UserCount == 0;
     }
 }

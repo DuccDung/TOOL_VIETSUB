@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   AudioLines,
   Captions,
   CircleAlert,
+  Download,
   FileUp,
   ListFilter,
   MessageSquareText,
@@ -16,30 +17,43 @@ import { formatClock } from '../lib/format'
 import type { SubtitleSegment } from '../types'
 import { IconButton, SegmentTab } from './Ui'
 
-type Filter = 'all' | 'untranslated' | 'review' | 'missing-audio'
+type Filter = 'all' | 'untranslated' | 'review' | 'missing-audio' | 'invalid-translation'
 
 type SubtitlePanelProps = {
   segments: SubtitleSegment[]
   selectedId: number | null
   onSelect: (id: number) => void
-  onNotify: (title: string, description: string) => void
+  busy: boolean
+  onImportSrt: () => void
+  onExportSrt: () => void
+  onTranslate: () => void
+  onSynthesizeVoice: () => void
+  onUpdateSegment: (cueId: string, original: string, translated: string) => void
 }
 
 const statusLabels: Record<SubtitleSegment['status'], string> = {
   translated: 'Đã dịch',
   review: 'Cần chú ý',
   'missing-audio': 'Thiếu audio',
+  'invalid-translation': 'Lỗi bản dịch',
 }
 
 export function SubtitlePanel({
   segments,
   selectedId,
   onSelect,
-  onNotify,
+  busy,
+  onImportSrt,
+  onExportSrt,
+  onTranslate,
+  onSynthesizeVoice,
+  onUpdateSegment,
 }: SubtitlePanelProps) {
   const [tab, setTab] = useState<'subtitles' | 'properties'>('subtitles')
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
+  const [draftOriginal, setDraftOriginal] = useState('')
+  const [draftTranslated, setDraftTranslated] = useState('')
 
   const visibleSegments = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase('vi')
@@ -58,6 +72,17 @@ export function SubtitlePanel({
   }, [segments, filter, query])
 
   const selectedSegment = segments.find((segment) => segment.id === selectedId)
+  const invalidTranslationCount = segments.filter(
+    (segment) => segment.status === 'invalid-translation',
+  ).length
+  const translatedCount = segments.filter(
+    (segment) => segment.translated.trim().length > 0,
+  ).length
+
+  useEffect(() => {
+    setDraftOriginal(selectedSegment?.original ?? '')
+    setDraftTranslated(selectedSegment?.translated ?? '')
+  }, [selectedSegment?.cueId, selectedSegment?.original, selectedSegment?.translated])
 
   return (
     <aside className="panel subtitle-panel" aria-label="Danh sách phụ đề">
@@ -77,7 +102,7 @@ export function SubtitlePanel({
       </div>
 
       {tab === 'subtitles' ? (
-        <>
+        <div className="subtitle-panel__body">
           <div className="subtitle-heading">
             <div>
               <span className="eyebrow">DANH SÁCH PHỤ ĐỀ</span>
@@ -106,6 +131,7 @@ export function SubtitlePanel({
               { id: 'all' as const, label: 'Tất cả' },
               { id: 'untranslated' as const, label: 'Chưa dịch' },
               { id: 'review' as const, label: 'Cần chú ý' },
+              { id: 'invalid-translation' as const, label: 'Lỗi dịch' },
               { id: 'missing-audio' as const, label: 'Thiếu audio' },
             ].map((item) => (
               <button
@@ -122,14 +148,20 @@ export function SubtitlePanel({
           <div className="subtitle-actions">
             <button
               type="button"
-              onClick={() => onNotify('Dịch phần còn thiếu', 'Chưa nối dịch thuật trong giai đoạn UI.')}
+              className={invalidTranslationCount > 0 ? 'is-warning' : undefined}
+              onClick={onTranslate}
+              disabled={busy || segments.length === 0}
             >
               <WandSparkles size={15} />
-              <span>Dịch thiếu</span>
+              <span>{invalidTranslationCount > 0 ? `Dịch lại ${invalidTranslationCount} lỗi` : 'Dịch thiếu'}</span>
             </button>
             <button
               type="button"
-              onClick={() => onNotify('Tạo giọng', 'Chưa nối TTS trong giai đoạn UI.')}
+              onClick={onSynthesizeVoice}
+              disabled={busy || translatedCount === 0 || invalidTranslationCount > 0}
+              title={invalidTranslationCount > 0
+                ? 'Cần dịch lại các phân đoạn lỗi trước khi tạo giọng.'
+                : undefined}
             >
               <AudioLines size={15} />
               <span>Tạo giọng</span>
@@ -137,10 +169,19 @@ export function SubtitlePanel({
             <button
               type="button"
               className="is-accent"
-              onClick={() => onNotify('Nhập phụ đề', 'Trình chọn tệp SRT sẽ được nối sau.')}
+              onClick={onImportSrt}
+              disabled={busy}
             >
               <FileUp size={15} />
               <span>Nhập SRT</span>
+            </button>
+            <button
+              type="button"
+              onClick={onExportSrt}
+              disabled={busy || segments.length === 0}
+            >
+              <Download size={15} />
+              <span>Xuất SRT</span>
             </button>
           </div>
 
@@ -182,7 +223,7 @@ export function SubtitlePanel({
               ))
             )}
           </div>
-        </>
+        </div>
       ) : (
         <div className="properties-panel">
           {selectedSegment ? (
@@ -196,21 +237,39 @@ export function SubtitlePanel({
               </div>
               <label>
                 <span>Nội dung gốc</span>
-                <textarea defaultValue={selectedSegment.original} rows={3} />
+                <textarea
+                  value={draftOriginal}
+                  rows={3}
+                  disabled={busy}
+                  onChange={(event) => setDraftOriginal(event.target.value)}
+                />
               </label>
               <label>
                 <span>Bản dịch tiếng Việt</span>
-                <textarea defaultValue={selectedSegment.translated} rows={4} />
+                <textarea
+                  value={draftTranslated}
+                  rows={4}
+                  disabled={busy}
+                  onChange={(event) => setDraftTranslated(event.target.value)}
+                />
               </label>
               <label>
                 <span>Giọng đọc</span>
-                <select defaultValue="voice-01">
-                  <option value="voice-01">Minh Anh · Nữ miền Bắc</option>
-                  <option value="voice-02">Hoàng Nam · Nam miền Nam</option>
+                <select defaultValue="vais1000" disabled>
+                  <option value="vais1000">VAIS-1000 · Nữ tiếng Việt</option>
                 </select>
               </label>
-              <button type="button" className="save-segment-button">
-                Lưu thay đổi
+              <button
+                type="button"
+                className="save-segment-button"
+                disabled={busy || !draftOriginal.trim()}
+                onClick={() => onUpdateSegment(
+                  selectedSegment.cueId,
+                  draftOriginal,
+                  draftTranslated,
+                )}
+              >
+                {busy ? 'Đang lưu…' : 'Lưu thay đổi'}
               </button>
             </>
           ) : (

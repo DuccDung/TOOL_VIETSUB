@@ -52,3 +52,7 @@ Desktop.ini
 !.env.example
 appsettings.Local.json
 appsettings.*.local.json
+
+# Downloaded local AI models and integration-test media
+.local-models/
+.local-tools/

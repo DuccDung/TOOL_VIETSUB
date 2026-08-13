@@ -1,5 +1,6 @@
-export function formatClock(totalSeconds: number, showCentiseconds = false) {
-  const safeSeconds = Math.max(0, totalSeconds)
+export function formatClock(totalSeconds: number | null | undefined, showCentiseconds = false) {
+  const numericSeconds = Number(totalSeconds)
+  const safeSeconds = Number.isFinite(numericSeconds) ? Math.max(0, numericSeconds) : 0
   const hours = Math.floor(safeSeconds / 3600)
   const minutes = Math.floor((safeSeconds % 3600) / 60)
   const seconds = Math.floor(safeSeconds % 60)

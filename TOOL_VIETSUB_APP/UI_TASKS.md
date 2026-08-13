@@ -27,10 +27,15 @@ Implementation: WinForms host + Microsoft Edge WebView2 + local React UI.
 - [x] APP-UI-14 Run the application, capture screenshots, and visually refine it.
 - [x] APP-UI-15 Add resizable editor panels with keyboard support and saved layout.
 
-## V1 UI constraints
+## V1 implementation boundary
 
 - The desktop app performs video work locally; it never connects to SQL Server.
 - UI assets must run locally without an internet connection.
-- The current milestone does not implement FFmpeg, transcription, translation,
-  TTS, or final export processing.
-- UI controls may use local mock state only to demonstrate interaction.
+- FFmpeg/FFprobe import, audio extraction, project state, local jobs and SRT
+  editing are now connected to the native host.
+- Whisper STT, PaddleOCR, Argos translation, Piper TTS, timeline sync/mix and
+  MP4 export are connected to the native host and run locally.
+- Timeline supports real playback/seek plus persisted split, align, duplicate
+  and delete operations for subtitle cues.
+- Demo query modes may still use mock state for visual review; normal native mode
+  must use state supplied by the WinForms host.
