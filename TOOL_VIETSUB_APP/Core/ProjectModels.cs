@@ -49,6 +49,12 @@ public sealed class ProjectManifest
 
     public ProjectSettings Settings { get; set; } = new();
 
+    public ProjectTranslationContext TranslationContext { get; set; } = new();
+
+    public List<TranslationGlossaryEntry> TranslationGlossary { get; set; } = [];
+
+    public List<TranslationMemoryEntry> TranslationMemory { get; set; } = [];
+
     public List<LocalJob> Jobs { get; set; } = [];
 }
 
@@ -67,6 +73,22 @@ public sealed class ProjectSettings
     public string TranslationTarget { get; set; } = "vi";
 
     public string TranslationModelId { get; set; } = "auto";
+
+    public string TranslationProvider { get; set; } = TranslationProviders.Local;
+
+    public string TranslationQualityMode { get; set; } = TranslationQualityModes.Balanced;
+
+    public bool TranslationReviewEnabled { get; set; } = true;
+
+    public bool TranslationFallbackToLocal { get; set; }
+
+    public int TranslationContextCueCount { get; set; } = 3;
+
+    public int TranslationSceneMaxCues { get; set; } = 12;
+
+    public int TranslationSceneGapMilliseconds { get; set; } = 8000;
+
+    public double TranslationMaxCharactersPerSecond { get; set; } = 18;
 
     public string? VoiceId { get; set; }
 
@@ -95,6 +117,72 @@ public sealed class ProjectSettings
     public double OriginalSubtitleRegionHeight { get; set; } = 0.16;
 
     public SubtitleStyleSettings SubtitleStyle { get; set; } = new();
+}
+
+public static class TranslationProviders
+{
+    public const string Local = "local";
+    public const string OpenAi = "openai";
+    public const string Gemini = "gemini";
+
+    public static string Normalize(string? provider) => provider?.Trim().ToLowerInvariant() switch
+    {
+        OpenAi => OpenAi,
+        Gemini => Gemini,
+        _ => Local,
+    };
+
+    public static bool IsCloud(string? provider) => Normalize(provider) is OpenAi or Gemini;
+}
+
+public static class TranslationQualityModes
+{
+    public const string Fast = "fast";
+    public const string Balanced = "balanced";
+    public const string High = "high";
+
+    public static string Normalize(string? mode) => mode?.Trim().ToLowerInvariant() switch
+    {
+        Fast => Fast,
+        High => High,
+        _ => Balanced,
+    };
+}
+
+public sealed class ProjectTranslationContext
+{
+    public string Summary { get; set; } = string.Empty;
+
+    public string CharacterInstructions { get; set; } = string.Empty;
+
+    public string StyleInstructions { get; set; } =
+        "Tiếng Việt tự nhiên, rõ nghĩa, phù hợp lời thoại và không tự ý thêm thông tin.";
+}
+
+public sealed class TranslationGlossaryEntry
+{
+    public Guid EntryId { get; set; } = Guid.NewGuid();
+
+    public string SourceText { get; set; } = string.Empty;
+
+    public string TargetText { get; set; } = string.Empty;
+
+    public string? Note { get; set; }
+}
+
+public sealed class TranslationMemoryEntry
+{
+    public Guid EntryId { get; set; } = Guid.NewGuid();
+
+    public string SourceLanguageCode { get; set; } = string.Empty;
+
+    public string TargetLanguageCode { get; set; } = "vi";
+
+    public string SourceText { get; set; } = string.Empty;
+
+    public string TranslatedText { get; set; } = string.Empty;
+
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
 public sealed class SubtitleStyleSettings
@@ -315,6 +403,12 @@ public sealed class SubtitleCue
     public string? TranslationSourceFingerprint { get; set; }
 
     public string? TranslationQualityStatus { get; set; }
+
+    public double? TranslationConfidence { get; set; }
+
+    public List<string> TranslationWarnings { get; set; } = [];
+
+    public DateTime? TranslationReviewedAtUtc { get; set; }
 
     public bool OriginalLocked { get; set; }
 

@@ -321,7 +321,7 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
             .AppendLine("ScriptType: v4.00+")
             .Append("PlayResX: ").AppendLine(width.ToString(CultureInfo.InvariantCulture))
             .Append("PlayResY: ").AppendLine(height.ToString(CultureInfo.InvariantCulture))
-            .AppendLine("WrapStyle: 2")
+            .AppendLine("WrapStyle: 1")
             .AppendLine("ScaledBorderAndShadow: yes")
             .AppendLine("YCbCr Matrix: TV.709")
             .AppendLine()
@@ -367,7 +367,7 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
         var positionOverride = $"{{\\an{alignment}\\pos({Format(positionX)},{Format(positionY)})}}";
         foreach (var cue in ordered)
         {
-            var wrappedText = EscapeAssText(WrapSubtitleText(cue.TranslatedText, style));
+            var wrappedText = EscapeAssText(NormalizeSubtitleText(cue.TranslatedText));
             if (style.BackgroundMode == "box")
             {
                 builder.Append("Dialogue: 0,")
@@ -424,49 +424,10 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
         return $"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}.{centiseconds:00}";
     }
 
-    private static string WrapSubtitleText(string text, SubtitleStyleSettings style)
-    {
-        var words = text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (words.Length < 2 || style.MaxLines <= 1) return string.Join(' ', words);
-
-        var totalLength = string.Join(' ', words).Length;
-        var lineCapacity = Math.Clamp(
-            (int)Math.Round(32d * (style.MaxWidthPercent / 90d) * (4.2d / style.FontSizePercent)),
-            12,
-            60);
-        var estimatedLines = Math.Max(1, (int)Math.Ceiling(totalLength / (double)lineCapacity));
-        var lineCount = Math.Min(Math.Min(Math.Clamp(style.MaxLines, 1, 3), estimatedLines), words.Length);
-        var lines = new List<string>(lineCount);
-        var wordIndex = 0;
-        for (var lineIndex = 0; lineIndex < lineCount; lineIndex++)
-        {
-            var linesLeft = lineCount - lineIndex;
-            if (linesLeft == 1)
-            {
-                lines.Add(string.Join(' ', words[wordIndex..]));
-                break;
-            }
-
-            var remainingCharacters = words[wordIndex..].Sum(word => word.Length)
-                + (words.Length - wordIndex - 1);
-            var targetLength = remainingCharacters / (double)linesLeft;
-            var current = new List<string>();
-            var currentLength = 0;
-            while (wordIndex < words.Length - (linesLeft - 1))
-            {
-                var word = words[wordIndex];
-                var nextLength = currentLength + (current.Count > 0 ? 1 : 0) + word.Length;
-                if (current.Count > 0 && nextLength > targetLength) break;
-                current.Add(word);
-                currentLength = nextLength;
-                wordIndex++;
-            }
-
-            lines.Add(string.Join(' ', current));
-        }
-
-        return string.Join("\n", lines.Where(line => line.Length > 0));
-    }
+    private static string NormalizeSubtitleText(string text) =>
+        string.Join(' ', text.Split(
+            (char[]?)null,
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
     private static string EscapeAssText(string text) =>
         text.Replace("\\", "＼", StringComparison.Ordinal)

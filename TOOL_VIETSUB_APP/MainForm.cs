@@ -308,6 +308,9 @@ public sealed class MainForm : Form
                 case "project:settings:update":
                     await UpdateProjectSettingsAsync(document.RootElement);
                     break;
+                case "project:translation-settings:update":
+                    await UpdateTranslationSettingsAsync(document.RootElement);
+                    break;
                 case "project:audio-settings:update":
                     await UpdateAudioSettingsAsync(document.RootElement);
                     break;
@@ -707,6 +710,59 @@ public sealed class MainForm : Form
                 ocrLanguageCode,
                 _lifetimeCancellation.Token);
             PostMessage(new { type = "project:state", project = state });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+    }
+
+    private async Task UpdateTranslationSettingsAsync(JsonElement message)
+    {
+        if (!TryGetRequiredString(message, "provider", out var provider)
+            || !TryGetRequiredString(message, "modelId", out var modelId)
+            || !TryGetRequiredString(message, "qualityMode", out var qualityMode)
+            || !message.TryGetProperty("reviewEnabled", out var reviewElement)
+            || reviewElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+            || !message.TryGetProperty("fallbackToLocal", out var fallbackElement)
+            || fallbackElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+            || !message.TryGetProperty("projectContext", out var contextElement)
+            || contextElement.ValueKind != JsonValueKind.String
+            || !message.TryGetProperty("characterInstructions", out var characterElement)
+            || characterElement.ValueKind != JsonValueKind.String
+            || !message.TryGetProperty("styleInstructions", out var styleElement)
+            || styleElement.ValueKind != JsonValueKind.String
+            || !message.TryGetProperty("glossaryText", out var glossaryElement)
+            || glossaryElement.ValueKind != JsonValueKind.String)
+        {
+            PostWorkspaceError("TRANSLATION_SETTINGS_INVALID", "Thiết lập dịch không hợp lệ.");
+            return;
+        }
+
+        var apiKey = message.TryGetProperty("apiKey", out var apiKeyElement)
+            && apiKeyElement.ValueKind == JsonValueKind.String
+            ? apiKeyElement.GetString()
+            : null;
+        var clearApiKey = message.TryGetProperty("clearApiKey", out var clearElement)
+            && clearElement.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && clearElement.GetBoolean();
+        try
+        {
+            var state = await _workspaceCoordinator.UpdateTranslationSettingsAsync(
+                provider,
+                modelId,
+                qualityMode,
+                reviewElement.GetBoolean(),
+                fallbackElement.GetBoolean(),
+                contextElement.GetString() ?? string.Empty,
+                characterElement.GetString() ?? string.Empty,
+                styleElement.GetString() ?? string.Empty,
+                glossaryElement.GetString() ?? string.Empty,
+                apiKey,
+                clearApiKey,
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "project:state", project = state });
+            PostMessage(new { type = "translation:settings:saved" });
         }
         catch (Exception exception)
         {

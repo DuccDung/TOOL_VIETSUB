@@ -126,7 +126,20 @@ export function SubtitlePanel({
             </IconButton>
           </div>
 
-          <div className="filter-tabs" role="group" aria-label="Lọc phụ đề">
+          <div
+            className="filter-tabs"
+            role="group"
+            aria-label="Lọc phụ đề"
+            onWheel={(event) => {
+              const tabs = event.currentTarget
+              const maximumScroll = tabs.scrollWidth - tabs.clientWidth
+              if (maximumScroll <= 0 || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
+              const nextScroll = Math.max(0, Math.min(maximumScroll, tabs.scrollLeft + event.deltaY))
+              if (nextScroll === tabs.scrollLeft) return
+              tabs.scrollLeft = nextScroll
+              event.preventDefault()
+            }}
+          >
             {[
               { id: 'all' as const, label: 'Tất cả' },
               { id: 'untranslated' as const, label: 'Chưa dịch' },
@@ -210,7 +223,12 @@ export function SubtitlePanel({
                   <span className="subtitle-card__content">
                     <span className="subtitle-card__meta">
                       <time>{formatClock(segment.start)} — {formatClock(segment.end)}</time>
-                      <span className={`status-badge status-badge--${segment.status}`}>
+                      <span
+                        className={`status-badge status-badge--${segment.status}`}
+                        title={segment.translationWarnings?.length
+                          ? segment.translationWarnings.join(', ')
+                          : undefined}
+                      >
                         {segment.status !== 'translated' ? <CircleAlert size={11} /> : null}
                         {statusLabels[segment.status]}
                       </span>

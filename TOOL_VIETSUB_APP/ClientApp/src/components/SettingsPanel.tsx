@@ -14,14 +14,21 @@ import {
   Square,
   Type,
 } from 'lucide-react'
-import type { LocalJobInfo, SubtitleRemovalSettings, SubtitleStyleSettings } from '../types'
+import type {
+  LocalJobInfo,
+  SubtitleRemovalSettings,
+  SubtitleStyleSettings,
+  TranslationSettingsInfo,
+} from '../types'
 import { SubtitleStyleEditor } from './SubtitleStyleEditor'
+import { TranslationSettingsEditor } from './TranslationSettingsEditor'
 import { SectionCard, SegmentTab, SelectField, Toggle } from './Ui'
 
 type SettingsPanelProps = {
   sourceLanguageCode: string
   ocrLanguageCode: string
-  translationModelId: string
+  translationSettings: TranslationSettingsInfo
+  subtitleCount: number
   subtitleRemoval: SubtitleRemovalSettings
   subtitleStyle: SubtitleStyleSettings
   canPrepareAudio: boolean
@@ -33,6 +40,11 @@ type SettingsPanelProps = {
   modelDownloadPercent: number | null
   jobBusy: boolean
   onLanguageSettingsChange: (sourceLanguageCode: string, ocrLanguageCode: string) => void
+  onTranslationSettingsChange: (
+    settings: TranslationSettingsInfo,
+    apiKey?: string,
+    clearApiKey?: boolean,
+  ) => void
   onSubtitleRemovalChange: (settings: SubtitleRemovalSettings) => void
   onSubtitleStyleChange: (style: SubtitleStyleSettings) => void
   onPrepareAudio: () => void
@@ -49,7 +61,8 @@ const terminalStates = ['completed', 'cancelled']
 export function SettingsPanel({
   sourceLanguageCode,
   ocrLanguageCode,
-  translationModelId,
+  translationSettings,
+  subtitleCount,
   subtitleRemoval,
   subtitleStyle,
   canPrepareAudio,
@@ -61,6 +74,7 @@ export function SettingsPanel({
   modelDownloadPercent,
   jobBusy,
   onLanguageSettingsChange,
+  onTranslationSettingsChange,
   onSubtitleRemovalChange,
   onSubtitleStyleChange,
   onPrepareAudio,
@@ -91,6 +105,7 @@ export function SettingsPanel({
       TRANSCRIBE_LOCAL: 'Nhận dạng giọng nói',
       OCR_LOCAL: 'Nhận dạng phụ đề cứng',
       TRANSLATE_LOCAL: 'Dịch sang tiếng Việt',
+      TRANSLATE_CLOUD: 'Dịch sang tiếng Việt bằng cloud',
       SYNTHESIZE_VOICE_LOCAL: 'Tạo giọng Việt',
       EXPORT_VIDEO_LOCAL: 'Đồng bộ và xuất video',
     }
@@ -182,22 +197,19 @@ export function SettingsPanel({
           onToggle={() => setTranslationCollapsed((value) => !value)}
           badge="BƯỚC 2"
         >
-          <SelectField
-            label="MÔ HÌNH DỊCH"
-            value={translationModelId}
-            disabled
-            helper="Xử lý offline, không gửi nội dung phụ đề lên cloud"
-          >
-            <option value="auto">Tự chọn theo ngôn ngữ gốc</option>
-            <option value="opus-mt-zh-vi-official-v2">OPUS-MT Chinese → Vietnamese · Official</option>
-            <option value="argos-en-vi">Argos English → Vietnamese</option>
-          </SelectField>
+          <TranslationSettingsEditor
+            settings={translationSettings}
+            sourceLanguageCode={sourceLanguageCode}
+            subtitleCount={subtitleCount}
+            disabled={jobBusy}
+            onSave={onTranslationSettingsChange}
+          />
 
           <div className="panel-tip">
             <Sparkles size={16} />
             <div>
-              <strong>Dịch trực tiếp Trung → Việt</strong>
-              <p>Model OPUS-MT chính thức chạy local; không dịch vòng qua tiếng Anh.</p>
+              <strong>Dịch theo cảnh, giữ đúng từng cue</strong>
+              <p>Cloud dùng câu trước/sau, glossary và bản dịch đã duyệt; local vẫn là chế độ riêng tư.</p>
             </div>
           </div>
         </SectionCard>

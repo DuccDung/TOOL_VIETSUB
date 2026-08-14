@@ -4,6 +4,7 @@ using TOOL_VIETSUB_APP.LocalAi;
 using TOOL_VIETSUB_APP.Media;
 using TOOL_VIETSUB_APP.Usage;
 using TOOL_VIETSUB_APP.Subtitles;
+using TOOL_VIETSUB_APP.Translation;
 
 namespace TOOL_VIETSUB_APP.Core;
 
@@ -19,6 +20,8 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
     private readonly SrtService _subtitles;
     private readonly LocalModelManager _models;
     private readonly LocalAiRuntimeProvisioner _runtimeProvisioner;
+    private readonly ProtectedTranslationCredentialStore _translationCredentials;
+    private readonly HttpClient _translationHttpClient;
     private ProjectSession? _session;
     private CancellationTokenSource? _importCancellation;
 
@@ -34,6 +37,9 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         _subtitles = new SrtService(_paths, _projects);
         _models = new LocalModelManager(_paths);
         _runtimeProvisioner = new LocalAiRuntimeProvisioner(_paths);
+        _translationCredentials = new ProtectedTranslationCredentialStore(_paths);
+        _translationHttpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        _translationHttpClient.DefaultRequestHeaders.UserAgent.TryParseAdd("TOOL-VIETSUB-APP/1.0");
         _jobs.JobChanged += (_, job) => JobChanged?.Invoke(this, job);
     }
 
@@ -141,9 +147,12 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         manifest.TargetLanguageCode = "vi";
         manifest.Settings.TranslationTarget = "vi";
         manifest.Settings.OcrLanguageCode = ocrSetting;
-        manifest.Settings.TranslationModelId = sourceLanguage is null
-            ? "auto"
-            : LocalTranslatorFactory.GetModelId(sourceLanguage);
+        if (TranslationProviders.Normalize(manifest.Settings.TranslationProvider) == TranslationProviders.Local)
+        {
+            manifest.Settings.TranslationModelId = sourceLanguage is null
+                ? "auto"
+                : LocalTranslatorFactory.GetModelId(sourceLanguage);
+        }
         if (sourceLanguage is not null)
         {
             foreach (var track in manifest.SubtitleTracks)
@@ -164,15 +173,81 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 .Select(cue =>
                 {
                     cue.TranslatedText = string.Empty;
+                    cue.TranslationModelId = null;
+                    cue.TranslationModelVersion = null;
+                    cue.TranslationSourceFingerprint = null;
+                    cue.TranslationQualityStatus = null;
+                    cue.TranslationConfidence = null;
+                    cue.TranslationWarnings = [];
+                    cue.TranslationReviewedAtUtc = null;
                     return cue.CueId;
                 })
                 .ToHashSet();
             manifest.AudioTracks.RemoveAll(track =>
-                track.Role == "VOICE_CUE"
-                && track.CueId is Guid cueId
-                && invalidatedCueIds.Contains(cueId));
+                track.Role == "VOICE_TIMELINE"
+                || (track.Role == "VOICE_CUE"
+                    && track.CueId is Guid cueId
+                    && invalidatedCueIds.Contains(cueId)));
         }
 
+        await _session!.FlushAsync(cancellationToken);
+        return Map(manifest);
+    }
+
+    public async Task<DesktopProjectState> UpdateTranslationSettingsAsync(
+        string provider,
+        string modelId,
+        string qualityMode,
+        bool reviewEnabled,
+        bool fallbackToLocal,
+        string projectContext,
+        string characterInstructions,
+        string styleInstructions,
+        string glossaryText,
+        string? apiKey,
+        bool clearApiKey,
+        CancellationToken cancellationToken)
+    {
+        var manifest = RequireProject();
+        manifest.TranslationContext ??= new ProjectTranslationContext();
+        manifest.TranslationGlossary ??= [];
+        manifest.TranslationMemory ??= [];
+        var normalizedProvider = TranslationProviders.Normalize(provider);
+        var normalizedQuality = TranslationQualityModes.Normalize(qualityMode);
+        var normalizedContext = NormalizeTranslationText(projectContext, 4000, "Bối cảnh dự án");
+        var normalizedCharacters = NormalizeTranslationText(characterInstructions, 4000, "Thông tin nhân vật");
+        var normalizedStyle = NormalizeTranslationText(styleInstructions, 2000, "Phong cách dịch");
+        var sourceLanguage = LocalLanguageCodes.ResolveProjectSource(manifest) ?? "en";
+        var resolvedModel = TranslationModelDefaults.Resolve(
+            normalizedProvider,
+            modelId,
+            normalizedQuality,
+            sourceLanguage);
+        if (resolvedModel.Length > 120 || resolvedModel.Any(character => char.IsControl(character) || char.IsWhiteSpace(character)))
+        {
+            throw new InvalidOperationException("Tên model dịch không hợp lệ.");
+        }
+
+        var glossary = ParseGlossary(glossaryText, manifest.TranslationGlossary);
+        if (clearApiKey)
+        {
+            _translationCredentials.DeleteKey(normalizedProvider);
+        }
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            _translationCredentials.SaveKey(normalizedProvider, apiKey);
+        }
+
+        manifest.Settings.TranslationProvider = normalizedProvider;
+        manifest.Settings.TranslationModelId = resolvedModel;
+        manifest.Settings.TranslationQualityMode = normalizedQuality;
+        manifest.Settings.TranslationReviewEnabled = reviewEnabled;
+        manifest.Settings.TranslationFallbackToLocal = fallbackToLocal;
+        manifest.TranslationContext.Summary = normalizedContext;
+        manifest.TranslationContext.CharacterInstructions = normalizedCharacters;
+        manifest.TranslationContext.StyleInstructions = normalizedStyle;
+        manifest.TranslationGlossary = glossary;
         await _session!.FlushAsync(cancellationToken);
         return Map(manifest);
     }
@@ -489,22 +564,39 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             ?? throw new LocalModelException(
                 "TRANSLATION_SOURCE_REQUIRED",
                 "Hãy chọn tiếng Trung hoặc tiếng Anh trước khi dịch.");
-        var modelId = LocalTranslatorFactory.GetModelId(sourceLanguage);
+        var providerId = TranslationProviders.Normalize(manifest.Settings.TranslationProvider);
+        var modelId = TranslationModelDefaults.Resolve(
+            providerId,
+            manifest.Settings.TranslationModelId,
+            manifest.Settings.TranslationQualityMode,
+            sourceLanguage);
         manifest.SourceLanguageCode = sourceLanguage;
         manifest.TargetLanguageCode = "vi";
         manifest.Settings.TranslationTarget = "vi";
+        manifest.Settings.TranslationProvider = providerId;
         manifest.Settings.TranslationModelId = modelId;
 
-        await EnsureLanguageRuntimeAsync(cancellationToken);
-        var modelProgress = new Progress<LocalModelDownloadProgress>(progress =>
-            ModelDownloadProgressChanged?.Invoke(this, progress));
-        await _models.DownloadAsync(
-            modelId,
-            modelProgress,
+        if (TranslationProviders.IsCloud(providerId)
+            && !_translationCredentials.HasKey(providerId))
+        {
+            throw new LocalModelException(
+                "TRANSLATION_API_KEY_REQUIRED",
+                $"Hãy lưu API key {providerId} trong phần Dịch sang tiếng Việt trước khi chạy.");
+        }
+
+        await EnsureTranslationDependenciesAsync(
+            providerId,
+            sourceLanguage,
+            manifest.Settings.TranslationFallbackToLocal,
             cancellationToken);
+        var provider = CreateTranslationProvider(
+            providerId,
+            modelId,
+            sourceLanguage,
+            manifest.Settings.TranslationFallbackToLocal);
         _ = await _quotaJobs.StartAsync(
             manifest,
-            "TRANSLATE_LOCAL",
+            providerId == TranslationProviders.Local ? "TRANSLATE_LOCAL" : "TRANSLATE_CLOUD",
             "subtitle.translate",
             ["TRANSLATE"],
             EstimateMinutes(manifest),
@@ -512,16 +604,15 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 _paths,
                 _projects,
                 manifest,
-                LocalTranslatorFactory.Create(sourceLanguage, _paths, _models)),
+                provider),
             cancellationToken,
             new Dictionary<string, string>
             {
                 ["sourceLanguage"] = sourceLanguage,
                 ["targetLanguage"] = "vi",
+                ["provider"] = providerId,
                 ["modelId"] = modelId,
-                ["modelVersion"] = sourceLanguage == "zh"
-                    ? OpusMtChineseVietnameseTranslator.ModelVersion
-                    : ArgosLocalTranslator.ModelId,
+                ["fallbackToLocal"] = manifest.Settings.TranslationFallbackToLocal.ToString(),
             });
         return Map(manifest);
     }
@@ -752,6 +843,88 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         await _runtimeProvisioner.EnsureReadyAsync(progress, cancellationToken);
     }
 
+    private async Task EnsureTranslationDependenciesAsync(
+        string providerId,
+        string sourceLanguage,
+        bool fallbackToLocal,
+        CancellationToken cancellationToken)
+    {
+        if (providerId != TranslationProviders.Local && !fallbackToLocal)
+        {
+            return;
+        }
+
+        await EnsureLanguageRuntimeAsync(cancellationToken);
+        var modelProgress = new Progress<LocalModelDownloadProgress>(progress =>
+            ModelDownloadProgressChanged?.Invoke(this, progress));
+        await _models.DownloadAsync(
+            LocalTranslatorFactory.GetModelId(sourceLanguage),
+            modelProgress,
+            cancellationToken);
+    }
+
+    private ITranslationProvider CreateTranslationProvider(
+        string providerId,
+        string modelId,
+        string sourceLanguage,
+        bool fallbackToLocal)
+    {
+        var normalizedProvider = TranslationProviders.Normalize(providerId);
+        var localModelId = LocalTranslatorFactory.GetModelId(sourceLanguage);
+        var local = new LocalTranslationProviderAdapter(
+            LocalTranslatorFactory.Create(sourceLanguage, _paths, _models),
+            localModelId,
+            sourceLanguage == "zh"
+                ? OpusMtChineseVietnameseTranslator.ModelVersion
+                : ArgosLocalTranslator.ModelId);
+        if (normalizedProvider == TranslationProviders.Local)
+        {
+            return local;
+        }
+
+        var apiKey = _translationCredentials.GetKey(normalizedProvider)
+            ?? throw new LocalModelException(
+                "TRANSLATION_API_KEY_REQUIRED",
+                $"Hãy lưu API key {normalizedProvider} trong phần Dịch sang tiếng Việt trước khi chạy.");
+        ITranslationProvider cloud = normalizedProvider switch
+        {
+            TranslationProviders.OpenAi => new OpenAiTranslationProvider(
+                _translationHttpClient,
+                apiKey,
+                modelId),
+            TranslationProviders.Gemini => new GeminiTranslationProvider(
+                _translationHttpClient,
+                apiKey,
+                modelId),
+            _ => throw new InvalidOperationException("Nhà cung cấp dịch chưa được hỗ trợ."),
+        };
+        return fallbackToLocal ? new FallbackTranslationProvider(cloud, local) : cloud;
+    }
+
+    private ITranslationProvider CreateTranslationProviderForJob(
+        ProjectManifest manifest,
+        LocalJob job)
+    {
+        var sourceLanguage = job.Parameters.GetValueOrDefault("sourceLanguage")
+            ?? LocalLanguageCodes.ResolveProjectSource(manifest)
+            ?? throw new LocalModelException(
+                "TRANSLATION_SOURCE_REQUIRED",
+                "Không xác định được ngôn ngữ nguồn của job dịch.");
+        var providerId = TranslationProviders.Normalize(
+            job.Parameters.GetValueOrDefault("provider")
+            ?? (job.JobType == "TRANSLATE_LOCAL"
+                ? TranslationProviders.Local
+                : manifest.Settings.TranslationProvider));
+        var modelId = TranslationModelDefaults.Resolve(
+            providerId,
+            job.Parameters.GetValueOrDefault("modelId") ?? manifest.Settings.TranslationModelId,
+            manifest.Settings.TranslationQualityMode,
+            sourceLanguage);
+        var fallback = bool.TryParse(job.Parameters.GetValueOrDefault("fallbackToLocal"), out var enabled)
+            && enabled;
+        return CreateTranslationProvider(providerId, modelId, sourceLanguage, fallback);
+    }
+
     private static decimal EstimateMinutes(ProjectManifest manifest)
     {
         var durationMinutes = (decimal)(manifest.SourceVideo?.Metadata.DurationSeconds ?? 0) / 60m;
@@ -773,17 +946,26 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     cancellationToken);
                 break;
             case "TRANSLATE_LOCAL":
-                await EnsureLanguageRuntimeAsync(cancellationToken);
+            case "TRANSLATE_CLOUD":
+            {
                 var sourceLanguage = job.Parameters.GetValueOrDefault("sourceLanguage")
                     ?? LocalLanguageCodes.ResolveProjectSource(RequireProject())
                     ?? throw new LocalModelException(
                         "TRANSLATION_SOURCE_REQUIRED",
                         "Không xác định được ngôn ngữ nguồn của job dịch.");
-                await _models.DownloadAsync(
-                    LocalTranslatorFactory.GetModelId(sourceLanguage),
-                    modelProgress,
+                var providerId = job.Parameters.GetValueOrDefault("provider")
+                    ?? (job.JobType == "TRANSLATE_LOCAL"
+                        ? TranslationProviders.Local
+                        : RequireProject().Settings.TranslationProvider);
+                var fallback = bool.TryParse(job.Parameters.GetValueOrDefault("fallbackToLocal"), out var enabled)
+                    && enabled;
+                await EnsureTranslationDependenciesAsync(
+                    TranslationProviders.Normalize(providerId),
+                    sourceLanguage,
+                    fallback,
                     cancellationToken);
                 break;
+            }
             case "SYNTHESIZE_VOICE_LOCAL":
                 await EnsureLanguageRuntimeAsync(cancellationToken);
                 await _models.DownloadAsync(
@@ -799,6 +981,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         "TRANSCRIBE_LOCAL" => "subtitle.transcribe",
         "OCR_LOCAL" => "ocr.detect",
         "TRANSLATE_LOCAL" => "subtitle.translate",
+        "TRANSLATE_CLOUD" => "subtitle.translate",
         "SYNTHESIZE_VOICE_LOCAL" => "voice.generate",
         "EXPORT_VIDEO_LOCAL" => "video.export",
         _ => throw new InvalidOperationException("Loáº¡i job khÃ´ng sá»­ dá»¥ng háº¡n má»©c Server."),
@@ -830,18 +1013,11 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 _projects,
                 manifest,
                 languageCode: job.Parameters.GetValueOrDefault("ocrLanguage")),
-            "TRANSLATE_LOCAL" => new TranslationJobExecutor(
+            "TRANSLATE_LOCAL" or "TRANSLATE_CLOUD" => new TranslationJobExecutor(
                 _paths,
                 _projects,
                 manifest,
-                LocalTranslatorFactory.Create(
-                    job.Parameters.GetValueOrDefault("sourceLanguage")
-                        ?? LocalLanguageCodes.ResolveProjectSource(manifest)
-                        ?? throw new LocalModelException(
-                            "TRANSLATION_SOURCE_REQUIRED",
-                            "Không xác định được ngôn ngữ nguồn của job dịch."),
-                    _paths,
-                    _models)),
+                CreateTranslationProviderForJob(manifest, job)),
             "SYNTHESIZE_VOICE_LOCAL" => job.Steps.Any(item => item.Code == "SYNC_VOICE")
                 ? new VoiceGenerationJobExecutor(
                     new VoiceSynthesisJobExecutor(
@@ -864,7 +1040,68 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         };
     }
 
-    private static DesktopProjectState Map(ProjectManifest manifest)
+    private static string NormalizeTranslationText(string? value, int maximumLength, string label)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (normalized.Length > maximumLength
+            || normalized.Any(character => char.IsControl(character)
+                && character is not ('\r' or '\n' or '\t')))
+        {
+            throw new InvalidOperationException($"{label} vượt quá giới hạn hoặc chứa ký tự không hợp lệ.");
+        }
+
+        return normalized;
+    }
+
+    private static List<TranslationGlossaryEntry> ParseGlossary(
+        string? glossaryText,
+        IReadOnlyList<TranslationGlossaryEntry> existing)
+    {
+        var text = NormalizeTranslationText(glossaryText, 20_000, "Glossary");
+        var result = new List<TranslationGlossaryEntry>();
+        var sources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rawLine in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var noteSeparator = rawLine.IndexOf('|');
+            var mapping = noteSeparator >= 0 ? rawLine[..noteSeparator] : rawLine;
+            var note = noteSeparator >= 0 ? rawLine[(noteSeparator + 1)..].Trim() : null;
+            var separator = mapping.IndexOf('=');
+            if (separator <= 0 || separator >= mapping.Length - 1)
+            {
+                throw new InvalidOperationException(
+                    $"Glossary không hợp lệ: '{rawLine}'. Mỗi dòng phải có dạng từ gốc = tiếng Việt | ghi chú.");
+            }
+
+            var source = mapping[..separator].Trim();
+            var target = mapping[(separator + 1)..].Trim();
+            if (source.Length is < 1 or > 200
+                || target.Length is < 1 or > 200
+                || note?.Length > 300
+                || !sources.Add(source))
+            {
+                throw new InvalidOperationException("Glossary có mục trùng hoặc vượt quá giới hạn cho phép.");
+            }
+
+            var previous = existing.FirstOrDefault(entry =>
+                string.Equals(entry.SourceText, source, StringComparison.OrdinalIgnoreCase));
+            result.Add(new TranslationGlossaryEntry
+            {
+                EntryId = previous?.EntryId ?? Guid.NewGuid(),
+                SourceText = source,
+                TargetText = target,
+                Note = string.IsNullOrWhiteSpace(note) ? null : note,
+            });
+        }
+
+        if (result.Count > 200)
+        {
+            throw new InvalidOperationException("Glossary hỗ trợ tối đa 200 mục trong một dự án.");
+        }
+
+        return result;
+    }
+
+    private DesktopProjectState Map(ProjectManifest manifest)
     {
         DesktopVideoInfo? video = null;
         if (manifest.SourceVideo is not null)
@@ -902,9 +1139,14 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 var hasVoice = voicedCueIds.Contains(cue.CueId);
                 var invalidTranslation = !string.IsNullOrWhiteSpace(cue.TranslatedText)
                     && TranslationQualityValidator.LooksPathological(cue.OriginalText, cue.TranslatedText);
+                var requiresReview = string.Equals(
+                        cue.TranslationQualityStatus,
+                        "REVIEW",
+                        StringComparison.OrdinalIgnoreCase)
+                    || cue.TranslationWarnings is { Count: > 0 };
                 var status = invalidTranslation
                     ? "invalid-translation"
-                    : string.IsNullOrWhiteSpace(cue.TranslatedText) || overlap
+                    : string.IsNullOrWhiteSpace(cue.TranslatedText) || overlap || requiresReview
                     ? "review"
                     : hasVoice ? "translated" : "missing-audio";
                 subtitleCues.Add(new DesktopSubtitleCue(
@@ -916,17 +1158,28 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     cue.TranslatedText,
                     status,
                     overlap,
-                    hasVoice));
+                    hasVoice,
+                    cue.TranslationConfidence,
+                    cue.TranslationWarnings ?? []));
             }
         }
 
         var sourceLanguage = LocalLanguageCodes.NormalizeSource(manifest.SourceLanguageCode);
-        var translationModelId = sourceLanguage switch
-        {
-            "zh" => OpusMtChineseVietnameseTranslator.ModelId,
-            "en" => ArgosLocalTranslator.ModelId,
-            _ => "auto",
-        };
+        var providerId = TranslationProviders.Normalize(manifest.Settings.TranslationProvider);
+        var translationModelId = sourceLanguage is null && providerId == TranslationProviders.Local
+            ? "auto"
+            : TranslationModelDefaults.Resolve(
+                providerId,
+                manifest.Settings.TranslationModelId,
+                manifest.Settings.TranslationQualityMode,
+                sourceLanguage ?? "en");
+        var translationContext = manifest.TranslationContext ?? new ProjectTranslationContext();
+        var glossaryText = string.Join(
+            Environment.NewLine,
+            manifest.TranslationGlossary.Select(entry =>
+                string.IsNullOrWhiteSpace(entry.Note)
+                    ? $"{entry.SourceText} = {entry.TargetText}"
+                    : $"{entry.SourceText} = {entry.TargetText} | {entry.Note}"));
         var subtitleStyle = SubtitleStyleRules.Normalize(manifest.Settings.SubtitleStyle);
         return new DesktopProjectState(
             manifest.ProjectId,
@@ -941,6 +1194,18 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 manifest.Settings.SpeechModel,
                 LocalLanguageCodes.NormalizeSetting(manifest.Settings.OcrLanguageCode),
                 translationModelId,
+                new DesktopTranslationSettings(
+                    providerId,
+                    translationModelId,
+                    TranslationQualityModes.Normalize(manifest.Settings.TranslationQualityMode),
+                    manifest.Settings.TranslationReviewEnabled,
+                    manifest.Settings.TranslationFallbackToLocal,
+                    _translationCredentials.HasKey(providerId),
+                    translationContext.Summary,
+                    translationContext.CharacterInstructions,
+                    translationContext.StyleInstructions,
+                    glossaryText,
+                    manifest.TranslationMemory.Count),
                 manifest.Settings.OriginalAudioEnabled,
                 manifest.Settings.OriginalAudioVolumePercent,
                 manifest.Settings.VietnameseVoiceEnabled,
@@ -986,5 +1251,6 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         await CloseCurrentAsync();
         _models.Dispose();
         _runtimeProvisioner.Dispose();
+        _translationHttpClient.Dispose();
     }
 }

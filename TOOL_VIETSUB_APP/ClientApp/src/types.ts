@@ -64,6 +64,7 @@ export type ProjectSettingsInfo = {
   speechModel: string
   ocrLanguageCode: 'auto' | 'en' | 'zh' | string
   translationModelId: string
+  translation: TranslationSettingsInfo
   originalAudioEnabled: boolean
   originalAudioVolumePercent: number
   vietnameseVoiceEnabled: boolean
@@ -75,6 +76,20 @@ export type ProjectSettingsInfo = {
   originalSubtitleRegionWidth: number
   originalSubtitleRegionHeight: number
   subtitleStyle: SubtitleStyleSettings
+}
+
+export type TranslationSettingsInfo = {
+  provider: 'local' | 'openai' | 'gemini'
+  modelId: string
+  qualityMode: 'fast' | 'balanced' | 'high'
+  reviewEnabled: boolean
+  fallbackToLocal: boolean
+  apiKeyConfigured: boolean
+  projectContext: string
+  characterInstructions: string
+  styleInstructions: string
+  glossaryText: string
+  translationMemoryCount: number
 }
 
 export type SubtitleRemovalSettings = {
@@ -125,6 +140,8 @@ export type SubtitleSegment = {
   translated: string
   status: 'translated' | 'review' | 'missing-audio' | 'invalid-translation'
   hasVoice?: boolean
+  translationConfidence?: number | null
+  translationWarnings?: string[]
 }
 
 export type ToastMessage = {

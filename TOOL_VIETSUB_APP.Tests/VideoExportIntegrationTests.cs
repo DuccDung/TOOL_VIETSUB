@@ -102,6 +102,28 @@ public sealed class VideoExportIntegrationTests : IDisposable
     }
 
     [Fact]
+    public void BuildVietnameseSubtitleAss_UsesFullWidthAutomaticWordWrapping()
+    {
+        var cue = new SubtitleCue
+        {
+            StartMilliseconds = 100,
+            EndMilliseconds = 2_000,
+            OriginalText = "原文",
+            TranslatedText = "Đây là đôi mắt giả\nmắt giả của Dominic   đấy.",
+        };
+
+        var serialized = VideoExportJobExecutor.BuildVietnameseSubtitleAss(
+            [cue],
+            new SubtitleStyleSettings { MaxWidthPercent = 90, MaxLines = 2 },
+            1080,
+            1920);
+
+        Assert.Contains("WrapStyle: 1", serialized);
+        Assert.Contains("Đây là đôi mắt giả mắt giả của Dominic đấy.", serialized);
+        Assert.DoesNotContain("\\N", serialized);
+    }
+
+    [Fact]
     public void SubtitleStyleRules_RejectInvalidValuesAndNormalizeLegacySettings()
     {
         var invalid = new SubtitleStyleSettings

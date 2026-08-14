@@ -2,6 +2,7 @@ using System.Text;
 using TOOL_VIETSUB_APP.Core;
 using TOOL_VIETSUB_APP.Jobs;
 using TOOL_VIETSUB_APP.LocalAi;
+using TOOL_VIETSUB_APP.Translation;
 
 namespace TOOL_VIETSUB_APP.Tests;
 
@@ -39,7 +40,7 @@ public sealed class LanguagePipelineJobTests : IDisposable
 
         Assert.Equal("Đã duyệt", cues[0].TranslatedText);
         Assert.All(cues.Skip(1), cue => Assert.StartsWith("VI:", cue.TranslatedText));
-        Assert.Equal([16, 1], translator.BatchSizes);
+        Assert.Equal([12, 5], translator.BatchSizes);
         Assert.True(File.Exists(paths.GetProjectPath(project.ProjectId, job.Steps[0].OutputRelativePath!)));
     }
 
@@ -102,6 +103,62 @@ public sealed class LanguagePipelineJobTests : IDisposable
 
         Assert.Equal("TRANSLATION_OUTPUT_INVALID", exception.Code);
         Assert.Equal(originalTranslation, cue.TranslatedText);
+    }
+
+    [Fact]
+    public async Task Translation_UsesSceneContextAndCloudReviewWithoutChangingLockedCue()
+    {
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Contextual translation");
+        project.SourceLanguageCode = "en";
+        project.Settings.TranslationProvider = TranslationProviders.OpenAi;
+        project.Settings.TranslationModelId = "gpt-test";
+        project.Settings.TranslationSceneMaxCues = 2;
+        project.Settings.TranslationContextCueCount = 1;
+        project.Settings.TranslationReviewEnabled = true;
+        project.TranslationContext.Summary = "Two colleagues are discussing a release.";
+        project.TranslationGlossary.Add(new TranslationGlossaryEntry
+        {
+            SourceText = "release",
+            TargetText = "bản phát hành",
+        });
+        var cues = Enumerable.Range(1, 5).Select(index => new SubtitleCue
+        {
+            StartMilliseconds = index * 2500,
+            EndMilliseconds = index * 2500 + 2000,
+            OriginalText = index == 3 ? "The release is ready" : $"Sentence {index}",
+        }).ToList();
+        cues[0].TranslatedText = "Đã duyệt";
+        cues[0].TranslationLocked = true;
+        project.SubtitleTracks.Add(new SubtitleDocument { LanguageCode = "en", Cues = cues });
+        var provider = new ReviewingProvider();
+        var executor = new TranslationJobExecutor(paths, workspace, project, provider);
+        var job = new LocalJob { Steps = [new LocalJobStep { Code = "TRANSLATE" }] };
+
+        await executor.ExecuteAsync(job, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal("Đã duyệt", cues[0].TranslatedText);
+        Assert.All(cues.Skip(1), cue =>
+        {
+            Assert.StartsWith("R: VI:", cue.TranslatedText);
+            Assert.Equal("openai:gpt-test", cue.TranslationModelId);
+            Assert.NotNull(cue.TranslationReviewedAtUtc);
+        });
+        Assert.Equal(4, provider.Requests.Count);
+        Assert.Equal(2, provider.Requests.Count(request => request.Pass == TranslationPass.Translate));
+        Assert.Contains(provider.Requests, request => request.Cues.Any(cue => !cue.IsTarget));
+        Assert.All(provider.Requests.Where(request => request.Pass == TranslationPass.Review), request =>
+            Assert.All(request.Cues.Where(cue => cue.IsTarget), cue =>
+                Assert.False(string.IsNullOrWhiteSpace(cue.CandidateTranslation))));
+        Assert.All(cues.Skip(1), cue =>
+        {
+            Assert.False(TranslationQualityValidator.LooksPathological(cue.OriginalText, cue.TranslatedText));
+            Assert.False(string.IsNullOrWhiteSpace(cue.TranslationSourceFingerprint));
+        });
+        var secondJob = new LocalJob { Steps = [new LocalJobStep { Code = "TRANSLATE" }] };
+        await executor.ExecuteAsync(secondJob, _ => ValueTask.CompletedTask, CancellationToken.None);
+        Assert.Equal(4, provider.Requests.Count);
     }
 
     [Fact]
@@ -232,6 +289,37 @@ public sealed class LanguagePipelineJobTests : IDisposable
             CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<string>>(
                 texts.Select(_ => "pha pha pha pha pha pha pha pha pha pha pha pha").ToArray());
+    }
+
+    private sealed class ReviewingProvider : ITranslationProvider
+    {
+        public List<TranslationSceneRequest> Requests { get; } = [];
+
+        public string ProviderId => TranslationProviders.OpenAi;
+
+        public string ModelId => "gpt-test";
+
+        public bool SupportsContextualReview => true;
+
+        public Task<TranslationSceneResult> TranslateAsync(
+            TranslationSceneRequest request,
+            CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            var results = request.Cues.Where(cue => cue.IsTarget).Select(cue =>
+                new TranslationItemResult(
+                    cue.CueId,
+                    request.Pass == TranslationPass.Review
+                        ? $"R: {cue.CandidateTranslation}"
+                        : $"VI: {cue.OriginalText}",
+                    0.95,
+                    [])).ToArray();
+            return Task.FromResult(new TranslationSceneResult(
+                ProviderId,
+                ModelId,
+                ModelId,
+                results));
+        }
     }
 
     private static void WriteWave(string path, int sampleRate, int seconds)

@@ -81,43 +81,6 @@ export function applySubtitlePreset(id: SubtitleStylePreset['id']): SubtitleStyl
   return { ...(selected?.style ?? defaultSubtitleStyle) }
 }
 
-export function estimateSubtitleLineCapacity(style: SubtitleStyleSettings): number {
-  return Math.min(60, Math.max(12, Math.round(
-    32 * (style.maxWidthPercent / 90) * (4.2 / style.fontSizePercent),
-  )))
-}
-
-export function wrapSubtitleText(text: string, maxLines: number, lineCapacity = 32): string {
-  const words = text.trim().split(/\s+/).filter(Boolean)
-  if (words.length < 2 || maxLines <= 1) return words.join(' ')
-
-  const totalLength = words.join(' ').length
-  const estimatedLines = Math.max(1, Math.ceil(totalLength / Math.max(8, lineCapacity)))
-  const lineCount = Math.min(Math.max(1, Math.round(maxLines)), estimatedLines, words.length)
-  const remainingLength = () => words.slice(wordIndex).reduce((sum, word) => sum + word.length, 0)
-  const lines: string[] = []
-  let wordIndex = 0
-
-  for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
-    const linesLeft = lineCount - lineIndex
-    if (linesLeft === 1) {
-      lines.push(words.slice(wordIndex).join(' '))
-      break
-    }
-
-    const target = (remainingLength() + (words.length - wordIndex - 1)) / linesLeft
-    const current: string[] = []
-    let length = 0
-    while (wordIndex < words.length - (linesLeft - 1)) {
-      const word = words[wordIndex]
-      const nextLength = length + (current.length ? 1 : 0) + word.length
-      if (current.length && nextLength > target) break
-      current.push(word)
-      length = nextLength
-      wordIndex += 1
-    }
-    lines.push(current.join(' '))
-  }
-
-  return lines.filter(Boolean).join('\n')
+export function normalizeSubtitleText(text: string): string {
+  return text.trim().replace(/\s+/gu, ' ')
 }

@@ -1,4 +1,5 @@
 using TOOL_VIETSUB_APP.LocalAi;
+using TOOL_VIETSUB_APP.Core;
 
 namespace TOOL_VIETSUB_APP.Tests;
 
@@ -34,5 +35,30 @@ public sealed class TranslationQualityValidatorTests
 
         Assert.False(result.IsValid);
         Assert.Equal("MISSING_EOS", result.Code);
+    }
+
+    [Fact]
+    public void AssessCue_FlagsNumbersGlossaryAndReadingSpeedWithoutDestroyingUsableText()
+    {
+        var assessment = TranslationQualityValidator.AssessCue(
+            "Xiaomi sold 2024 devices",
+            "Công ty đã bán rất nhiều thiết bị trong năm nay với một câu cố ý quá dài",
+            durationMilliseconds: 1000,
+            glossary:
+            [
+                new TranslationGlossaryEntry
+                {
+                    SourceText = "Xiaomi",
+                    TargetText = "Xiaomi",
+                },
+            ],
+            maximumCharactersPerSecond: 18,
+            providerConfidence: 0.6);
+
+        Assert.True(assessment.IsValid);
+        Assert.Contains("NUMBER_MISMATCH", assessment.Warnings);
+        Assert.Contains("GLOSSARY_MISSING:Xiaomi", assessment.Warnings);
+        Assert.Contains("READING_SPEED_HIGH", assessment.Warnings);
+        Assert.Contains("LOW_CONFIDENCE", assessment.Warnings);
     }
 }

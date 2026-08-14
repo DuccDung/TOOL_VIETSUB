@@ -50,6 +50,7 @@ public sealed class SrtServiceTests : IDisposable
         var track = await service.ImportAsync(project, sourcePath, "en", CancellationToken.None);
         var cue = Assert.Single(track.Cues);
         project.AudioTracks.Add(new LocalMediaReference { Role = "VOICE_CUE", CueId = cue.CueId });
+        project.AudioTracks.Add(new LocalMediaReference { Role = "VOICE_TIMELINE" });
         await service.UpdateCueAsync(
             project,
             cue.CueId,
@@ -67,6 +68,7 @@ public sealed class SrtServiceTests : IDisposable
         Assert.True(cue.OriginalLocked);
         Assert.True(cue.TranslationLocked);
         Assert.DoesNotContain(project.AudioTracks, item => item.CueId == cue.CueId);
+        Assert.DoesNotContain(project.AudioTracks, item => item.Role == "VOICE_TIMELINE");
     }
 
     [Fact]

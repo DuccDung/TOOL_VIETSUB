@@ -25,7 +25,7 @@ import {
   ZoomOut,
 } from 'lucide-react'
 import { formatBytes } from '../lib/format'
-import { estimateSubtitleLineCapacity, wrapSubtitleText } from '../lib/subtitleStyle'
+import { normalizeSubtitleText } from '../lib/subtitleStyle'
 import type { SubtitleRemovalSettings, SubtitleStyleSettings, VideoInfo } from '../types'
 import { IconButton } from './Ui'
 
@@ -629,11 +629,7 @@ export function PreviewPanel({
                     onPointerCancel={finishSubtitleInteraction}
                   >
                     <span className="preview-vietnamese-subtitle__text" style={subtitleTextStyle}>
-                      {wrapSubtitleText(
-                        subtitleText,
-                        draftSubtitleStyle.maxLines,
-                        estimateSubtitleLineCapacity(draftSubtitleStyle),
-                      )}
+                      {normalizeSubtitleText(subtitleText)}
                     </span>
                   </div>
                 ) : null}

@@ -35,6 +35,7 @@ public sealed record DesktopProjectSettings(
     string SpeechModel,
     string OcrLanguageCode,
     string TranslationModelId,
+    DesktopTranslationSettings Translation,
     bool OriginalAudioEnabled,
     double OriginalAudioVolumePercent,
     bool VietnameseVoiceEnabled,
@@ -46,6 +47,19 @@ public sealed record DesktopProjectSettings(
     double OriginalSubtitleRegionWidth,
     double OriginalSubtitleRegionHeight,
     DesktopSubtitleStyleSettings SubtitleStyle);
+
+public sealed record DesktopTranslationSettings(
+    string Provider,
+    string ModelId,
+    string QualityMode,
+    bool ReviewEnabled,
+    bool FallbackToLocal,
+    bool ApiKeyConfigured,
+    string ProjectContext,
+    string CharacterInstructions,
+    string StyleInstructions,
+    string GlossaryText,
+    int TranslationMemoryCount);
 
 public sealed record DesktopSubtitleStyleSettings(
     string PresetId,
@@ -75,7 +89,9 @@ public sealed record DesktopSubtitleCue(
     string Translated,
     string Status,
     bool OverlapsPrevious,
-    bool HasVoice);
+    bool HasVoice,
+    double? TranslationConfidence,
+    IReadOnlyList<string> TranslationWarnings);
 
 public sealed record WorkspaceOperationResult<T>(
     bool Succeeded,

@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using TOOL_VIETSUB_APP.Core;
 
 namespace TOOL_VIETSUB_APP.LocalAi;
 
@@ -9,8 +10,88 @@ public sealed record TranslationQualityResult(bool IsValid, string? Code = null)
     public static TranslationQualityResult Invalid(string code) => new(false, code);
 }
 
+public sealed record TranslationCueQualityAssessment(
+    bool IsValid,
+    string? FailureCode,
+    IReadOnlyList<string> Warnings,
+    double CharactersPerSecond);
+
 public static partial class TranslationQualityValidator
 {
+    public static TranslationCueQualityAssessment AssessCue(
+        string source,
+        string translation,
+        long durationMilliseconds,
+        IReadOnlyList<TranslationGlossaryEntry>? glossary = null,
+        double maximumCharactersPerSecond = 18,
+        double? providerConfidence = null,
+        IReadOnlyList<string>? providerWarnings = null)
+    {
+        var safeSource = source ?? string.Empty;
+        var safeTranslation = translation ?? string.Empty;
+        var fatal = ValidateText(safeSource, safeTranslation);
+        var durationSeconds = Math.Max(0.25, durationMilliseconds / 1000d);
+        var charactersPerSecond = safeTranslation.Count(character => !char.IsWhiteSpace(character)) / durationSeconds;
+        if (!fatal.IsValid)
+        {
+            return new TranslationCueQualityAssessment(
+                false,
+                fatal.Code,
+                [],
+                charactersPerSecond);
+        }
+
+        var warnings = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (providerWarnings is not null)
+        {
+            foreach (var warning in providerWarnings.Where(value => !string.IsNullOrWhiteSpace(value)))
+            {
+                warnings.Add(warning.Trim());
+            }
+        }
+
+        if (providerConfidence is < 0.7)
+        {
+            warnings.Add("LOW_CONFIDENCE");
+        }
+
+        var sourceNumbers = NumberRegex().Matches(safeSource).Select(match => match.Value).ToArray();
+        var translatedNumbers = NumberRegex().Matches(safeTranslation).Select(match => match.Value).ToArray();
+        if (!sourceNumbers.SequenceEqual(translatedNumbers, StringComparer.Ordinal))
+        {
+            warnings.Add("NUMBER_MISMATCH");
+        }
+
+        foreach (var entry in glossary ?? [])
+        {
+            var glossarySource = entry.SourceText;
+            var glossaryTarget = entry.TargetText;
+            if (string.IsNullOrWhiteSpace(glossarySource)
+                || string.IsNullOrWhiteSpace(glossaryTarget)
+                || !safeSource.Contains(glossarySource, StringComparison.OrdinalIgnoreCase)
+                || safeTranslation.Contains(glossaryTarget, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            warnings.Add($"GLOSSARY_MISSING:{LimitCode(glossarySource)}");
+        }
+
+        var normalizedMaximum = double.IsFinite(maximumCharactersPerSecond)
+            ? Math.Clamp(maximumCharactersPerSecond, 8, 30)
+            : 18;
+        if (charactersPerSecond > normalizedMaximum)
+        {
+            warnings.Add("READING_SPEED_HIGH");
+        }
+
+        return new TranslationCueQualityAssessment(
+            true,
+            null,
+            warnings.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+            charactersPerSecond);
+    }
+
     public static TranslationQualityResult Validate(
         string source,
         string translation,
@@ -99,4 +180,13 @@ public static partial class TranslationQualityValidator
 
     [GeneratedRegex(@"[\p{L}\p{M}\p{N}]+", RegexOptions.CultureInvariant)]
     private static partial Regex WordRegex();
+
+    [GeneratedRegex(@"\d+", RegexOptions.CultureInvariant)]
+    private static partial Regex NumberRegex();
+
+    private static string LimitCode(string value)
+    {
+        var normalized = WhitespaceRegex().Replace(value.Trim(), "_");
+        return normalized.Length <= 40 ? normalized : normalized[..40];
+    }
 }

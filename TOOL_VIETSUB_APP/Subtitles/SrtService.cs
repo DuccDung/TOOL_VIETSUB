@@ -100,14 +100,61 @@ public sealed partial class SrtService
         cue.TranslationModelVersion = null;
         cue.TranslationSourceFingerprint = null;
         cue.TranslationQualityStatus = string.IsNullOrWhiteSpace(translated) ? null : "VALID";
+        cue.TranslationConfidence = null;
+        cue.TranslationWarnings = [];
+        cue.TranslationReviewedAtUtc = string.IsNullOrWhiteSpace(translated) ? null : DateTime.UtcNow;
         cue.OriginalLocked = true;
         cue.TranslationLocked = !string.IsNullOrWhiteSpace(translated);
+        if (!string.IsNullOrWhiteSpace(translated))
+        {
+            RememberManualTranslation(project, original, translated);
+        }
         if (voiceChanged)
         {
             InvalidateVoice(project, cue.CueId);
         }
 
         await _workspace.SaveAsync(project, cancellationToken);
+    }
+
+    private static void RememberManualTranslation(
+        ProjectManifest project,
+        string sourceText,
+        string translatedText)
+    {
+        var sourceLanguage = TOOL_VIETSUB_APP.LocalAi.LocalLanguageCodes.ResolveProjectSource(project) ?? "und";
+        var targetLanguage = string.IsNullOrWhiteSpace(project.TargetLanguageCode)
+            ? "vi"
+            : project.TargetLanguageCode.Trim().ToLowerInvariant();
+        var existing = project.TranslationMemory.FirstOrDefault(entry =>
+            string.Equals(entry.SourceLanguageCode, sourceLanguage, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(entry.TargetLanguageCode, targetLanguage, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(entry.SourceText, sourceText, StringComparison.OrdinalIgnoreCase));
+        if (existing is null)
+        {
+            project.TranslationMemory.Add(new TranslationMemoryEntry
+            {
+                SourceLanguageCode = sourceLanguage,
+                TargetLanguageCode = targetLanguage,
+                SourceText = sourceText,
+                TranslatedText = translatedText,
+                UpdatedAtUtc = DateTime.UtcNow,
+            });
+        }
+        else
+        {
+            existing.TranslatedText = translatedText;
+            existing.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        if (project.TranslationMemory.Count > 500)
+        {
+            var remove = project.TranslationMemory
+                .OrderBy(entry => entry.UpdatedAtUtc)
+                .Take(project.TranslationMemory.Count - 500)
+                .ToHashSet();
+            project.TranslationMemory.RemoveAll(remove.Contains);
+        }
     }
 
     public async Task SplitCueAsync(
@@ -320,7 +367,9 @@ public sealed partial class SrtService
     }
 
     private static void InvalidateVoice(ProjectManifest project, Guid cueId) =>
-        project.AudioTracks.RemoveAll(item => item.Role == "VOICE_CUE" && item.CueId == cueId);
+        project.AudioTracks.RemoveAll(item =>
+            item.Role == "VOICE_TIMELINE"
+            || (item.Role == "VOICE_CUE" && item.CueId == cueId));
 
     public static string Serialize(
         IReadOnlyList<SubtitleCue> cues,

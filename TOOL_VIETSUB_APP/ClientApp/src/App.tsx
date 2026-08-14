@@ -29,10 +29,24 @@ import type {
   SubtitleSegment,
   SubtitleStyleSettings,
   ToastMessage,
+  TranslationSettingsInfo,
   VideoInfo,
 } from './types'
 
 const timelineDuration = 21
+const defaultTranslationSettings: TranslationSettingsInfo = {
+  provider: 'local',
+  modelId: 'auto',
+  qualityMode: 'balanced',
+  reviewEnabled: true,
+  fallbackToLocal: false,
+  apiKeyConfigured: false,
+  projectContext: '',
+  characterInstructions: '',
+  styleInstructions: 'Tiếng Việt tự nhiên, rõ nghĩa, phù hợp lời thoại và không tự ý thêm thông tin.',
+  glossaryText: '',
+  translationMemoryCount: 0,
+}
 const demoMode = new URLSearchParams(window.location.search).get('demo') === '1'
 const authPreviewMode = new URLSearchParams(window.location.search).get('auth')
 const workspacePreviewMode = new URLSearchParams(window.location.search).get('workspace')
@@ -148,6 +162,10 @@ const demoProject: ProjectInfo = {
     speechModel: 'whisper-balanced',
     ocrLanguageCode: 'zh',
     translationModelId: 'opus-mt-zh-vi-official-v2',
+    translation: {
+      ...defaultTranslationSettings,
+      modelId: 'opus-mt-zh-vi-official-v2',
+    },
     originalAudioEnabled: true,
     originalAudioVolumePercent: 85,
     vietnameseVoiceEnabled: true,
@@ -558,7 +576,11 @@ function App() {
         setProjectError(null)
         setProjectDialogOpen(false)
         setSegments(project.subtitles ?? [])
-        setSelectedSegmentId(project.subtitles?.[0]?.id ?? null)
+        setSelectedSegmentId((current) => (
+          project.subtitles?.some((segment) => segment.id === current)
+            ? current
+            : project.subtitles?.[0]?.id ?? null
+        ))
         if (project.video) {
           setVideo(project.video)
         } else {
@@ -657,6 +679,14 @@ function App() {
           operation === 'export'
             ? 'Tệp SRT tiếng Việt đã được ghi an toàn.'
             : 'Thay đổi đã được lưu vào workspace dự án.',
+          'success',
+        )
+      }
+
+      if (message.type === 'translation:settings:saved') {
+        notify(
+          'Đã lưu cấu hình dịch',
+          'Bối cảnh, glossary và API key đã được cập nhật an toàn.',
           'success',
         )
       }
@@ -917,6 +947,41 @@ function App() {
     audioSettingsSaveTimer.current = window.setTimeout(save, 160)
   }
 
+  const updateSubtitleSegment = (cueId: string, original: string, translated: string) => {
+    if (hasNativeHost()) {
+      setSubtitleBusy(true)
+      postToHost('subtitle:update', { cueId, original, translated })
+      return
+    }
+
+    const updateLocalSegment = (segment: SubtitleSegment): SubtitleSegment => {
+      if (segment.cueId !== cueId) return segment
+      const voiceStillMatches = segment.translated.trim() === translated.trim()
+        && Boolean(segment.hasVoice)
+      return {
+        ...segment,
+        original,
+        translated,
+        hasVoice: voiceStillMatches,
+        status: !translated.trim()
+          ? 'review'
+          : voiceStillMatches ? 'translated' : 'missing-audio',
+      }
+    }
+
+    setSegments((current) => current.map(updateLocalSegment))
+    setCurrentProject((current) => current ? ({
+      ...current,
+      voicePlaybackUrl: null,
+      subtitles: current.subtitles.map(updateLocalSegment),
+    }) : current)
+    notify(
+      'Đã cập nhật bản dịch',
+      'Chế độ xem trước đã cập nhật. Audio cần được tạo lại nếu nội dung đã thay đổi.',
+      'success',
+    )
+  }
+
   if (authState.status !== 'authenticated' || !authState.account || !authState.entitlements) {
     return (
       <AuthScreen
@@ -1029,7 +1094,8 @@ function App() {
           <SettingsPanel
             sourceLanguageCode={currentProject?.sourceLanguageCode ?? 'auto'}
             ocrLanguageCode={currentProject?.settings?.ocrLanguageCode ?? 'auto'}
-            translationModelId={currentProject?.settings?.translationModelId ?? 'auto'}
+            translationSettings={currentProject?.settings?.translation ?? defaultTranslationSettings}
+            subtitleCount={segments.length}
             subtitleRemoval={subtitleRemoval}
             subtitleStyle={subtitleStyle}
             canPrepareAudio={Boolean(video?.hasAudio ?? video)}
@@ -1048,6 +1114,27 @@ function App() {
             jobBusy={jobBusy}
             onLanguageSettingsChange={(sourceLanguageCode, ocrLanguageCode) => {
               postToHost('project:settings:update', { sourceLanguageCode, ocrLanguageCode })
+            }}
+            onTranslationSettingsChange={(settings, apiKey, clearApiKey) => {
+              if (hasNativeHost()) {
+                postToHost('project:translation-settings:update', {
+                  ...settings,
+                  apiKey,
+                  clearApiKey: Boolean(clearApiKey),
+                })
+                return
+              }
+              setCurrentProject((current) => current ? ({
+                ...current,
+                settings: {
+                  ...current.settings,
+                  translationModelId: settings.modelId,
+                  translation: {
+                    ...settings,
+                    apiKeyConfigured: clearApiKey ? false : settings.apiKeyConfigured || Boolean(apiKey),
+                  },
+                },
+              }) : current)
             }}
             onSubtitleRemovalChange={updateSubtitleRemoval}
             onSubtitleStyleChange={updateSubtitleStyle}
@@ -1148,10 +1235,7 @@ function App() {
               setJobBusy(true)
               postToHost('job:voice:synthesize')
             }}
-            onUpdateSegment={(cueId, original, translated) => {
-              setSubtitleBusy(true)
-              postToHost('subtitle:update', { cueId, original, translated })
-            }}
+            onUpdateSegment={updateSubtitleSegment}
           />
         </div>
 
@@ -1199,6 +1283,7 @@ function App() {
             vietnameseVoiceVolumePercent: volume,
           })}
           onSelectSegment={setSelectedSegmentId}
+          onUpdateSegment={updateSubtitleSegment}
           onSplitCue={(id, positionSeconds) => {
             const segment = segments.find((item) => item.id === id)
             if (!segment) return
