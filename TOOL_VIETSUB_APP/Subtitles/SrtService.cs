@@ -179,6 +179,7 @@ public sealed partial class SrtService
             StartMilliseconds = positionMilliseconds,
             EndMilliseconds = cue.EndMilliseconds,
             Speaker = cue.Speaker,
+            VoiceId = cue.VoiceId,
             OriginalText = originalRight,
             TranslatedText = translatedRight,
             OriginalLocked = true,
@@ -212,6 +213,7 @@ public sealed partial class SrtService
         }
 
         cue.StartMilliseconds = positionMilliseconds;
+        project.AudioTracks.RemoveAll(item => item.Role == "VOICE_TIMELINE");
         await _workspace.SaveAsync(project, cancellationToken);
     }
 
@@ -242,6 +244,7 @@ public sealed partial class SrtService
             StartMilliseconds = start,
             EndMilliseconds = end,
             Speaker = cue.Speaker,
+            VoiceId = cue.VoiceId,
             OriginalText = cue.OriginalText,
             TranslatedText = cue.TranslatedText,
             OriginalLocked = true,

@@ -25,35 +25,12 @@ public sealed class TranslationResultCache
     {
         var payload = JsonSerializer.Serialize(new
         {
-            version = 2,
+            version = TranslationPromptBuilder.PromptVersion,
             providerId,
             modelId,
             reviewEnabled,
-            request.ProjectName,
-            request.SourceLanguage,
-            request.TargetLanguage,
-            request.ProjectSummary,
-            request.CharacterInstructions,
-            request.StyleInstructions,
-            glossary = request.Glossary.Select(entry => new { entry.SourceText, entry.TargetText, entry.Note }),
-            memory = request.TranslationMemory.Select(entry => new
-            {
-                entry.SourceLanguageCode,
-                entry.TargetLanguageCode,
-                entry.SourceText,
-                entry.TranslatedText,
-            }),
-            cues = request.Cues.Select(cue => new
-            {
-                cue.CueId,
-                cue.StartMilliseconds,
-                cue.EndMilliseconds,
-                cue.Speaker,
-                cue.OriginalText,
-                cue.IsTarget,
-                cue.SuggestedMaximumCharacters,
-                cue.CandidateTranslation,
-            }),
+            systemPrompt = TranslationPromptBuilder.SystemPrompt,
+            userPrompt = TranslationPromptBuilder.BuildUserPrompt(request),
         }, JsonOptions);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
     }

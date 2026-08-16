@@ -60,6 +60,7 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
 
         var includeOriginalAudio = _project.Settings.OriginalAudioEnabled && source.Metadata.HasAudio;
         var includeVietnameseVoice = _project.Settings.VietnameseVoiceEnabled;
+        var includeVietnameseSubtitles = _project.Settings.VietnameseSubtitlesEnabled;
         if (!includeOriginalAudio && !includeVietnameseVoice)
         {
             throw new LocalJobException(
@@ -109,29 +110,33 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
             ?? throw new LocalJobException("EXPORT_DESTINATION_INVALID", "Thư mục xuất video không hợp lệ.", retryable: false);
         Directory.CreateDirectory(destinationDirectory);
 
-        var track = _project.SubtitleTracks.LastOrDefault(item => item.Cues.Count > 0)
-            ?? throw new LocalJobException("SUBTITLE_TRACK_MISSING", "Chưa có phụ đề để xuất.", retryable: false);
-        var translatedCues = track.Cues
-            .Where(cue => !string.IsNullOrWhiteSpace(cue.TranslatedText))
-            .OrderBy(cue => cue.StartMilliseconds)
-            .ThenBy(cue => cue.EndMilliseconds)
-            .ToArray();
-        if (translatedCues.Length == 0)
+        SubtitleCue[] translatedCues = [];
+        if (includeVietnameseSubtitles)
         {
-            throw new LocalJobException(
-                "TRANSLATION_MISSING",
-                "Chưa có phụ đề tiếng Việt hợp lệ để đè lên video.",
-                retryable: false);
-        }
+            var track = _project.SubtitleTracks.LastOrDefault(item => item.Cues.Count > 0)
+                ?? throw new LocalJobException("SUBTITLE_TRACK_MISSING", "Chưa có phụ đề để xuất.", retryable: false);
+            translatedCues = track.Cues
+                .Where(cue => !string.IsNullOrWhiteSpace(cue.TranslatedText))
+                .OrderBy(cue => cue.StartMilliseconds)
+                .ThenBy(cue => cue.EndMilliseconds)
+                .ToArray();
+            if (translatedCues.Length == 0)
+            {
+                throw new LocalJobException(
+                    "TRANSLATION_MISSING",
+                    "Chưa có phụ đề tiếng Việt hợp lệ để đè lên video.",
+                    retryable: false);
+            }
 
-        var invalidCue = translatedCues.FirstOrDefault(cue =>
-            TranslationQualityValidator.LooksPathological(cue.OriginalText, cue.TranslatedText));
-        if (invalidCue is not null)
-        {
-            throw new LocalJobException(
-                "TRANSLATION_QUALITY_INVALID",
-                "Còn bản dịch bị lặp hoặc dài bất thường. Hãy dịch lại lỗi trước khi xuất video.",
-                retryable: false);
+            var invalidCue = translatedCues.FirstOrDefault(cue =>
+                TranslationQualityValidator.LooksPathological(cue.OriginalText, cue.TranslatedText));
+            if (invalidCue is not null)
+            {
+                throw new LocalJobException(
+                    "TRANSLATION_QUALITY_INVALID",
+                    "Còn bản dịch bị lặp hoặc dài bất thường. Hãy dịch lại lỗi trước khi xuất video.",
+                    retryable: false);
+            }
         }
 
         var subtitlePath = _paths.GetProjectPath(_project.ProjectId, "temp", $"export-{job.JobId:N}.ass");
@@ -143,15 +148,18 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
             $".{Path.GetFileNameWithoutExtension(destination)}.{job.JobId:N}.partial.mp4");
         try
         {
-            await File.WriteAllTextAsync(
-                subtitlePath,
-                BuildVietnameseSubtitleAss(
-                    translatedCues,
-                    _project.Settings.SubtitleStyle,
-                    source.Metadata.Width,
-                    source.Metadata.Height),
-                new UTF8Encoding(false),
-                cancellationToken);
+            if (includeVietnameseSubtitles)
+            {
+                await File.WriteAllTextAsync(
+                    subtitlePath,
+                    BuildVietnameseSubtitleAss(
+                        translatedCues,
+                        _project.Settings.SubtitleStyle,
+                        source.Metadata.Width,
+                        source.Metadata.Height),
+                    new UTF8Encoding(false),
+                    cancellationToken);
+            }
             var audioFilter = BuildAudioFilter(_project.Settings, source.Metadata.HasAudio);
             var videoFilter = BuildVideoFilter(_project.Settings, subtitlePath);
             var filter = $"{videoFilter};{audioFilter}";
@@ -183,9 +191,13 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
                 "EXPORT_VIDEO",
                 0,
                 0,
-                _project.Settings.RemoveOriginalSubtitles
-                    ? "Đang che phụ đề gốc, đè phụ đề Việt và mã hóa MP4."
-                    : "Đang đè phụ đề Việt, trộn âm thanh và mã hóa MP4."));
+                includeVietnameseSubtitles
+                    ? _project.Settings.RemoveOriginalSubtitles
+                        ? "Đang che phụ đề gốc, đè phụ đề Việt và mã hóa MP4."
+                        : "Đang đè phụ đề Việt, trộn âm thanh và mã hóa MP4."
+                    : _project.Settings.RemoveOriginalSubtitles
+                        ? "Đang che phụ đề gốc, ẩn phụ đề Việt và mã hóa MP4."
+                        : "Đang xuất video không kèm phụ đề Việt."));
             await _runner.RunAsync(
                 _ffmpegPath,
                 arguments,
@@ -221,29 +233,73 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
 
     public static string BuildVideoFilter(ProjectSettings settings, string subtitlePath)
     {
-        var escapedSubtitlePath = EscapeFilterPath(subtitlePath);
-        var subtitleFilter = $"subtitles=filename='{escapedSubtitlePath}'";
+        var transformFilters = new List<string>(2);
+        if (settings.FlipHorizontal)
+        {
+            transformFilters.Add("hflip");
+        }
+        if (settings.FlipVertical)
+        {
+            transformFilters.Add("vflip");
+        }
+
+        var transformPrefix = transformFilters.Count > 0
+            ? $"[0:v:0]{string.Join(',', transformFilters)}[transformed_video];"
+            : string.Empty;
+        var videoInput = transformFilters.Count > 0 ? "[transformed_video]" : "[0:v:0]";
+        var includeVietnameseSubtitles = settings.VietnameseSubtitlesEnabled;
+        var subtitleFilter = includeVietnameseSubtitles
+            ? $"subtitles=filename='{EscapeFilterPath(subtitlePath)}'"
+            : null;
         if (!settings.RemoveOriginalSubtitles)
         {
-            return $"[0:v:0]{subtitleFilter}[video]";
+            return includeVietnameseSubtitles
+                ? $"{transformPrefix}{videoInput}{subtitleFilter}[video]"
+                : $"{transformPrefix}{videoInput}null[video]";
         }
 
-        ValidateRemovalSettings(settings);
-        var x = Format(settings.OriginalSubtitleRegionX);
-        var y = Format(settings.OriginalSubtitleRegionY);
-        var width = Format(settings.OriginalSubtitleRegionWidth);
-        var height = Format(settings.OriginalSubtitleRegionHeight);
+        var removalRegions = GetEffectiveSubtitleRemovalRegions(settings);
+        ValidateRemovalSettings(settings, removalRegions);
         if (string.Equals(settings.OriginalSubtitleRemovalMode, "cover", StringComparison.OrdinalIgnoreCase))
         {
-            return $"[0:v:0]drawbox=x=iw*{x}:y=ih*{y}:w=iw*{width}:h=ih*{height}:color=black@0.82:t=fill[clean_video];[clean_video]{subtitleFilter}[video]";
+            var drawBoxes = removalRegions.Select(region =>
+                $"drawbox=x=iw*{Format(region.X)}:y=ih*{Format(region.Y)}:w=iw*{Format(region.Width)}:h=ih*{Format(region.Height)}:color=black@0.82:t=fill");
+            var cleanVideo = $"{transformPrefix}{videoInput}{string.Join(',', drawBoxes)}";
+            return includeVietnameseSubtitles
+                ? $"{cleanVideo}[clean_video];[clean_video]{subtitleFilter}[video]"
+                : $"{cleanVideo}[video]";
         }
 
-        return $"[0:v:0]split=2[video_base][blur_source];"
-            + $"[blur_source]crop=w=iw*{width}:h=ih*{height}:x=iw*{x}:y=ih*{y},"
-            + "boxblur=luma_radius=min(20\\,min(h\\,w)/10):luma_power=3,"
-            + "drawbox=color=black@0.22:t=fill[blurred_region];"
-            + $"[video_base][blurred_region]overlay=x=main_w*{x}:y=main_h*{y}[clean_video];"
-            + $"[clean_video]{subtitleFilter}[video]";
+        var blurredVideo = new StringBuilder(transformPrefix);
+        var currentVideo = videoInput;
+        for (var index = 0; index < removalRegions.Count; index++)
+        {
+            var region = removalRegions[index];
+            var x = Format(region.X);
+            var y = Format(region.Y);
+            var width = Format(region.Width);
+            var height = Format(region.Height);
+            var isLast = index == removalRegions.Count - 1;
+            var nextVideo = isLast
+                ? includeVietnameseSubtitles ? "[clean_video]" : "[video]"
+                : $"[clean_video_{index}]";
+            blurredVideo.Append(currentVideo)
+                .Append($"split=2[video_base_{index}][blur_source_{index}];")
+                .Append($"[blur_source_{index}]crop=w=iw*{width}:h=ih*{height}:x=iw*{x}:y=ih*{y},")
+                .Append("boxblur=luma_radius=min(20\\,min(h\\,w)/10):luma_power=3,")
+                .Append($"drawbox=color=black@0.22:t=fill[blurred_region_{index}];")
+                .Append($"[video_base_{index}][blurred_region_{index}]overlay=x=main_w*{x}:y=main_h*{y}")
+                .Append(nextVideo);
+            if (!isLast)
+            {
+                blurredVideo.Append(';');
+            }
+            currentVideo = nextVideo;
+        }
+
+        return includeVietnameseSubtitles
+            ? $"{blurredVideo};[clean_video]{subtitleFilter}[video]"
+            : blurredVideo.ToString();
     }
 
     public static string BuildAudioFilter(ProjectSettings settings, bool sourceHasAudio)
@@ -436,24 +492,40 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
             .Replace("\r", string.Empty, StringComparison.Ordinal)
             .Replace("\n", "\\N", StringComparison.Ordinal);
 
-    private static void ValidateRemovalSettings(ProjectSettings settings)
+    private static IReadOnlyList<SubtitleRemovalRegionSettings> GetEffectiveSubtitleRemovalRegions(
+        ProjectSettings settings) =>
+        settings.OriginalSubtitleRemovalRegions is { Count: > 0 }
+            ? settings.OriginalSubtitleRemovalRegions
+            :
+            [
+                new SubtitleRemovalRegionSettings
+                {
+                    Id = "legacy",
+                    X = settings.OriginalSubtitleRegionX,
+                    Y = settings.OriginalSubtitleRegionY,
+                    Width = settings.OriginalSubtitleRegionWidth,
+                    Height = settings.OriginalSubtitleRegionHeight,
+                },
+            ];
+
+    private static void ValidateRemovalSettings(
+        ProjectSettings settings,
+        IReadOnlyList<SubtitleRemovalRegionSettings> regions)
     {
         var mode = settings.OriginalSubtitleRemovalMode.Trim().ToLowerInvariant();
-        var x = settings.OriginalSubtitleRegionX;
-        var y = settings.OriginalSubtitleRegionY;
-        var width = settings.OriginalSubtitleRegionWidth;
-        var height = settings.OriginalSubtitleRegionHeight;
         if (mode is not ("blur" or "cover")
-            || !double.IsFinite(x)
-            || !double.IsFinite(y)
-            || !double.IsFinite(width)
-            || !double.IsFinite(height)
-            || x < 0
-            || y < 0
-            || width < 0.05
-            || height < 0.04
-            || x + width > 1.000001
-            || y + height > 1.000001)
+            || regions.Count is < 1 or > DesktopWorkspaceCoordinator.MaxSubtitleRemovalRegions
+            || regions.Any(region =>
+                !double.IsFinite(region.X)
+                || !double.IsFinite(region.Y)
+                || !double.IsFinite(region.Width)
+                || !double.IsFinite(region.Height)
+                || region.X < 0
+                || region.Y < 0
+                || region.Width < 0.05
+                || region.Height < 0.04
+                || region.X + region.Width > 1.000001
+                || region.Y + region.Height > 1.000001))
         {
             throw new LocalJobException(
                 "SUBTITLE_REMOVAL_REGION_INVALID",

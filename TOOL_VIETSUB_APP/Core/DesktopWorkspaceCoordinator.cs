@@ -12,16 +12,21 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
 {
     public const string PlaybackUrl = "https://media.vietsub.local/video";
     public const string VoicePlaybackUrl = "https://media.vietsub.local/voice";
+    public const int MaxSubtitleRemovalRegions = 10;
     private readonly AuthSessionManager _auth;
     private readonly AppPaths _paths = new();
     private readonly ProjectWorkspaceService _projects;
     private readonly PersistentJobManager _jobs;
     private readonly QuotaProtectedJobService _quotaJobs;
     private readonly SrtService _subtitles;
-    private readonly LocalModelManager _models;
-    private readonly LocalAiRuntimeProvisioner _runtimeProvisioner;
+    private LocalModelManager _models;
+    private LocalAiRuntimeProvisioner _runtimeProvisioner;
+    private VieNeuRuntimeProvisioner _vieNeuRuntimeProvisioner;
+    private readonly AiStorageService _aiStorage;
     private readonly ProtectedTranslationCredentialStore _translationCredentials;
+    private readonly ProtectedVoiceCredentialStore _voiceCredentials;
     private readonly HttpClient _translationHttpClient;
+    private readonly HttpClient _voiceHttpClient;
     private ProjectSession? _session;
     private CancellationTokenSource? _importCancellation;
 
@@ -37,13 +42,20 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         _subtitles = new SrtService(_paths, _projects);
         _models = new LocalModelManager(_paths);
         _runtimeProvisioner = new LocalAiRuntimeProvisioner(_paths);
+        _vieNeuRuntimeProvisioner = new VieNeuRuntimeProvisioner(_paths);
+        _aiStorage = new AiStorageService(_paths);
         _translationCredentials = new ProtectedTranslationCredentialStore(_paths);
+        _voiceCredentials = new ProtectedVoiceCredentialStore(_paths);
         _translationHttpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _translationHttpClient.DefaultRequestHeaders.UserAgent.TryParseAdd("TOOL-VIETSUB-APP/1.0");
+        _voiceHttpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _voiceHttpClient.DefaultRequestHeaders.UserAgent.TryParseAdd("TOOL-VIETSUB-APP/1.0");
         _jobs.JobChanged += (_, job) => JobChanged?.Invoke(this, job);
     }
 
     public ProjectManifest? CurrentProject => _session?.Manifest;
+
+    public AiStorageStatus AiStorageStatus => _aiStorage.GetStatus();
 
     public event EventHandler<MediaImportProgress>? ImportProgressChanged;
 
@@ -259,6 +271,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         double y,
         double width,
         double height,
+        IReadOnlyList<SubtitleRemovalRegionSettings> regions,
         CancellationToken cancellationToken)
     {
         var manifest = RequireProject();
@@ -273,12 +286,104 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             throw new InvalidOperationException("Vùng xóa phụ đề phải nằm hoàn toàn bên trong khung hình.");
         }
 
+        if (regions.Count is < 1 or > MaxSubtitleRemovalRegions
+            || regions.Any(region => !IsValidSubtitleRegion(
+                region.X,
+                region.Y,
+                region.Width,
+                region.Height)))
+        {
+            throw new InvalidOperationException("Danh sách vùng che không hợp lệ.");
+        }
+
+        var normalizedRegions = new List<SubtitleRemovalRegionSettings>(regions.Count);
+        var usedIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var region in regions)
+        {
+            var id = region.Id?.Trim() ?? string.Empty;
+            if (id.Length is < 1 or > 64
+                || id.Any(char.IsControl)
+                || !usedIds.Add(id))
+            {
+                do
+                {
+                    id = Guid.NewGuid().ToString("N");
+                }
+                while (!usedIds.Add(id));
+            }
+
+            normalizedRegions.Add(new SubtitleRemovalRegionSettings
+            {
+                Id = id,
+                X = region.X,
+                Y = region.Y,
+                Width = region.Width,
+                Height = region.Height,
+            });
+        }
+
+        var primaryRegion = normalizedRegions[0];
         manifest.Settings.RemoveOriginalSubtitles = enabled;
         manifest.Settings.OriginalSubtitleRemovalMode = normalizedMode;
-        manifest.Settings.OriginalSubtitleRegionX = x;
-        manifest.Settings.OriginalSubtitleRegionY = y;
-        manifest.Settings.OriginalSubtitleRegionWidth = width;
-        manifest.Settings.OriginalSubtitleRegionHeight = height;
+        manifest.Settings.OriginalSubtitleRegionX = primaryRegion.X;
+        manifest.Settings.OriginalSubtitleRegionY = primaryRegion.Y;
+        manifest.Settings.OriginalSubtitleRegionWidth = primaryRegion.Width;
+        manifest.Settings.OriginalSubtitleRegionHeight = primaryRegion.Height;
+        manifest.Settings.OriginalSubtitleRemovalRegions = normalizedRegions;
+        await _session!.FlushAsync(cancellationToken);
+        return Map(manifest);
+    }
+
+    public async Task<DesktopProjectState> UpdateVideoTransformAsync(
+        bool flipHorizontal,
+        bool flipVertical,
+        CancellationToken cancellationToken)
+    {
+        var manifest = RequireProject();
+        var settings = manifest.Settings;
+        if (settings.FlipHorizontal == flipHorizontal
+            && settings.FlipVertical == flipVertical)
+        {
+            return Map(manifest);
+        }
+
+        settings.OriginalSubtitleRemovalRegions ??= [];
+        if (settings.OriginalSubtitleRemovalRegions.Count == 0)
+        {
+            settings.OriginalSubtitleRemovalRegions.Add(new SubtitleRemovalRegionSettings
+            {
+                Id = "legacy",
+                X = settings.OriginalSubtitleRegionX,
+                Y = settings.OriginalSubtitleRegionY,
+                Width = settings.OriginalSubtitleRegionWidth,
+                Height = settings.OriginalSubtitleRegionHeight,
+            });
+        }
+
+        if (settings.FlipHorizontal != flipHorizontal)
+        {
+            foreach (var region in settings.OriginalSubtitleRemovalRegions)
+            {
+                region.X = MirrorRegionCoordinate(region.X, region.Width);
+            }
+        }
+
+        if (settings.FlipVertical != flipVertical)
+        {
+            foreach (var region in settings.OriginalSubtitleRemovalRegions)
+            {
+                region.Y = MirrorRegionCoordinate(region.Y, region.Height);
+            }
+        }
+
+        var primaryRegion = settings.OriginalSubtitleRemovalRegions[0];
+        settings.OriginalSubtitleRegionX = primaryRegion.X;
+        settings.OriginalSubtitleRegionY = primaryRegion.Y;
+        settings.OriginalSubtitleRegionWidth = primaryRegion.Width;
+        settings.OriginalSubtitleRegionHeight = primaryRegion.Height;
+
+        settings.FlipHorizontal = flipHorizontal;
+        settings.FlipVertical = flipVertical;
         await _session!.FlushAsync(cancellationToken);
         return Map(manifest);
     }
@@ -294,6 +399,16 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
 
         var manifest = RequireProject();
         manifest.Settings.SubtitleStyle = SubtitleStyleRules.Normalize(style);
+        await _session!.FlushAsync(cancellationToken);
+        return Map(manifest);
+    }
+
+    public async Task<DesktopProjectState> UpdateVietnameseSubtitlesEnabledAsync(
+        bool enabled,
+        CancellationToken cancellationToken)
+    {
+        var manifest = RequireProject();
+        manifest.Settings.VietnameseSubtitlesEnabled = enabled;
         await _session!.FlushAsync(cancellationToken);
         return Map(manifest);
     }
@@ -320,6 +435,190 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         return Map(manifest);
     }
 
+    public async Task<DesktopProjectState> UpdateVoiceSettingsAsync(
+        string defaultVoiceId,
+        IReadOnlyDictionary<string, string> speakerVoiceIds,
+        CancellationToken cancellationToken) =>
+        await UpdateVoiceSettingsAsync(
+            defaultVoiceId,
+            speakerVoiceIds,
+            RequireProject().Settings.VoiceSpeed,
+            cancellationToken);
+
+    public async Task<DesktopProjectState> UpdateVoiceSettingsAsync(
+        string defaultVoiceId,
+        IReadOnlyDictionary<string, string> speakerVoiceIds,
+        int speed,
+        CancellationToken cancellationToken)
+    {
+        var manifest = RequireProject();
+        var normalizedSpeed = Math.Clamp(speed, -3, 3);
+        var defaultVoice = LocalVoiceCatalog.Find(defaultVoiceId)
+            ?? throw new InvalidOperationException("Giọng đọc mặc định không hợp lệ.");
+        var normalizedMappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (speaker, voiceId) in speakerVoiceIds)
+        {
+            var normalizedSpeaker = NormalizeSpeaker(speaker);
+            var voice = LocalVoiceCatalog.Find(voiceId)
+                ?? throw new InvalidOperationException($"Giọng đọc của nhân vật '{normalizedSpeaker}' không hợp lệ.");
+            normalizedMappings[normalizedSpeaker] = voice.VoiceId;
+        }
+
+        var cues = manifest.SubtitleTracks.SelectMany(track => track.Cues).ToArray();
+        var previousVoiceIds = cues.ToDictionary(
+            cue => cue.CueId,
+            cue => LocalVoiceCatalog.Resolve(manifest, cue).VoiceId);
+        var previousSpeed = Math.Clamp(manifest.Settings.VoiceSpeed, -3, 3);
+        manifest.Settings.VoiceId = defaultVoice.VoiceId;
+        manifest.Settings.SpeakerVoiceIds = normalizedMappings;
+        manifest.Settings.VoiceSpeed = normalizedSpeed;
+        var changedCueIds = cues
+            .Where(cue =>
+            {
+                var currentVoice = LocalVoiceCatalog.Resolve(manifest, cue);
+                return !string.Equals(
+                        previousVoiceIds[cue.CueId],
+                        currentVoice.VoiceId,
+                        StringComparison.OrdinalIgnoreCase)
+                    || (currentVoice.Engine == LocalVoiceEngines.Fpt && previousSpeed != normalizedSpeed);
+            })
+            .Select(cue => cue.CueId)
+            .ToHashSet();
+        InvalidateVoice(manifest, changedCueIds);
+        await _session!.FlushAsync(cancellationToken);
+        return Map(manifest);
+    }
+
+    public async Task<DesktopProjectState> UpdateFptVoiceCredentialAsync(
+        string? apiKey,
+        bool clearApiKey,
+        CancellationToken cancellationToken)
+    {
+        var manifest = RequireProject();
+        if (clearApiKey)
+        {
+            _voiceCredentials.DeleteFptKey();
+        }
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            _voiceCredentials.SaveFptKey(apiKey);
+        }
+
+        await _session!.FlushAsync(cancellationToken);
+        return Map(manifest);
+    }
+
+    public async Task<DesktopProjectState> UpdateSubtitleVoiceAsync(
+        Guid cueId,
+        string speaker,
+        string? voiceId,
+        CancellationToken cancellationToken)
+    {
+        var manifest = RequireProject();
+        var cue = manifest.SubtitleTracks
+            .SelectMany(track => track.Cues)
+            .SingleOrDefault(item => item.CueId == cueId)
+            ?? throw new InvalidOperationException("Không tìm thấy phân đoạn phụ đề.");
+        var normalizedVoiceId = string.IsNullOrWhiteSpace(voiceId)
+            ? null
+            : LocalVoiceCatalog.Find(voiceId)?.VoiceId
+                ?? throw new InvalidOperationException("Giọng đọc của phân đoạn không hợp lệ.");
+        var previousVoiceId = LocalVoiceCatalog.Resolve(manifest, cue).VoiceId;
+        cue.Speaker = NormalizeSpeaker(speaker);
+        cue.VoiceId = normalizedVoiceId;
+        var currentVoiceId = LocalVoiceCatalog.Resolve(manifest, cue).VoiceId;
+        if (!string.Equals(previousVoiceId, currentVoiceId, StringComparison.OrdinalIgnoreCase))
+        {
+            InvalidateVoice(manifest, new HashSet<Guid> { cue.CueId });
+        }
+
+        await _session!.FlushAsync(cancellationToken);
+        return Map(manifest);
+    }
+
+    public async Task<DesktopProjectState> InstallVoiceAsync(
+        string voiceId,
+        CancellationToken cancellationToken)
+    {
+        var manifest = RequireProject();
+        var voice = LocalVoiceCatalog.Find(voiceId)
+            ?? throw new InvalidOperationException("Giọng đọc cần cài không hợp lệ.");
+        if (voice.IsCloud)
+        {
+            throw new InvalidOperationException("Giọng FPT.AI không cần cài model. Hãy cấu hình API key để sử dụng.");
+        }
+        if (voice.Engine == LocalVoiceEngines.Piper)
+        {
+            await EnsureLanguageRuntimeAsync(cancellationToken);
+            var progress = new Progress<LocalModelDownloadProgress>(value =>
+                ModelDownloadProgressChanged?.Invoke(this, value));
+            await _models.DownloadAsync(PiperLocalVoiceSynthesizer.ModelId, progress, cancellationToken);
+        }
+        else
+        {
+            var runtimeProgress = new Progress<LocalRuntimeProgress>(value =>
+                RuntimeProgressChanged?.Invoke(this, value));
+            await _vieNeuRuntimeProvisioner.EnsureReadyAsync(runtimeProgress, cancellationToken);
+            RuntimeProgressChanged?.Invoke(this, new LocalRuntimeProgress(
+                "VOICE_MODEL",
+                0,
+                "Đang tải bộ giọng VieNeu lần đầu. Quá trình này có thể mất vài phút."));
+            await new VieNeuLocalVoiceSynthesizer(_paths).EnsureReadyAsync(cancellationToken);
+            RuntimeProgressChanged?.Invoke(this, new LocalRuntimeProgress(
+                "VOICE_MODEL",
+                100,
+                "Bộ giọng VieNeu đã sẵn sàng."));
+        }
+
+        return Map(manifest);
+    }
+
+    public async Task<DesktopProjectState> ChangeAiStorageAsync(
+        string destinationRoot,
+        bool migrateExisting,
+        CancellationToken cancellationToken)
+    {
+        var manifest = RequireProject();
+        if (manifest.Jobs.Any(job => job.Status is LocalJobStatus.Pending or LocalJobStatus.Running or LocalJobStatus.Paused))
+        {
+            throw new LocalModelException(
+                "AI_STORAGE_BUSY",
+                "Hãy chờ hoặc hủy các job AI đang chạy trước khi đổi thư mục lưu.");
+        }
+
+        var progress = new Progress<LocalRuntimeProgress>(value =>
+            RuntimeProgressChanged?.Invoke(this, value));
+        await _aiStorage.ChangeRootAsync(
+            destinationRoot,
+            migrateExisting,
+            progress,
+            cancellationToken);
+
+        _models.Dispose();
+        _runtimeProvisioner.Dispose();
+        _vieNeuRuntimeProvisioner.Dispose();
+        _models = new LocalModelManager(_paths);
+        _runtimeProvisioner = new LocalAiRuntimeProvisioner(_paths);
+        _vieNeuRuntimeProvisioner = new VieNeuRuntimeProvisioner(_paths);
+        return Map(manifest);
+    }
+
+    public async Task<DesktopProjectState> DiscardPendingAiStorageMigrationAsync(
+        CancellationToken cancellationToken)
+    {
+        var manifest = RequireProject();
+        if (manifest.Jobs.Any(job => job.Status is LocalJobStatus.Pending or LocalJobStatus.Running or LocalJobStatus.Paused))
+        {
+            throw new LocalModelException(
+                "AI_STORAGE_BUSY",
+                "Hãy chờ hoặc hủy các job AI đang chạy trước khi dọn migration.");
+        }
+
+        await _aiStorage.DiscardPendingMigrationAsync(cancellationToken);
+        return Map(manifest);
+    }
+
     private static bool IsValidVolume(double value) =>
         double.IsFinite(value) && value >= 0 && value <= 100;
 
@@ -334,6 +633,65 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         && height >= 0.04
         && x + width <= 1.000001
         && y + height <= 1.000001;
+
+    private static IReadOnlyList<SubtitleRemovalRegionSettings> GetEffectiveSubtitleRemovalRegions(
+        ProjectSettings settings)
+    {
+        if (settings.OriginalSubtitleRemovalRegions is { Count: > 0 })
+        {
+            return settings.OriginalSubtitleRemovalRegions;
+        }
+
+        return
+        [
+            new SubtitleRemovalRegionSettings
+            {
+                Id = "legacy",
+                X = settings.OriginalSubtitleRegionX,
+                Y = settings.OriginalSubtitleRegionY,
+                Width = settings.OriginalSubtitleRegionWidth,
+                Height = settings.OriginalSubtitleRegionHeight,
+            },
+        ];
+    }
+
+    private static double MirrorRegionCoordinate(double position, double size)
+    {
+        if (!double.IsFinite(position)
+            || !double.IsFinite(size)
+            || size < 0
+            || size > 1)
+        {
+            return position;
+        }
+
+        return Math.Clamp(1d - position - size, 0d, 1d - size);
+    }
+
+    private static string NormalizeSpeaker(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (normalized.Length is < 1 or > 80 || normalized.Any(char.IsControl))
+        {
+            throw new InvalidOperationException("Tên nhân vật phải có từ 1 đến 80 ký tự hợp lệ.");
+        }
+
+        return normalized;
+    }
+
+    private static void InvalidateVoice(ProjectManifest manifest, IReadOnlySet<Guid> cueIds)
+    {
+        if (cueIds.Count == 0)
+        {
+            return;
+        }
+
+        manifest.AudioTracks.RemoveAll(item =>
+            item.Role == "VOICE_TIMELINE"
+            || (item.Role == "VOICE_CUE"
+                && item.CueId is Guid cueId
+                && cueIds.Contains(cueId)));
+    }
 
     public async Task<DesktopProjectState> ImportVideoAsync(
         string sourcePath,
@@ -552,7 +910,9 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         return Map(manifest);
     }
 
-    public async Task<DesktopProjectState> TranslateAsync(CancellationToken cancellationToken)
+    public async Task<DesktopProjectState> TranslateAsync(
+        CancellationToken cancellationToken,
+        string? translationRunMode = null)
     {
         var manifest = RequireProject();
         if (!manifest.SubtitleTracks.Any(track => track.Cues.Count > 0))
@@ -565,6 +925,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 "TRANSLATION_SOURCE_REQUIRED",
                 "Hãy chọn tiếng Trung hoặc tiếng Anh trước khi dịch.");
         var providerId = TranslationProviders.Normalize(manifest.Settings.TranslationProvider);
+        var runMode = TranslationRunModes.Normalize(translationRunMode);
         var modelId = TranslationModelDefaults.Resolve(
             providerId,
             manifest.Settings.TranslationModelId,
@@ -613,13 +974,51 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 ["provider"] = providerId,
                 ["modelId"] = modelId,
                 ["fallbackToLocal"] = manifest.Settings.TranslationFallbackToLocal.ToString(),
+                [TranslationRunModes.ParameterName] = runMode,
             });
         return Map(manifest);
     }
 
-    public async Task<DesktopProjectState> SynthesizeVoiceAsync(CancellationToken cancellationToken)
+    public async Task<DesktopProjectState> SynthesizeVoiceAsync(
+        string? requestedDefaultVoiceId,
+        CancellationToken cancellationToken) =>
+        await SynthesizeVoiceAsync(
+            requestedDefaultVoiceId,
+            requestedSpeed: null,
+            apiKey: null,
+            cancellationToken: cancellationToken);
+
+    public async Task<DesktopProjectState> SynthesizeVoiceAsync(
+        string? requestedDefaultVoiceId,
+        int? requestedSpeed,
+        string? apiKey,
+        CancellationToken cancellationToken)
     {
         var manifest = RequireProject();
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            _voiceCredentials.SaveFptKey(apiKey);
+        }
+
+        if (!string.IsNullOrWhiteSpace(requestedDefaultVoiceId))
+        {
+            await UpdateVoiceSettingsAsync(
+                requestedDefaultVoiceId,
+                manifest.Settings.SpeakerVoiceIds ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                requestedSpeed ?? manifest.Settings.VoiceSpeed,
+                cancellationToken);
+            manifest = RequireProject();
+        }
+        else if (requestedSpeed.HasValue && requestedSpeed.Value != manifest.Settings.VoiceSpeed)
+        {
+            await UpdateVoiceSettingsAsync(
+                LocalVoiceCatalog.Resolve(manifest.Settings.VoiceId).VoiceId,
+                manifest.Settings.SpeakerVoiceIds ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                requestedSpeed.Value,
+                cancellationToken);
+            manifest = RequireProject();
+        }
+
         var invalidTranslationCount = manifest.SubtitleTracks
             .SelectMany(track => track.Cues)
             .Count(cue => !string.IsNullOrWhiteSpace(cue.TranslatedText)
@@ -636,16 +1035,23 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             throw new InvalidOperationException("Hãy dịch phụ đề trước khi tạo giọng Việt.");
         }
 
-        await EnsureLanguageRuntimeAsync(cancellationToken);
-        var modelProgress = new Progress<LocalModelDownloadProgress>(progress =>
-            ModelDownloadProgressChanged?.Invoke(this, progress));
-        await _models.DownloadAsync(
-            PiperLocalVoiceSynthesizer.ModelId,
-            modelProgress,
-            cancellationToken);
+        var resolvedVoices = manifest.SubtitleTracks
+            .SelectMany(track => track.Cues)
+            .Where(cue => !string.IsNullOrWhiteSpace(cue.TranslatedText))
+            .Select(cue => LocalVoiceCatalog.Resolve(manifest, cue))
+            .ToArray();
+        var usesFpt = resolvedVoices.Any(voice => voice.Engine == LocalVoiceEngines.Fpt);
+        if (usesFpt && !_voiceCredentials.HasFptKey)
+        {
+            throw new LocalModelException(
+                "FPT_API_KEY_REQUIRED",
+                "Hãy nhập và lưu API key FPT.AI trước khi tạo giọng online.");
+        }
+
+        await EnsureVoiceDependenciesAsync(manifest, cancellationToken);
         _ = await _quotaJobs.StartAsync(
             manifest,
-            "SYNTHESIZE_VOICE_LOCAL",
+            usesFpt ? "SYNTHESIZE_VOICE_CLOUD" : "SYNTHESIZE_VOICE_LOCAL",
             "voice.generate",
             ["SYNTHESIZE_VOICE", "SYNC_VOICE"],
             EstimateMinutes(manifest),
@@ -654,10 +1060,71 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     _paths,
                     _projects,
                     manifest,
-                    new PiperLocalVoiceSynthesizer(_paths, _models)),
+                    CreateVoiceSynthesizer()),
                 new VoiceTimelineJobExecutor(_paths, _projects, manifest)),
-            cancellationToken);
+            cancellationToken,
+            new Dictionary<string, string>
+            {
+                ["provider"] = usesFpt ? ProtectedVoiceCredentialStore.FptProvider : "local",
+                ["speed"] = Math.Clamp(manifest.Settings.VoiceSpeed, -3, 3).ToString(),
+            });
         return Map(manifest);
+    }
+
+    public async Task<byte[]> PreviewFptVoiceAsync(
+        string voiceId,
+        int speed,
+        string? apiKey,
+        CancellationToken cancellationToken)
+    {
+        _ = RequireProject();
+        var voice = LocalVoiceCatalog.Find(voiceId)
+            ?? throw new LocalModelException("VOICE_ID_INVALID", "Không tìm thấy giọng đọc đã chọn.");
+        if (voice.Engine != LocalVoiceEngines.Fpt)
+        {
+            throw new LocalModelException("VOICE_PREVIEW_UNSUPPORTED", "Bản nghe thử online chỉ áp dụng cho giọng FPT.AI.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            _voiceCredentials.SaveFptKey(apiKey);
+        }
+
+        var savedKey = _voiceCredentials.GetFptKey()
+            ?? throw new LocalModelException("FPT_API_KEY_REQUIRED", "Hãy nhập API key FPT.AI để nghe thử.");
+        var previewRoot = Path.Combine(_paths.RootDirectory, "Preview");
+        Directory.CreateDirectory(previewRoot);
+        var outputPath = Path.Combine(previewRoot, $"fpt-{Guid.NewGuid():N}.wav");
+        try
+        {
+            var synthesizer = new FptVoiceSynthesizer(_voiceHttpClient, savedKey);
+            await synthesizer.SynthesizeAsync(
+                [new VoiceSynthesisRequest(
+                    Guid.NewGuid(),
+                    "Xin chào, đây là bản nghe thử giọng đọc FPT AI.",
+                    outputPath,
+                    voice.VoiceId,
+                    Math.Clamp(speed, -3, 3))],
+                cancellationToken);
+            var bytes = await File.ReadAllBytesAsync(outputPath, cancellationToken);
+            if (bytes.Length > 5 * 1024 * 1024)
+            {
+                throw new LocalModelException("FPT_PREVIEW_TOO_LARGE", "Bản nghe thử FPT.AI vượt giới hạn an toàn.");
+            }
+
+            return bytes;
+        }
+        catch (VoiceSynthesisException exception)
+        {
+            throw new LocalModelException(exception.Code, exception.Message, exception);
+        }
+        finally
+        {
+            if (File.Exists(outputPath))
+            {
+                File.Delete(outputPath);
+            }
+        }
     }
 
     public async Task<DesktopProjectState> ExportVideoAsync(
@@ -744,10 +1211,29 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
 
     public async Task<DesktopProjectState> RetryJobAsync(
         Guid jobId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? translationRunMode = null)
     {
         var manifest = RequireProject();
         var job = manifest.Jobs.Single(item => item.JobId == jobId);
+        if (job.JobType is "TRANSLATE_LOCAL" or "TRANSLATE_CLOUD"
+            && !string.IsNullOrWhiteSpace(translationRunMode))
+        {
+            var normalizedRunMode = TranslationRunModes.Normalize(translationRunMode);
+            job.Parameters[TranslationRunModes.ParameterName] = normalizedRunMode;
+            if (normalizedRunMode == TranslationRunModes.Restart)
+            {
+                job.Parameters.Remove(TranslationRunModes.RestartPreparedParameterName);
+                job.TranslationMetrics = new TranslationJobMetrics();
+                job.ProgressPercent = 0;
+                job.CurrentStep = null;
+                foreach (var step in job.Steps)
+                {
+                    step.ProgressPercent = 0;
+                }
+            }
+        }
+
         await EnsureJobDependenciesAsync(job, cancellationToken);
         var executor = CreateExecutor(manifest, jobId);
         if (job.QuotaReservationId is null)
@@ -828,20 +1314,61 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
 
     private async Task EnsureLanguageRuntimeAsync(CancellationToken cancellationToken)
     {
-        try
+        if (_runtimeProvisioner.IsReady)
         {
-            _ = new LocalWorkerRuntimeLocator(_paths).RequirePython();
             return;
-        }
-        catch (LocalModelException exception) when (exception.Code == "LOCAL_PYTHON_MISSING")
-        {
-            // Install the isolated runtime below.
         }
 
         var progress = new Progress<LocalRuntimeProgress>(value =>
             RuntimeProgressChanged?.Invoke(this, value));
         await _runtimeProvisioner.EnsureReadyAsync(progress, cancellationToken);
     }
+
+    private async Task EnsureVoiceDependenciesAsync(
+        ProjectManifest manifest,
+        CancellationToken cancellationToken)
+    {
+        var voices = manifest.SubtitleTracks
+            .SelectMany(track => track.Cues)
+            .Where(cue => !string.IsNullOrWhiteSpace(cue.TranslatedText))
+            .Select(cue => LocalVoiceCatalog.Resolve(manifest, cue))
+            .DistinctBy(voice => voice.Engine)
+            .ToArray();
+        if (voices.Any(voice => voice.Engine == LocalVoiceEngines.Piper))
+        {
+            await EnsureLanguageRuntimeAsync(cancellationToken);
+            var progress = new Progress<LocalModelDownloadProgress>(value =>
+                ModelDownloadProgressChanged?.Invoke(this, value));
+            await _models.DownloadAsync(
+                PiperLocalVoiceSynthesizer.ModelId,
+                progress,
+                cancellationToken);
+        }
+
+        if (voices.Any(voice => voice.Engine == LocalVoiceEngines.VieNeu))
+        {
+            var runtimeProgress = new Progress<LocalRuntimeProgress>(value =>
+                RuntimeProgressChanged?.Invoke(this, value));
+            await _vieNeuRuntimeProvisioner.EnsureReadyAsync(runtimeProgress, cancellationToken);
+            RuntimeProgressChanged?.Invoke(this, new LocalRuntimeProgress(
+                "VOICE_MODEL",
+                0,
+                "Đang chuẩn bị bộ giọng VieNeu."));
+            await new VieNeuLocalVoiceSynthesizer(_paths).EnsureReadyAsync(cancellationToken);
+            RuntimeProgressChanged?.Invoke(this, new LocalRuntimeProgress(
+                "VOICE_MODEL",
+                100,
+                "Bộ giọng VieNeu đã sẵn sàng."));
+        }
+    }
+
+    private IVoiceSynthesizer CreateVoiceSynthesizer() =>
+        new CompositeLocalVoiceSynthesizer(
+            new PiperLocalVoiceSynthesizer(_paths, _models),
+            new VieNeuLocalVoiceSynthesizer(_paths),
+            _voiceCredentials.GetFptKey() is { } apiKey
+                ? new FptVoiceSynthesizer(_voiceHttpClient, apiKey)
+                : null);
 
     private async Task EnsureTranslationDependenciesAsync(
         string providerId,
@@ -893,6 +1420,14 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 apiKey,
                 modelId),
             TranslationProviders.Gemini => new GeminiTranslationProvider(
+                _translationHttpClient,
+                apiKey,
+                modelId),
+            TranslationProviders.DeepSeek => new DeepSeekTranslationProvider(
+                _translationHttpClient,
+                apiKey,
+                modelId),
+            TranslationProviders.Groq => new GroqTranslationProvider(
                 _translationHttpClient,
                 apiKey,
                 modelId),
@@ -967,11 +1502,15 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 break;
             }
             case "SYNTHESIZE_VOICE_LOCAL":
-                await EnsureLanguageRuntimeAsync(cancellationToken);
-                await _models.DownloadAsync(
-                    PiperLocalVoiceSynthesizer.ModelId,
-                    modelProgress,
-                    cancellationToken);
+            case "SYNTHESIZE_VOICE_CLOUD":
+                if (job.JobType == "SYNTHESIZE_VOICE_CLOUD" && !_voiceCredentials.HasFptKey)
+                {
+                    throw new LocalModelException(
+                        "FPT_API_KEY_REQUIRED",
+                        "Hãy nhập lại API key FPT.AI trước khi tiếp tục job tạo giọng online.");
+                }
+
+                await EnsureVoiceDependenciesAsync(RequireProject(), cancellationToken);
                 break;
         }
     }
@@ -983,6 +1522,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         "TRANSLATE_LOCAL" => "subtitle.translate",
         "TRANSLATE_CLOUD" => "subtitle.translate",
         "SYNTHESIZE_VOICE_LOCAL" => "voice.generate",
+        "SYNTHESIZE_VOICE_CLOUD" => "voice.generate",
         "EXPORT_VIDEO_LOCAL" => "video.export",
         _ => throw new InvalidOperationException("Loáº¡i job khÃ´ng sá»­ dá»¥ng háº¡n má»©c Server."),
     };
@@ -1018,19 +1558,19 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 _projects,
                 manifest,
                 CreateTranslationProviderForJob(manifest, job)),
-            "SYNTHESIZE_VOICE_LOCAL" => job.Steps.Any(item => item.Code == "SYNC_VOICE")
+            "SYNTHESIZE_VOICE_LOCAL" or "SYNTHESIZE_VOICE_CLOUD" => job.Steps.Any(item => item.Code == "SYNC_VOICE")
                 ? new VoiceGenerationJobExecutor(
                     new VoiceSynthesisJobExecutor(
                         _paths,
                         _projects,
                         manifest,
-                        new PiperLocalVoiceSynthesizer(_paths, _models)),
+                        CreateVoiceSynthesizer()),
                     new VoiceTimelineJobExecutor(_paths, _projects, manifest))
                 : new VoiceSynthesisJobExecutor(
                     _paths,
                     _projects,
                     manifest,
-                    new PiperLocalVoiceSynthesizer(_paths, _models)),
+                    CreateVoiceSynthesizer()),
             "EXPORT_VIDEO_LOCAL" => job.Steps.Any(item => item.Code == "SYNC_VOICE")
                 ? new FullExportJobExecutor(
                     new VoiceTimelineJobExecutor(_paths, _projects, manifest),
@@ -1156,6 +1696,9 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     cue.EndMilliseconds / 1000d,
                     cue.OriginalText,
                     cue.TranslatedText,
+                    cue.Speaker,
+                    cue.VoiceId,
+                    LocalVoiceCatalog.Resolve(manifest, cue).VoiceId,
                     status,
                     overlap,
                     hasVoice,
@@ -1181,6 +1724,40 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     ? $"{entry.SourceText} = {entry.TargetText}"
                     : $"{entry.SourceText} = {entry.TargetText} | {entry.Note}"));
         var subtitleStyle = SubtitleStyleRules.Normalize(manifest.Settings.SubtitleStyle);
+        manifest.Settings.SpeakerVoiceIds ??= new(StringComparer.OrdinalIgnoreCase);
+        var piperInstalled = _models.GetStatuses()
+            .Any(status => status.Id == PiperLocalVoiceSynthesizer.ModelId && status.Ready);
+        var vieNeuInstalled = _vieNeuRuntimeProvisioner.IsReady
+            && new VieNeuLocalVoiceSynthesizer(_paths).IsReady;
+        var voiceSettings = new DesktopVoiceSettings(
+            LocalVoiceCatalog.Resolve(manifest.Settings.VoiceId).VoiceId,
+            new Dictionary<string, string>(
+                manifest.Settings.SpeakerVoiceIds,
+                StringComparer.OrdinalIgnoreCase),
+            LocalVoiceCatalog.All.Select(voice => new DesktopVoiceInfo(
+                voice.VoiceId,
+                voice.Engine,
+                voice.DisplayName,
+                voice.Gender,
+                voice.Region,
+                voice.Style,
+                voice.ModelVersion,
+                voice.License,
+                voice.Engine == LocalVoiceEngines.Piper
+                    ? piperInstalled
+                    : voice.Engine == LocalVoiceEngines.VieNeu
+                        ? vieNeuInstalled
+                        : _voiceCredentials.HasFptKey,
+                voice.IsCloud,
+                voice.RequiresInstall))
+                .ToArray(),
+            Math.Clamp(manifest.Settings.VoiceSpeed, -3, 3),
+            _voiceCredentials.HasFptKey,
+            manifest.SubtitleTracks
+                .SelectMany(track => track.Cues)
+                .Where(cue => !string.IsNullOrWhiteSpace(cue.TranslatedText))
+                .Sum(cue => cue.TranslatedText.Trim().Length));
+        var subtitleRemovalRegions = GetEffectiveSubtitleRemovalRegions(manifest.Settings);
         return new DesktopProjectState(
             manifest.ProjectId,
             manifest.Name,
@@ -1206,16 +1783,26 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     translationContext.StyleInstructions,
                     glossaryText,
                     manifest.TranslationMemory.Count),
+                voiceSettings,
                 manifest.Settings.OriginalAudioEnabled,
                 manifest.Settings.OriginalAudioVolumePercent,
                 manifest.Settings.VietnameseVoiceEnabled,
                 manifest.Settings.VietnameseVoiceVolumePercent,
+                manifest.Settings.VietnameseSubtitlesEnabled,
+                manifest.Settings.FlipHorizontal,
+                manifest.Settings.FlipVertical,
                 manifest.Settings.RemoveOriginalSubtitles,
                 manifest.Settings.OriginalSubtitleRemovalMode,
                 manifest.Settings.OriginalSubtitleRegionX,
                 manifest.Settings.OriginalSubtitleRegionY,
                 manifest.Settings.OriginalSubtitleRegionWidth,
                 manifest.Settings.OriginalSubtitleRegionHeight,
+                subtitleRemovalRegions.Select(region => new DesktopSubtitleRemovalRegion(
+                    region.Id,
+                    region.X,
+                    region.Y,
+                    region.Width,
+                    region.Height)).ToArray(),
                 new DesktopSubtitleStyleSettings(
                     subtitleStyle.PresetId,
                     subtitleStyle.FontFamily,
@@ -1234,6 +1821,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     subtitleStyle.PositionYPercent,
                     subtitleStyle.MaxWidthPercent,
                     subtitleStyle.MaxLines)),
+            MapAiStorage(),
             video,
             manifest.AudioTracks.Any(item =>
                 item.Role == "VOICE_TIMELINE"
@@ -1251,6 +1839,20 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         await CloseCurrentAsync();
         _models.Dispose();
         _runtimeProvisioner.Dispose();
+        _vieNeuRuntimeProvisioner.Dispose();
+        _aiStorage.Dispose();
         _translationHttpClient.Dispose();
+        _voiceHttpClient.Dispose();
+    }
+
+    private DesktopAiStorageInfo MapAiStorage()
+    {
+        var status = _aiStorage.GetStatus();
+        return new DesktopAiStorageInfo(
+            status.RootPath,
+            status.FreeBytes,
+            status.UsesLegacyLocation,
+            status.RecommendedPath,
+            status.PendingMigrationPath);
     }
 }

@@ -14,7 +14,7 @@ import {
   WandSparkles,
 } from 'lucide-react'
 import { formatClock } from '../lib/format'
-import type { SubtitleSegment } from '../types'
+import type { SubtitleSegment, VoiceInfo } from '../types'
 import { IconButton, SegmentTab } from './Ui'
 
 type Filter = 'all' | 'untranslated' | 'review' | 'missing-audio' | 'invalid-translation'
@@ -29,6 +29,8 @@ type SubtitlePanelProps = {
   onTranslate: () => void
   onSynthesizeVoice: () => void
   onUpdateSegment: (cueId: string, original: string, translated: string) => void
+  voices: VoiceInfo[]
+  onUpdateVoice: (cueId: string, speaker: string, voiceId: string | null) => void
 }
 
 const statusLabels: Record<SubtitleSegment['status'], string> = {
@@ -48,12 +50,16 @@ export function SubtitlePanel({
   onTranslate,
   onSynthesizeVoice,
   onUpdateSegment,
+  voices,
+  onUpdateVoice,
 }: SubtitlePanelProps) {
   const [tab, setTab] = useState<'subtitles' | 'properties'>('subtitles')
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
   const [draftOriginal, setDraftOriginal] = useState('')
   const [draftTranslated, setDraftTranslated] = useState('')
+  const [draftSpeaker, setDraftSpeaker] = useState('speaker_1')
+  const [draftVoiceId, setDraftVoiceId] = useState('')
 
   const visibleSegments = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase('vi')
@@ -82,7 +88,15 @@ export function SubtitlePanel({
   useEffect(() => {
     setDraftOriginal(selectedSegment?.original ?? '')
     setDraftTranslated(selectedSegment?.translated ?? '')
-  }, [selectedSegment?.cueId, selectedSegment?.original, selectedSegment?.translated])
+    setDraftSpeaker(selectedSegment?.speaker ?? 'speaker_1')
+    setDraftVoiceId(selectedSegment?.voiceId ?? '')
+  }, [
+    selectedSegment?.cueId,
+    selectedSegment?.original,
+    selectedSegment?.translated,
+    selectedSegment?.speaker,
+    selectedSegment?.voiceId,
+  ])
 
   return (
     <aside className="panel subtitle-panel" aria-label="Danh sách phụ đề">
@@ -166,7 +180,7 @@ export function SubtitlePanel({
               disabled={busy || segments.length === 0}
             >
               <WandSparkles size={15} />
-              <span>{invalidTranslationCount > 0 ? `Dịch lại ${invalidTranslationCount} lỗi` : 'Dịch thiếu'}</span>
+              <span>{invalidTranslationCount > 0 ? `Dịch lại ${invalidTranslationCount} lỗi` : 'Dịch'}</span>
             </button>
             <button
               type="button"
@@ -272,11 +286,47 @@ export function SubtitlePanel({
                 />
               </label>
               <label>
-                <span>Giọng đọc</span>
-                <select defaultValue="vais1000" disabled>
-                  <option value="vais1000">VAIS-1000 · Nữ tiếng Việt</option>
-                </select>
+                <span>Nhân vật / speaker</span>
+                <input
+                  type="text"
+                  value={draftSpeaker}
+                  maxLength={80}
+                  disabled={busy}
+                  onChange={(event) => setDraftSpeaker(event.target.value)}
+                />
               </label>
+              <label>
+                <span>Giọng đọc riêng</span>
+                <select
+                  value={draftVoiceId}
+                  disabled={busy || voices.length === 0}
+                  onChange={(event) => setDraftVoiceId(event.target.value)}
+                >
+                  <option value="">Theo phân vai / mặc định</option>
+                  {voices.map((voice) => (
+                    <option key={voice.voiceId} value={voice.voiceId}>
+                      {voice.displayName} · {voice.gender} · {voice.region}
+                    </option>
+                  ))}
+                </select>
+                {selectedSegment.resolvedVoiceId ? (
+                  <small>Đang áp dụng: {voices.find((voice) => (
+                    voice.voiceId === selectedSegment.resolvedVoiceId
+                  ))?.displayName ?? selectedSegment.resolvedVoiceId}</small>
+                ) : null}
+              </label>
+              <button
+                type="button"
+                className="save-segment-button save-segment-button--secondary"
+                disabled={busy || !draftSpeaker.trim()}
+                onClick={() => onUpdateVoice(
+                  selectedSegment.cueId,
+                  draftSpeaker,
+                  draftVoiceId || null,
+                )}
+              >
+                Lưu nhân vật &amp; giọng
+              </button>
               <button
                 type="button"
                 className="save-segment-button"

@@ -9,7 +9,7 @@ public sealed record LocalRuntimeProgress(string Phase, double Percent, string M
 
 public sealed class LocalAiRuntimeProvisioner : IDisposable
 {
-    private const string RuntimeVersion = "2026.08.13.2";
+    private const string RuntimeVersion = "2026.08.15.2";
     private const string UvVersion = "0.12.3";
     private const long UvArchiveSize = 19_013_455;
     private const string UvArchiveSha256 = "b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e";
@@ -75,7 +75,7 @@ public sealed class LocalAiRuntimeProvisioner : IDisposable
                     "pip", "install",
                     "--python", PythonPath,
                     "--only-binary", ":all:",
-                    "--exclude-newer", "2026-08-10",
+                    "--exclude-newer", "2026-08-14",
                     "argostranslate==1.11.0",
                     "ctranslate2==4.8.1",
                     "sentencepiece==0.2.2",
@@ -299,7 +299,7 @@ public sealed class LocalAiRuntimeProvisioner : IDisposable
         var drive = new DriveInfo(root);
         if (drive.AvailableFreeSpace < 2L * 1024 * 1024 * 1024)
         {
-            throw new LocalModelException("RUNTIME_DISK_SPACE_INSUFFICIENT", "Cần tối thiểu 2 GB trống để cài runtime AI local.");
+            throw new LocalModelException("RUNTIME_DISK_SPACE_INSUFFICIENT", "Cần tối thiểu 2 GB trống để cài runtime dịch local.");
         }
     }
 

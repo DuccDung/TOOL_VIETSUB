@@ -26,27 +26,68 @@ public sealed record DesktopProjectState(
     string SourceLanguageCode,
     string TargetLanguageCode,
     DesktopProjectSettings Settings,
+    DesktopAiStorageInfo AiStorage,
     DesktopVideoInfo? Video,
     string? VoicePlaybackUrl,
     IReadOnlyList<DesktopSubtitleCue> Subtitles,
     IReadOnlyList<LocalJob> Jobs);
+
+public sealed record DesktopAiStorageInfo(
+    string RootPath,
+    long FreeBytes,
+    bool UsesLegacyLocation,
+    string RecommendedPath,
+    string? PendingMigrationPath);
 
 public sealed record DesktopProjectSettings(
     string SpeechModel,
     string OcrLanguageCode,
     string TranslationModelId,
     DesktopTranslationSettings Translation,
+    DesktopVoiceSettings Voice,
     bool OriginalAudioEnabled,
     double OriginalAudioVolumePercent,
     bool VietnameseVoiceEnabled,
     double VietnameseVoiceVolumePercent,
+    bool VietnameseSubtitlesEnabled,
+    bool FlipHorizontal,
+    bool FlipVertical,
     bool RemoveOriginalSubtitles,
     string OriginalSubtitleRemovalMode,
     double OriginalSubtitleRegionX,
     double OriginalSubtitleRegionY,
     double OriginalSubtitleRegionWidth,
     double OriginalSubtitleRegionHeight,
+    IReadOnlyList<DesktopSubtitleRemovalRegion> OriginalSubtitleRemovalRegions,
     DesktopSubtitleStyleSettings SubtitleStyle);
+
+public sealed record DesktopSubtitleRemovalRegion(
+    string Id,
+    double X,
+    double Y,
+    double Width,
+    double Height);
+
+public sealed record DesktopVoiceSettings(
+    string DefaultVoiceId,
+    IReadOnlyDictionary<string, string> SpeakerVoiceIds,
+    IReadOnlyList<DesktopVoiceInfo> Voices,
+    int Speed = 0,
+    bool FptApiKeyConfigured = false,
+    int EstimatedCharacters = 0);
+
+public sealed record DesktopVoiceInfo(
+    string VoiceId,
+    string Engine,
+    string DisplayName,
+    string Gender,
+    string Region,
+    string Style,
+    string ModelVersion,
+    string License,
+    bool Installed,
+    bool IsCloud = false,
+    bool RequiresInstall = true);
 
 public sealed record DesktopTranslationSettings(
     string Provider,
@@ -87,6 +128,9 @@ public sealed record DesktopSubtitleCue(
     double End,
     string Original,
     string Translated,
+    string Speaker,
+    string? VoiceId,
+    string ResolvedVoiceId,
     string Status,
     bool OverlapsPrevious,
     bool HasVoice,

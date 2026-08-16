@@ -14,7 +14,9 @@ public sealed class LocalWorkerProcess
         string scriptPath,
         object request,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, string>? environment = null,
+        string? requestDirectory = null)
     {
         if (!File.Exists(pythonPath))
         {
@@ -28,9 +30,11 @@ public sealed class LocalWorkerProcess
             throw new LocalModelException("LOCAL_WORKER_MISSING", "Thiếu worker AI local trong bộ cài App.");
         }
 
-        var requestDirectory = Path.Combine(Path.GetTempPath(), "TOOL_VIETSUB_WORKERS");
-        Directory.CreateDirectory(requestDirectory);
-        var requestPath = Path.Combine(requestDirectory, $"{Guid.NewGuid():N}.request.json");
+        var resolvedRequestDirectory = string.IsNullOrWhiteSpace(requestDirectory)
+            ? Path.Combine(Path.GetTempPath(), "TOOL_VIETSUB_WORKERS")
+            : Path.GetFullPath(requestDirectory);
+        Directory.CreateDirectory(resolvedRequestDirectory);
+        var requestPath = Path.Combine(resolvedRequestDirectory, $"{Guid.NewGuid():N}.request.json");
         await File.WriteAllTextAsync(
             requestPath,
             JsonSerializer.Serialize(request, JsonOptions),
@@ -58,6 +62,13 @@ public sealed class LocalWorkerProcess
         startInfo.Environment["PYTHONUTF8"] = "1";
         startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
         startInfo.Environment["PYTHONNOUSERSITE"] = "1";
+        if (environment is not null)
+        {
+            foreach (var (key, value) in environment)
+            {
+                startInfo.Environment[key] = value;
+            }
+        }
         using var process = new Process { StartInfo = startInfo };
         if (!process.Start())
         {
@@ -155,6 +166,20 @@ public sealed class LocalWorkerRuntimeLocator(AppPaths paths)
             ?? throw new LocalModelException(
                 "LOCAL_PYTHON_MISSING",
                 "Chưa cài runtime Python local cho bộ dịch và giọng đọc.");
+    }
+
+    public string RequireVieNeuPython()
+    {
+        var configured = Environment.GetEnvironmentVariable("TOOL_VIETSUB_VIENEU_PYTHON_PATH");
+        var candidates = new[]
+        {
+            configured,
+            Path.Combine(paths.VieNeuRuntimeDirectory, ".venv", "Scripts", "python.exe"),
+        };
+        return candidates.FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            ?? throw new LocalModelException(
+                "VIENEU_RUNTIME_MISSING",
+                "Chưa cài runtime VieNeu tại thư mục AI đã chọn.");
     }
 
     public string RequireWorker(string fileName)

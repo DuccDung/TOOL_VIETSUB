@@ -6,6 +6,8 @@ import type {
 } from 'react'
 import { CheckCircle2, Info, TriangleAlert, X } from 'lucide-react'
 import { AccountView } from './components/AccountView'
+import { AiStorageDialog, type AiStorageSelection } from './components/AiStorageDialog'
+import { ApiErrorDialog } from './components/ApiErrorDialog'
 import { AuthScreen } from './components/AuthScreen'
 import { Header } from './components/Header'
 import { ImportProgress } from './components/ImportProgress'
@@ -15,12 +17,16 @@ import { ProjectDialog } from './components/ProjectDialog'
 import { SettingsPanel } from './components/SettingsPanel'
 import { SubtitlePanel } from './components/SubtitlePanel'
 import { Timeline } from './components/Timeline'
+import { TranslationRetryDialog } from './components/TranslationRetryDialog'
+import { VoiceSelectionDialog } from './components/VoiceSelectionDialog'
+import { VoiceWorkspace } from './components/VoiceWorkspace'
 import { demoSegments } from './data/mock'
 import { hasNativeHost, postToHost, subscribeToHost } from './lib/host'
 import { defaultSubtitleStyle } from './lib/subtitleStyle'
 import type {
   AuthState,
   MediaImportState,
+  LocalJobInfo,
   ProjectInfo,
   ProjectSummaryInfo,
   RegistrationChallenge,
@@ -31,6 +37,8 @@ import type {
   ToastMessage,
   TranslationSettingsInfo,
   VideoInfo,
+  VideoTransformSettings,
+  VoiceSettingsInfo,
 } from './types'
 
 const timelineDuration = 21
@@ -47,6 +55,20 @@ const defaultTranslationSettings: TranslationSettingsInfo = {
   glossaryText: '',
   translationMemoryCount: 0,
 }
+const defaultVoiceSettings: VoiceSettingsInfo = {
+  defaultVoiceId: 'piper:vi-vn-vais1000',
+  speakerVoiceIds: {},
+  speed: 0,
+  fptApiKeyConfigured: false,
+  estimatedCharacters: 0,
+  voices: [
+    { voiceId: 'piper:vi-vn-vais1000', engine: 'piper', displayName: 'VAIS-1000', gender: 'Nữ', region: 'Việt Nam', style: 'Tự nhiên', modelVersion: 'medium', license: 'MIT', installed: false, isCloud: false, requiresInstall: true },
+    { voiceId: 'vieneu:minh-duc', engine: 'vieneu', displayName: 'Minh Đức', gender: 'Nam', region: 'Bắc', style: 'Tin tức', modelVersion: '3.2.5', license: 'Apache-2.0', installed: false, isCloud: false, requiresInstall: true },
+    { voiceId: 'vieneu:truc-ly', engine: 'vieneu', displayName: 'Trúc Ly', gender: 'Nữ', region: 'Bắc', style: 'Tự nhiên', modelVersion: '3.2.5', license: 'Apache-2.0', installed: false, isCloud: false, requiresInstall: true },
+    { voiceId: 'fpt:banmai', engine: 'fpt', displayName: 'Ban Mai', gender: 'Nữ', region: 'Bắc', style: 'Tự nhiên', modelVersion: 'v5', license: 'FPT.AI Terms', installed: false, isCloud: true, requiresInstall: false },
+    { voiceId: 'fpt:leminh', engine: 'fpt', displayName: 'Lê Minh', gender: 'Nam', region: 'Bắc', style: 'Tự nhiên', modelVersion: 'v5', license: 'FPT.AI Terms', installed: false, isCloud: true, requiresInstall: false },
+  ],
+}
 const demoMode = new URLSearchParams(window.location.search).get('demo') === '1'
 const authPreviewMode = new URLSearchParams(window.location.search).get('auth')
 const workspacePreviewMode = new URLSearchParams(window.location.search).get('workspace')
@@ -62,7 +84,55 @@ const maxSubtitleWidth = 560
 const minWorkspaceHeight = 290
 const minTimelineHeight = 240
 
+function mirrorRegionCoordinate(position: number, size: number) {
+  return Math.min(Math.max(1 - position - size, 0), Math.max(0, 1 - size))
+}
+
 type ResizeTarget = 'settings' | 'subtitles' | 'timeline'
+
+type ApiErrorState = {
+  provider: string
+  code: string
+  message: string
+}
+
+const cloudTranslationApiErrorCodes = new Set([
+  'TRANSLATION_API_KEY_REQUIRED',
+  'TRANSLATION_API_KEY_INVALID',
+  'TRANSLATION_API_ACCESS_DENIED',
+  'TRANSLATION_BALANCE_EXHAUSTED',
+  'TRANSLATION_RATE_LIMITED',
+  'TRANSLATION_REQUEST_REJECTED',
+  'TRANSLATION_MODEL_UNAVAILABLE',
+  'TRANSLATION_REQUEST_TOO_LARGE',
+  'TRANSLATION_REQUEST_CANCELLED',
+  'TRANSLATION_PROVIDER_ERROR',
+  'TRANSLATION_PROVIDER_TIMEOUT',
+  'TRANSLATION_PROVIDER_UNAVAILABLE',
+  'TRANSLATION_NETWORK_ERROR',
+  'TRANSLATION_RESPONSE_TOO_LARGE',
+  'TRANSLATION_RESPONSE_INCOMPLETE',
+  'TRANSLATION_RESPONSE_INVALID',
+  'TRANSLATION_RESULT_INVALID',
+  'TRANSLATION_REFUSED',
+])
+
+function isCloudTranslationApiError(code: string) {
+  return cloudTranslationApiErrorCodes.has(code)
+}
+
+function isCloudVoiceApiError(code: string) {
+  return code.startsWith('FPT_')
+}
+
+function inferTranslationProvider(message: string) {
+  const normalizedMessage = message.toLowerCase()
+  if (normalizedMessage.includes('groq')) return 'Groq'
+  if (normalizedMessage.includes('deepseek')) return 'DeepSeek'
+  if (normalizedMessage.includes('gemini')) return 'Gemini'
+  if (normalizedMessage.includes('openai')) return 'OpenAI'
+  return 'dịch vụ AI cloud'
+}
 
 interface LayoutSizes {
   settingsWidth: number
@@ -166,10 +236,14 @@ const demoProject: ProjectInfo = {
       ...defaultTranslationSettings,
       modelId: 'opus-mt-zh-vi-official-v2',
     },
+    voice: defaultVoiceSettings,
     originalAudioEnabled: true,
     originalAudioVolumePercent: 85,
     vietnameseVoiceEnabled: true,
     vietnameseVoiceVolumePercent: 100,
+    vietnameseSubtitlesEnabled: true,
+    flipHorizontal: false,
+    flipVertical: false,
     removeOriginalSubtitles: false,
     originalSubtitleRemovalMode: 'blur',
     originalSubtitleRegionX: 0.05,
@@ -177,6 +251,13 @@ const demoProject: ProjectInfo = {
     originalSubtitleRegionWidth: 0.90,
     originalSubtitleRegionHeight: 0.16,
     subtitleStyle: defaultSubtitleStyle,
+  },
+  aiStorage: {
+    rootPath: 'D:\\TOOL_VIETSUB_AI',
+    freeBytes: 47 * 1024 * 1024 * 1024,
+    usesLegacyLocation: false,
+    recommendedPath: 'D:\\TOOL_VIETSUB_AI',
+    pendingMigrationPath: null,
   },
   video: demoVideo,
   voicePlaybackUrl: null,
@@ -309,12 +390,21 @@ function App() {
   const [selectedSegmentId, setSelectedSegmentId] = useState<number | null>(
     demoMode ? demoSegments[0].id : null,
   )
-  const [activeNav, setActiveNav] = useState(initialView === 'account' ? 'account' : 'subtitle')
+  const [activeNav, setActiveNav] = useState(
+    ['account', 'voice', 'library'].includes(initialView ?? '') ? initialView! : 'subtitle',
+  )
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [playbackRate, setPlaybackRate] = useState(1)
   const [maximized, setMaximized] = useState(false)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
+  const [apiError, setApiError] = useState<ApiErrorState | null>(null)
+  const [translationRetryJob, setTranslationRetryJob] = useState<LocalJobInfo | null>(null)
+  const [voiceSelectionOpen, setVoiceSelectionOpen] = useState(false)
+  const [voicePreviewBusy, setVoicePreviewBusy] = useState(false)
+  const [voicePreviewDataUrl, setVoicePreviewDataUrl] = useState<string | null>(null)
+  const [aiStorageSelection, setAiStorageSelection] = useState<AiStorageSelection | null>(null)
+  const [aiStorageProgress, setAiStorageProgress] = useState<{ percent: number, message: string } | null>(null)
   const [layoutSizes, setLayoutSizes] = useState<LayoutSizes>(readLayoutSizes)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const editorLayoutRef = useRef<HTMLElement>(null)
@@ -643,6 +733,13 @@ function App() {
             : [...current.jobs, changedJob],
         }) : current)
         setJobBusy(changedJob.status === 'pending' || changedJob.status === 'running')
+        if (changedJob.status === 'failed' && isCloudVoiceApiError(changedJob.errorCode ?? '')) {
+          setApiError({
+            code: changedJob.errorCode ?? 'FPT_PROVIDER_ERROR',
+            message: changedJob.errorMessage ?? 'Không thể hoàn tất yêu cầu tạo giọng FPT.AI.',
+            provider: 'FPT.AI',
+          })
+        }
       }
 
       if (message.type === 'job:busy') {
@@ -661,10 +758,17 @@ function App() {
       if (message.type === 'runtime:install:progress'
         && typeof message.progress === 'object'
         && message.progress !== null) {
-        const progress = message.progress as { percent?: number }
+        const progress = message.progress as { phase?: string, percent?: number, message?: string }
         const percent = Math.max(0, Math.min(100, Number(progress.percent ?? 0)))
-        setModelDownloadPercent(percent)
-        if (percent >= 100) setModelDownloadPercent(null)
+        if (progress.phase === 'AI_STORAGE') {
+          setAiStorageProgress({
+            percent,
+            message: String(progress.message ?? 'Đang xử lý dữ liệu AI local.'),
+          })
+        } else {
+          setModelDownloadPercent(percent)
+          if (percent >= 100) setModelDownloadPercent(null)
+        }
       }
 
       if (message.type === 'subtitle:busy') {
@@ -691,6 +795,80 @@ function App() {
         )
       }
 
+      if (message.type === 'voice:settings:saved') {
+        setProjectBusy(false)
+        notify(
+          'Đã lưu phân vai',
+          'Cache audio chỉ được làm mới cho những câu bị đổi giọng.',
+          'success',
+        )
+      }
+
+      if (message.type === 'voice:cloud:settings:saved') {
+        setProjectBusy(false)
+        notify(
+          'Đã lưu cấu hình FPT.AI',
+          'API key được mã hóa theo tài khoản Windows và không nằm trong file project.',
+          'success',
+        )
+      }
+
+      if (message.type === 'voice:cloud:previewed') {
+        setVoicePreviewBusy(false)
+        setVoicePreviewDataUrl(String(message.audioDataUrl ?? ''))
+        notify('FPT.AI đã sẵn sàng', 'API key và giọng đọc đã được kiểm tra thành công.', 'success')
+      }
+
+      if (message.type === 'voice:model:installed') {
+        setProjectBusy(false)
+        setModelDownloadPercent(null)
+        notify('Đã cài bộ giọng', 'Model local đã sẵn sàng để tạo giọng.', 'success')
+      }
+
+      if (message.type === 'ai-storage:selected') {
+        const destinationPath = String(message.destinationPath ?? '').trim()
+        const currentPath = String(message.currentPath ?? '').trim()
+        if (destinationPath && currentPath) {
+          setAiStorageSelection({ destinationPath, currentPath })
+          setAiStorageProgress(null)
+        }
+      }
+
+      if (message.type === 'ai-storage:selection-cancelled') {
+        setAiStorageSelection(null)
+        setAiStorageProgress(null)
+      }
+
+      if (message.type === 'ai-storage:busy') {
+        setProjectBusy(true)
+        setAiStorageProgress({
+          percent: 0,
+          message: 'Đang kiểm tra thư mục và dung lượng trống.',
+        })
+      }
+
+      if (message.type === 'ai-storage:saved') {
+        setProjectBusy(false)
+        setModelDownloadPercent(null)
+        setAiStorageSelection(null)
+        setAiStorageProgress(null)
+        notify(
+          'Đã đổi vị trí lưu AI',
+          `Runtime, model và cache sẽ sử dụng ${String(message.destinationPath ?? 'thư mục mới')}.`,
+          'success',
+        )
+      }
+
+      if (message.type === 'ai-storage:discarded') {
+        setProjectBusy(false)
+        setAiStorageProgress(null)
+        notify(
+          'Đã bỏ bản migration tạm',
+          'Vị trí AI hiện tại và dữ liệu nguồn vẫn được giữ nguyên.',
+          'success',
+        )
+      }
+
       if (message.type === 'workspace:error') {
         const code = String(message.code ?? 'WORKSPACE_ERROR')
         const errorMessage = String(message.message ?? 'Không thể xử lý workspace.')
@@ -699,15 +877,29 @@ function App() {
         setModelDownloadPercent(null)
         setSubtitleBusy(false)
         setImportState(emptyImportState)
+        setVoicePreviewBusy(false)
         setProjectError(errorMessage)
+        if (code.startsWith('AI_STORAGE_')) {
+          setAiStorageProgress(null)
+        }
+        const isApiError = isCloudTranslationApiError(code) || isCloudVoiceApiError(code)
+        if (isApiError) {
+          setApiError({
+            code,
+            message: errorMessage,
+            provider: isCloudVoiceApiError(code) ? 'FPT.AI' : inferTranslationProvider(errorMessage),
+          })
+        }
         if (code === 'PROJECT_REQUIRED' || code.startsWith('PROJECT_')) {
           setProjectDialogOpen(true)
         }
+        if (!isApiError) {
         notify(
           code === 'MEDIA_IMPORT_CANCELLED' ? 'Đã hủy nhập video' : 'Chưa thể thực hiện',
           errorMessage,
           'warning',
         )
+        }
       }
 
       if (message.type === 'window:state') {
@@ -859,6 +1051,7 @@ function App() {
     return () => window.removeEventListener('keydown', handleShortcut)
   })
 
+  const projectRemovalRegions = currentProject?.settings.originalSubtitleRemovalRegions
   const subtitleRemoval: SubtitleRemovalSettings = {
     enabled: currentProject?.settings.removeOriginalSubtitles ?? false,
     mode: currentProject?.settings.originalSubtitleRemovalMode ?? 'blur',
@@ -866,6 +1059,57 @@ function App() {
     y: currentProject?.settings.originalSubtitleRegionY ?? 0.70,
     width: currentProject?.settings.originalSubtitleRegionWidth ?? 0.90,
     height: currentProject?.settings.originalSubtitleRegionHeight ?? 0.16,
+    regions: projectRemovalRegions?.length
+      ? projectRemovalRegions
+      : [{
+          id: 'legacy',
+          x: currentProject?.settings.originalSubtitleRegionX ?? 0.05,
+          y: currentProject?.settings.originalSubtitleRegionY ?? 0.70,
+          width: currentProject?.settings.originalSubtitleRegionWidth ?? 0.90,
+          height: currentProject?.settings.originalSubtitleRegionHeight ?? 0.16,
+        }],
+  }
+
+  const videoTransform: VideoTransformSettings = {
+    flipHorizontal: currentProject?.settings.flipHorizontal ?? false,
+    flipVertical: currentProject?.settings.flipVertical ?? false,
+  }
+
+  const updateVideoTransform = (next: VideoTransformSettings) => {
+    setCurrentProject((current) => {
+      if (!current) return current
+      const settings = current.settings
+      const horizontalChanged = (settings.flipHorizontal ?? false) !== next.flipHorizontal
+      const verticalChanged = (settings.flipVertical ?? false) !== next.flipVertical
+      if (!horizontalChanged && !verticalChanged) return current
+
+      return {
+        ...current,
+        settings: {
+          ...settings,
+          flipHorizontal: next.flipHorizontal,
+          flipVertical: next.flipVertical,
+          originalSubtitleRegionX: horizontalChanged
+            ? mirrorRegionCoordinate(settings.originalSubtitleRegionX, settings.originalSubtitleRegionWidth)
+            : settings.originalSubtitleRegionX,
+          originalSubtitleRegionY: verticalChanged
+            ? mirrorRegionCoordinate(settings.originalSubtitleRegionY, settings.originalSubtitleRegionHeight)
+            : settings.originalSubtitleRegionY,
+          originalSubtitleRemovalRegions: settings.originalSubtitleRemovalRegions?.map((region) => ({
+            ...region,
+            x: horizontalChanged
+              ? mirrorRegionCoordinate(region.x, region.width)
+              : region.x,
+            y: verticalChanged
+              ? mirrorRegionCoordinate(region.y, region.height)
+              : region.y,
+          })),
+        },
+      }
+    })
+    if (hasNativeHost()) {
+      postToHost('project:video-transform:update', next)
+    }
   }
 
   const updateSubtitleRemoval = (next: SubtitleRemovalSettings) => {
@@ -879,6 +1123,7 @@ function App() {
         originalSubtitleRegionY: next.y,
         originalSubtitleRegionWidth: next.width,
         originalSubtitleRegionHeight: next.height,
+        originalSubtitleRemovalRegions: next.regions,
       },
     }) : current)
     if (hasNativeHost()) {
@@ -888,6 +1133,21 @@ function App() {
 
   const subtitleStyle: SubtitleStyleSettings = currentProject?.settings.subtitleStyle
     ?? defaultSubtitleStyle
+
+  const vietnameseSubtitlesEnabled = currentProject?.settings.vietnameseSubtitlesEnabled ?? true
+
+  const updateVietnameseSubtitlesEnabled = (enabled: boolean) => {
+    setCurrentProject((current) => current ? ({
+      ...current,
+      settings: {
+        ...current.settings,
+        vietnameseSubtitlesEnabled: enabled,
+      },
+    }) : current)
+    if (hasNativeHost()) {
+      postToHost('project:vietnamese-subtitles:update', { enabled })
+    }
+  }
 
   const updateSubtitleStyle = (next: SubtitleStyleSettings) => {
     setCurrentProject((current) => current ? ({
@@ -980,6 +1240,141 @@ function App() {
       'Chế độ xem trước đã cập nhật. Audio cần được tạo lại nếu nội dung đã thay đổi.',
       'success',
     )
+  }
+
+  const updateVoiceSettings = (
+    defaultVoiceId: string,
+    speakerVoiceIds: Record<string, string>,
+    speed = currentProject?.settings.voice.speed ?? 0,
+  ) => {
+    setProjectBusy(true)
+    if (hasNativeHost()) {
+      postToHost('project:voice-settings:update', { defaultVoiceId, speakerVoiceIds, speed })
+      return
+    }
+
+    setCurrentProject((current) => current ? ({
+      ...current,
+      settings: {
+        ...current.settings,
+        voice: { ...current.settings.voice, defaultVoiceId, speakerVoiceIds, speed },
+      },
+    }) : current)
+    setProjectBusy(false)
+  }
+
+  const installVoice = (voiceId: string) => {
+    setProjectBusy(true)
+    if (hasNativeHost()) {
+      postToHost('voice:model:install', { voiceId })
+      return
+    }
+
+    setCurrentProject((current) => current ? ({
+      ...current,
+      settings: {
+        ...current.settings,
+        voice: {
+          ...current.settings.voice,
+          voices: current.settings.voice.voices.map((voice) => (
+            !voice.isCloud && voice.engine === (voiceId.startsWith('vieneu:') ? 'vieneu' : 'piper')
+              ? { ...voice, installed: true }
+              : voice
+          )),
+        },
+      },
+    }) : current)
+    setProjectBusy(false)
+  }
+
+  const openVoiceSelection = () => {
+    if (!currentProject?.settings.voice.voices.length) {
+      notify('Chưa có giọng đọc', 'Không tìm thấy giọng local hoặc online để tạo audio.', 'warning')
+      return
+    }
+    setVoicePreviewDataUrl(null)
+    setVoiceSelectionOpen(true)
+  }
+
+  const startVoiceSynthesis = (voiceId: string, speed: number, apiKey?: string) => {
+    setVoiceSelectionOpen(false)
+    setVoicePreviewDataUrl(null)
+    setJobBusy(true)
+    if (hasNativeHost()) {
+      postToHost('job:voice:synthesize', { voiceId, speed, apiKey })
+      return
+    }
+
+    setCurrentProject((current) => current ? ({
+      ...current,
+      settings: {
+        ...current.settings,
+        voice: {
+          ...current.settings.voice,
+          defaultVoiceId: voiceId,
+          speed,
+          fptApiKeyConfigured: current.settings.voice.fptApiKeyConfigured || Boolean(apiKey),
+        },
+      },
+    }) : current)
+    setJobBusy(false)
+    notify('Đã chọn giọng đọc', 'Bản xem trước đã ghi nhận giọng mặc định mới.', 'success')
+  }
+
+  const previewFptVoice = (voiceId: string, speed: number, apiKey?: string) => {
+    setVoicePreviewBusy(true)
+    setVoicePreviewDataUrl(null)
+    if (hasNativeHost()) {
+      postToHost('voice:cloud:preview', { voiceId, speed, apiKey })
+      return
+    }
+
+    window.setTimeout(() => {
+      setVoicePreviewBusy(false)
+      notify('Cần chạy trong ứng dụng desktop', 'Bản preview web không thể gọi FPT.AI vì API key chỉ lưu ở Windows host.', 'warning')
+    }, 300)
+  }
+
+  const updateFptVoiceCredential = (apiKey?: string, clearApiKey = false) => {
+    setProjectBusy(true)
+    if (hasNativeHost()) {
+      postToHost('project:voice-cloud-settings:update', { apiKey, clearApiKey })
+      return
+    }
+
+    setCurrentProject((current) => current ? ({
+      ...current,
+      settings: {
+        ...current.settings,
+        voice: {
+          ...current.settings.voice,
+          fptApiKeyConfigured: clearApiKey ? false : Boolean(apiKey) || current.settings.voice.fptApiKeyConfigured,
+        },
+      },
+    }) : current)
+    setProjectBusy(false)
+  }
+
+  const updateSubtitleVoice = (cueId: string, speaker: string, voiceId: string | null) => {
+    if (hasNativeHost()) {
+      setSubtitleBusy(true)
+      postToHost('subtitle:voice:update', { cueId, speaker, voiceId })
+      return
+    }
+
+    const settings = currentProject?.settings.voice ?? defaultVoiceSettings
+    const resolvedVoiceId = voiceId
+      || settings.speakerVoiceIds[speaker]
+      || settings.defaultVoiceId
+    const update = (segment: SubtitleSegment): SubtitleSegment => segment.cueId === cueId
+      ? { ...segment, speaker, voiceId, resolvedVoiceId, hasVoice: false, status: 'missing-audio' }
+      : segment
+    setSegments((current) => current.map(update))
+    setCurrentProject((current) => current ? ({
+      ...current,
+      voicePlaybackUrl: null,
+      subtitles: current.subtitles.map(update),
+    }) : current)
   }
 
   if (authState.status !== 'authenticated' || !authState.account || !authState.entitlements) {
@@ -1083,6 +1478,36 @@ function App() {
           onRefresh={() => postToHost('auth:refresh')}
           onLogout={() => postToHost('auth:logout')}
         />
+      ) : activeNav === 'voice' || activeNav === 'library' ? (
+        <VoiceWorkspace
+          mode={activeNav}
+          settings={currentProject?.settings.voice ?? null}
+          segments={segments}
+          busy={projectBusy || subtitleBusy || jobBusy}
+          downloadPercent={modelDownloadPercent}
+          storage={currentProject?.aiStorage ?? null}
+          onSave={updateVoiceSettings}
+          onSaveFptCredential={updateFptVoiceCredential}
+          onInstall={installVoice}
+          onSynthesize={openVoiceSelection}
+          onSelectStorage={() => postToHost('ai-storage:select')}
+          onResumeStorage={(destinationPath) => {
+            const currentPath = currentProject?.aiStorage.rootPath
+            if (!currentPath || projectBusy) return
+            setAiStorageSelection({ currentPath, destinationPath })
+            setProjectBusy(true)
+            setAiStorageProgress({
+              percent: 0,
+              message: 'Đang tiếp tục migration còn dang dở.',
+            })
+            postToHost('ai-storage:change', { destinationPath, migrateExisting: true })
+          }}
+          onDiscardPendingStorage={() => {
+            if (projectBusy) return
+            setProjectBusy(true)
+            postToHost('ai-storage:discard-pending')
+          }}
+        />
       ) : (
         <main
           ref={editorLayoutRef}
@@ -1159,6 +1584,11 @@ function App() {
               postToHost('job:resume', { jobId })
             }}
             onRetryJob={(jobId) => {
+              const failedJob = currentProject?.jobs.find((job) => job.jobId === jobId)
+              if (failedJob?.jobType === 'TRANSLATE_CLOUD' || failedJob?.jobType === 'TRANSLATE_LOCAL') {
+                setTranslationRetryJob(failedJob)
+                return
+              }
               setJobBusy(true)
               postToHost('job:retry', { jobId })
             }}
@@ -1178,6 +1608,7 @@ function App() {
           />
           <PreviewPanel
             video={video}
+            busy={subtitleBusy || jobBusy}
             playing={playing}
             currentTime={currentTime}
             playbackRate={playbackRate}
@@ -1186,20 +1617,24 @@ function App() {
             voiceAudioEnabled={audioSettings.vietnameseVoiceEnabled && voicePreviewAvailable}
             voiceVolume={audioSettings.vietnameseVoiceVolumePercent}
             voicePlaybackUrl={currentProject?.voicePlaybackUrl ?? null}
+            vietnameseSubtitlesEnabled={vietnameseSubtitlesEnabled}
             subtitleText={segments.find((segment) => (
               currentTime >= segment.start && currentTime < segment.end
             ))?.translated ?? ''}
             subtitleRemoval={subtitleRemoval}
             subtitleStyle={subtitleStyle}
+            videoTransform={videoTransform}
             onTogglePlay={togglePlayback}
             onTimeUpdate={setCurrentTime}
             onPlaybackEnded={() => setPlaying(false)}
             onPlaybackError={handlePlaybackError}
             onVoicePlaybackError={handleVoicePlaybackError}
+            onVietnameseSubtitlesEnabledChange={updateVietnameseSubtitlesEnabled}
             onOpenVideo={openVideo}
             onDropVideo={loadBrowserFile}
             onSubtitleRemovalChange={updateSubtitleRemoval}
             onSubtitleStyleChange={updateSubtitleStyle}
+            onVideoTransformChange={updateVideoTransform}
           />
           <LayoutSeparator
             orientation="vertical"
@@ -1232,10 +1667,11 @@ function App() {
               postToHost('job:translate')
             }}
             onSynthesizeVoice={() => {
-              setJobBusy(true)
-              postToHost('job:voice:synthesize')
+              openVoiceSelection()
             }}
             onUpdateSegment={updateSubtitleSegment}
+            voices={currentProject?.settings.voice.voices ?? []}
+            onUpdateVoice={updateSubtitleVoice}
           />
         </div>
 
@@ -1251,6 +1687,8 @@ function App() {
 
         <Timeline
           video={video}
+          flipHorizontal={videoTransform.flipHorizontal}
+          flipVertical={videoTransform.flipVertical}
           segments={segments}
           playing={playing}
           currentTime={currentTime}
@@ -1365,6 +1803,71 @@ function App() {
       <ImportProgress
         state={importState}
         onCancel={() => postToHost('video:import:cancel')}
+      />
+
+      <TranslationRetryDialog
+        open={translationRetryJob !== null}
+        errorMessage={translationRetryJob?.errorMessage}
+        completedCues={translationRetryJob?.translationMetrics?.completedCues}
+        totalPendingCues={translationRetryJob?.translationMetrics?.totalPendingCues}
+        onClose={() => setTranslationRetryJob(null)}
+        onSelect={(translationMode) => {
+          const jobId = translationRetryJob?.jobId
+          setTranslationRetryJob(null)
+          if (!jobId) return
+          setJobBusy(true)
+          postToHost('job:retry', { jobId, translationMode })
+        }}
+      />
+
+      <ApiErrorDialog
+        open={apiError !== null}
+        provider={apiError?.provider ?? 'dịch vụ AI cloud'}
+        code={apiError?.code ?? 'TRANSLATION_PROVIDER_ERROR'}
+        message={apiError?.message ?? 'Không thể kết nối dịch vụ dịch cloud.'}
+        onClose={() => setApiError(null)}
+      />
+
+      <VoiceSelectionDialog
+        open={voiceSelectionOpen}
+        settings={currentProject?.settings.voice ?? null}
+        busy={projectBusy || jobBusy}
+        previewBusy={voicePreviewBusy}
+        previewAudioDataUrl={voicePreviewDataUrl}
+        downloadPercent={modelDownloadPercent}
+        onClose={() => {
+          if (!projectBusy && !jobBusy && !voicePreviewBusy) {
+            setVoiceSelectionOpen(false)
+            setVoicePreviewDataUrl(null)
+          }
+        }}
+        onInstall={installVoice}
+        onPreview={previewFptVoice}
+        onConfirm={startVoiceSynthesis}
+      />
+
+      <AiStorageDialog
+        selection={aiStorageSelection}
+        busy={aiStorageProgress !== null}
+        progress={aiStorageProgress}
+        onClose={() => {
+          if (!projectBusy) {
+            setAiStorageSelection(null)
+            setAiStorageProgress(null)
+          }
+        }}
+        onConfirm={(migrateExisting) => {
+          if (!aiStorageSelection || projectBusy) return
+          setProjectBusy(true)
+          setAiStorageProgress({
+            percent: 0,
+            message: 'Đang kiểm tra thư mục và dung lượng trống.',
+          })
+          postToHost('ai-storage:change', {
+            destinationPath: aiStorageSelection.destinationPath,
+            migrateExisting,
+          })
+        }}
       />
 
       <div className="toast-region" aria-live="polite" aria-atomic="false">

@@ -1,88 +1,280 @@
 @page
 @model IndexModel
 @{
-    ViewData["Title"] = "Tổng quan hệ thống";
+    ViewData["Title"] = "EzmaxSub — Dịch & lồng tiếng video bằng AI";
+    ViewData["IsLandingPage"] = true;
 }
 
-<section class="server-hero">
-    <div>
-        <span class="server-eyebrow">TRUNG TÂM ĐIỀU HÀNH</span>
-        <h1>Server quản lý an toàn cho TOOL VIETSUB.</h1>
-        <p>Quản lý tài khoản, phiên đăng nhập, gói sử dụng và lịch sử đồng bộ của ứng dụng desktop.</p>
-        <div class="hero-actions">
-            @if (Model.RequiresSetup)
-            {
-                <a class="primary-link" asp-page="/Setup">Khởi tạo quản trị viên <span>→</span></a>
-            }
-            else
-            {
-                <span class="system-ready">✓ Hệ thống đã được khởi tạo</span>
-                <a class="primary-link" asp-page="/Admin/Subscriptions">Nâng cấp tài khoản <span>→</span></a>
-            }
-            <a class="secondary-link" href="/openapi/v1.json">Xem hợp đồng API</a>
+<div class="marketing" id="top">
+    <header class="landing-header">
+        <nav class="landing-nav" aria-label="Điều hướng trang giới thiệu">
+            <a class="landing-brand" href="#top" aria-label="EzmaxSub - Trang chủ">
+                <span class="landing-brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+                <strong>EZMAXSUB</strong>
+            </a>
+
+            <div class="landing-links">
+                <a href="#tools">Công cụ AI</a>
+                <a href="#demo">Video demo</a>
+                <a href="#reviews">Đánh giá</a>
+                <a href="#faq">Hỏi đáp</a>
+                <a class="referral-link" href="#download">
+                    <span aria-hidden="true">♙</span> Giới thiệu nhận tới 20%
+                </a>
+            </div>
+
+            <div class="landing-nav-actions">
+                <a class="login-link" asp-page="/Admin/Login">Đăng nhập</a>
+                <a class="nav-download" href="#download"><span aria-hidden="true">↓</span> Tải về</a>
+                <details class="mobile-nav">
+                    <summary aria-label="Mở menu điều hướng"><span></span><span></span><span></span></summary>
+                    <div class="mobile-nav-panel">
+                        <a href="#tools">Công cụ AI</a>
+                        <a href="#demo">Video demo</a>
+                        <a href="#reviews">Đánh giá</a>
+                        <a href="#faq">Hỏi đáp</a>
+                        <a class="mobile-referral" href="#download">♙ Giới thiệu nhận tới 20%</a>
+                        <a asp-page="/Admin/Login">Đăng nhập</a>
+                    </div>
+                </details>
+            </div>
+        </nav>
+    </header>
+
+    <div class="hero-zone">
+        <section class="landing-hero" aria-labelledby="hero-title">
+            <span class="hero-kicker">VIỆT HOÁ VIDEO TRỌN QUY TRÌNH</span>
+            <h1 id="hero-title">Dịch và lồng tiếng <span>video bằng AI</span> — đúng ngữ cảnh, khớp thời lượng</h1>
+            <p>EzmaxSub có đủ mọi thứ để biến video nước ngoài thành bản Việt hoá hoàn chỉnh — tải, bóc phụ đề, dịch và lồng tiếng.</p>
+            <div class="hero-actions">
+                <a class="button button--primary" href="#download"><span aria-hidden="true">↓</span> Tải ngay</a>
+                <a class="button button--dark" href="#tools">Xem công cụ AI</a>
+            </div>
+            <small>Windows 10/11 · 64-bit · macOS sắp ra mắt</small>
+        </section>
+
+        <section class="product-showcase" aria-label="Các tính năng nổi bật của EzmaxSub">
+            <input class="showcase-radio" type="radio" name="showcase" id="showcase-ocr" checked />
+            <input class="showcase-radio" type="radio" name="showcase" id="showcase-translate" />
+            <input class="showcase-radio" type="radio" name="showcase" id="showcase-voice" />
+            <input class="showcase-radio" type="radio" name="showcase" id="showcase-clean" />
+            <input class="showcase-radio" type="radio" name="showcase" id="showcase-batch" />
+
+            <div class="showcase-grid">
+                <div class="showcase-title">
+                    <span>Studio chuyên nghiệp</span>
+                    <strong>Việt hoá &amp;<br />lồng tiếng</strong>
+                </div>
+
+                <div class="showcase-frame">
+                    <div class="showcase-screen">
+                        <img class="showcase-shot shot--ocr" src="https://ezmaxsoft.com/landing-media/0730-5b2208b7947a.jpg" alt="Giao diện bóc phụ đề OCR của EzmaxSub" />
+                        <img class="showcase-shot shot--translate" src="https://ezmaxsoft.com/landing-media/dich-ngu-canh-a6a91bc5cd16.jpg" alt="Giao diện dịch theo ngữ cảnh của EzmaxSub" loading="lazy" />
+                        <img class="showcase-shot shot--voice" src="https://ezmaxsoft.com/landing-media/long-tieng-1718c37453df.jpg" alt="Giao diện lồng tiếng AI của EzmaxSub" loading="lazy" />
+                        <img class="showcase-shot shot--clean" src="https://ezmaxsoft.com/landing-media/blur-d47f45a5d9d2.jpg" alt="Giao diện xoá phụ đề cứng của EzmaxSub" loading="lazy" />
+                        <img class="showcase-shot shot--batch" src="https://ezmaxsoft.com/landing-media/batchmode-60df4ec71210.jpg" alt="Giao diện Batch Mode của EzmaxSub" loading="lazy" />
+                    </div>
+                    <div class="showcase-captions" aria-live="polite">
+                        <p class="caption--ocr"><strong>Thuật toán OCR tối ưu</strong> — nhận diện nhanh, ghép câu trọn nghĩa và canh đúng mốc vào/ra.</p>
+                        <p class="caption--translate"><strong>Dịch theo ngữ cảnh</strong> — giữ tên riêng, xưng hô và phong cách nhất quán từ đầu đến cuối.</p>
+                        <p class="caption--voice"><strong>Lồng tiếng AI đa nhân vật</strong> — mỗi nhân vật một giọng, tự cân chỉnh theo thời lượng câu thoại.</p>
+                        <p class="caption--clean"><strong>Xoá phụ đề cứng</strong> — chọn vùng xử lý trực quan, làm sạch khung hình trước khi ghép sub mới.</p>
+                        <p class="caption--batch"><strong>Batch Mode</strong> — xếp hàng nhiều video và chạy trọn quy trình với ít thao tác hơn.</p>
+                    </div>
+                </div>
+
+                <div class="showcase-tabs" role="tablist" aria-label="Chọn tính năng xem trước">
+                    <label for="showcase-ocr">Bóc phụ đề OCR <span>✦</span></label>
+                    <label for="showcase-translate">Dịch theo ngữ cảnh</label>
+                    <label for="showcase-voice">Lồng tiếng AI</label>
+                    <label for="showcase-clean">Xoá sub cứng</label>
+                    <label for="showcase-batch">Batch Mode</label>
+                </div>
+            </div>
+        </section>
+
+        <section class="platforms" aria-label="Các nền tảng được hỗ trợ">
+            <p>TẢI VIDEO TRỰC TIẾP TỪ 1.800+ NỀN TẢNG</p>
+            <div class="platform-marquee">
+                <div class="platform-track">
+                    <span>YouTube</span><span>Bilibili</span><span>iQIYI</span><span>Youku</span><span>Douyin</span><span>TikTok</span><span>WeTV</span><span>Instagram</span><span>Facebook</span><span>X</span><span>Vimeo</span>
+                    <span aria-hidden="true">YouTube</span><span aria-hidden="true">Bilibili</span><span aria-hidden="true">iQIYI</span><span aria-hidden="true">Youku</span><span aria-hidden="true">Douyin</span><span aria-hidden="true">TikTok</span><span aria-hidden="true">WeTV</span><span aria-hidden="true">Instagram</span><span aria-hidden="true">Facebook</span><span aria-hidden="true">X</span><span aria-hidden="true">Vimeo</span>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <section class="tools-section section-wrap" id="tools" aria-labelledby="tools-title">
+        <div class="section-heading section-heading--split">
+            <div>
+                <span>TOÀN BỘ QUY TRÌNH TRONG MỘT ỨNG DỤNG</span>
+                <h2 id="tools-title">Công cụ Việt hoá AI</h2>
+                <p>Năm bước liền mạch — từ video gốc đến bản Việt hoá có phụ đề và giọng đọc hoàn chỉnh.</p>
+            </div>
+            <a class="text-pill" href="#download">Tải ngay <span>↗</span></a>
         </div>
-    </div>
-    <div class="server-flow" aria-label="Luồng kiến trúc">
-        <div><span>01</span><strong>Desktop App</strong><small>Xử lý video cục bộ</small></div>
-        <i></i>
-        <div><span>02</span><strong>HTTPS API</strong><small>Xác thực và đồng bộ</small></div>
-        <i></i>
-        <div><span>03</span><strong>SQL Server</strong><small>Dữ liệu trung tâm</small></div>
-    </div>
-</section>
 
-@if (Model.SetupCompleted)
-{
-    <div class="server-notice success-notice">✓ Quản trị viên đầu tiên đã được tạo. Bạn có thể dùng tài khoản này để đăng nhập App.</div>
-}
+        <div class="tool-list">
+            <article class="tool-feature tool-feature--active">
+                <div class="tool-number">01</div>
+                <div class="tool-copy">
+                    <span class="tool-icon" aria-hidden="true">↓</span>
+                    <h3>Tải video</h3>
+                    <p>Dán liên kết từ hơn 1.800 nền tảng hoặc chọn video có sẵn trên máy. Tự nhận diện danh sách phát và chất lượng nguồn.</p>
+                    <div class="feature-tags"><span>Quét playlist</span><span>Chọn chất lượng</span><span>Tải hàng loạt</span></div>
+                </div>
+                <div class="tool-visual" aria-hidden="true">
+                    <div class="url-field"><span>youtube.com/watch?v=...</span><b>Phân tích</b></div>
+                    <div class="download-row"><i></i><span><strong>video-phim-ngan.mp4</strong><small>1080p · 124 MB</small></span><em>92%</em></div>
+                    <div class="download-row"><i></i><span><strong>tap-02.mp4</strong><small>1080p · 98 MB</small></span><em>Chờ</em></div>
+                </div>
+            </article>
 
-@if (Model.RequiresSetup)
-{
-    <div class="server-notice warning-notice">
-        <strong>Cần hoàn tất bước khởi tạo</strong>
-        <span>Database chưa có người dùng. Hãy tạo quản trị viên đầu tiên trước khi đăng nhập App.</span>
-    </div>
-}
-
-<section class="metric-grid" aria-label="Trạng thái hệ thống">
-    <article>
-        <span class="metric-icon">◎</span>
-        <div><small>Người dùng</small><strong>@Model.UserCount</strong><span>Tài khoản đang tồn tại</span></div>
-    </article>
-    <article>
-        <span class="metric-icon">↻</span>
-        <div><small>Phiên hoạt động</small><strong>@Model.ActiveSessionCount</strong><span>Refresh session hợp lệ</span></div>
-    </article>
-    <article>
-        <span class="metric-icon">◇</span>
-        <div><small>Phiên bản API</small><strong>V1</strong><span>JWT Bearer + rotation</span></div>
-    </article>
-    <article>
-        <span class="metric-icon">✓</span>
-        <div><small>Database</small><strong>V2</strong><span>Auth và service plans</span></div>
-    </article>
-</section>
-
-<section class="server-content-grid">
-    <article class="server-panel">
-        <header><div><span>▤</span><strong>API đã triển khai</strong></div><small>/api/v1</small></header>
-        <div class="endpoint-list">
-            <div><span class="method post">POST</span><code>/auth/login</code><em>Đăng nhập</em></div>
-            <div><span class="method post">POST</span><code>/auth/refresh</code><em>Xoay refresh token</em></div>
-            <div><span class="method get">GET</span><code>/account/me</code><em>Thông tin tài khoản</em></div>
-            <div><span class="method get">GET</span><code>/account/entitlements</code><em>Gói và quyền</em></div>
-            <div><span class="method post">POST</span><code>/usage/events</code><em>Ghi nhận sử dụng</em></div>
-            <div><span class="method get">GET</span><code>/usage/history</code><em>Lịch sử đồng bộ</em></div>
+            <article class="tool-feature">
+                <div class="tool-number">02</div>
+                <div class="tool-copy"><h3>Bóc phụ đề</h3><p>OCR hoặc nhận dạng lời thoại, tự ghép các khung chữ thành câu hoàn chỉnh.</p></div>
+                <span class="tool-more" aria-hidden="true">+</span>
+            </article>
+            <article class="tool-feature">
+                <div class="tool-number">03</div>
+                <div class="tool-copy"><h3>Dịch thuật</h3><p>Dịch theo toàn cảnh, bảo toàn tên riêng và cách xưng hô của từng nhân vật.</p></div>
+                <span class="tool-more" aria-hidden="true">+</span>
+            </article>
+            <article class="tool-feature">
+                <div class="tool-number">04</div>
+                <div class="tool-copy"><h3>Lồng tiếng AI</h3><p>Phân vai nhiều giọng đọc, khớp tốc độ và thời lượng từng đoạn thoại.</p></div>
+                <span class="tool-more" aria-hidden="true">+</span>
+            </article>
+            <article class="tool-feature">
+                <div class="tool-number">05</div>
+                <div class="tool-copy"><h3>Xoá sub &amp; xuất video</h3><p>Làm sạch phụ đề cứng, chỉnh timeline và xuất bản video hoàn chỉnh.</p></div>
+                <span class="tool-more" aria-hidden="true">+</span>
+            </article>
         </div>
-    </article>
+    </section>
 
-    <article class="server-panel security-panel">
-        <header><div><span>◈</span><strong>Lớp bảo vệ</strong></div><small>SECURITY</small></header>
-        <ul>
-            <li><span>✓</span><div><strong>Refresh token rotation</strong><small>Phát hiện và khóa token bị dùng lại.</small></div></li>
-            <li><span>✓</span><div><strong>Session validation</strong><small>Phiên bị thu hồi không thể tiếp tục gọi API.</small></div></li>
-            <li><span>✓</span><div><strong>Rate limiting</strong><small>Giới hạn đăng nhập và refresh theo IP.</small></div></li>
-            <li><span>✓</span><div><strong>Security audit</strong><small>Lưu sự kiện đăng nhập, refresh và logout.</small></div></li>
-        </ul>
-    </article>
-</section>
+    <section class="demo-section section-wrap" id="demo" aria-labelledby="demo-title">
+        <div class="section-heading section-heading--center">
+            <span>THẤY TOÀN BỘ TRƯỚC KHI BẮT ĐẦU</span>
+            <h2 id="demo-title">Xem trọn quy trình trên EzmaxSub</h2>
+            <p>Một video được tải, tạo phụ đề, dịch, lồng tiếng và xuất bản ngay trong cùng một workspace.</p>
+        </div>
+        <button class="demo-player" type="button" aria-label="Phát video giới thiệu EzmaxSub">
+            <img src="https://ezmaxsoft.com/landing-media/demo-poster-cfdd52edb7eb.jpg" alt="Màn hình chọn dự án của EzmaxSub" loading="lazy" />
+            <span class="demo-play"><i></i></span>
+            <span class="demo-duration">02:18</span>
+        </button>
+        <div class="stats-grid" aria-label="Thông số nổi bật">
+            <div><strong>1.800+</strong><span>Nền tảng tải video</span></div>
+            <div><strong>46+</strong><span>Ngôn ngữ OCR</span></div>
+            <div><strong>13+</strong><span>Engine giọng đọc</span></div>
+        </div>
+    </section>
+
+    <section class="reviews-section section-wrap" id="reviews" aria-labelledby="reviews-title">
+        <div class="section-heading section-heading--split">
+            <div>
+                <span>TRẢI NGHIỆM TỪ NGƯỜI DÙNG THỰC TẾ</span>
+                <h2 id="reviews-title">Người dùng nói gì</h2>
+                <p>Những phản hồi ngắn gọn từ người làm nội dung và vận hành kênh video.</p>
+            </div>
+            <a class="text-pill text-pill--dark" href="#download">Trải nghiệm <span>↗</span></a>
+        </div>
+        <div class="review-grid">
+            <article class="review-card review-card--green">
+                <div class="review-stars">★★★★★</div>
+                <p>“Batch mode giúp mình xử lý cả danh sách video qua đêm, sáng chỉ việc kiểm tra và xuất bản.”</p>
+                <footer><span>HN</span><div><strong>Hoàng Nam</strong><small>Quản trị kênh phim</small></div></footer>
+            </article>
+            <article class="review-card review-card--gold">
+                <div class="review-stars">★★★★★</div>
+                <p>“OCR nhận chữ Trung rất ổn, phần ghép câu đỡ cho mình rất nhiều thời gian chỉnh thủ công.”</p>
+                <footer><span>MT</span><div><strong>Minh Tú</strong><small>Biên tập video</small></div></footer>
+            </article>
+            <article class="review-card review-card--orange">
+                <div class="review-stars">★★★★★</div>
+                <p>“Điểm mình thích nhất là dịch theo ngữ cảnh, tên và cách xưng hô không bị đổi liên tục.”</p>
+                <footer><span>PL</span><div><strong>Phương Linh</strong><small>Nhà sáng tạo nội dung</small></div></footer>
+            </article>
+            <article class="review-card review-card--coral">
+                <div class="review-stars">★★★★★</div>
+                <p>“Từ sub đến giọng đọc nằm chung một timeline nên quy trình dễ hiểu, không phải đổi nhiều phần mềm.”</p>
+                <footer><span>DK</span><div><strong>Đăng Khoa</strong><small>Freelance editor</small></div></footer>
+            </article>
+        </div>
+    </section>
+
+    <section class="faq-section section-wrap" id="faq" aria-labelledby="faq-title">
+        <div class="section-heading section-heading--center">
+            <span>NHỮNG ĐIỀU BẠN CÓ THỂ ĐANG QUAN TÂM</span>
+            <h2 id="faq-title">Câu hỏi thường gặp</h2>
+        </div>
+        <div class="faq-list">
+            <details open>
+                <summary>EzmaxSub dùng để làm gì?<span>+</span></summary>
+                <p>EzmaxSub hỗ trợ tải video, nhận dạng hoặc bóc phụ đề, dịch theo ngữ cảnh, tạo giọng đọc và xuất thành video Việt hoá hoàn chỉnh.</p>
+            </details>
+            <details>
+                <summary>EzmaxSub chạy trên máy nào?<span>+</span></summary>
+                <p>Phiên bản hiện tại được thiết kế cho Windows 10/11 64-bit. Giao diện luôn hiển thị yêu cầu cấu hình trước khi người dùng tải xuống.</p>
+            </details>
+            <details>
+                <summary>Ứng dụng có hỗ trợ nhiều người nói không?<span>+</span></summary>
+                <p>Có. Luồng thiết kế cho phép nhận diện nhiều nhân vật và gán một giọng đọc riêng cho từng người.</p>
+            </details>
+            <details>
+                <summary>Tôi được chọn dịch bằng model nào?<span>+</span></summary>
+                <p>Bạn có thể chọn model cloud phù hợp hoặc dùng model local khi đã cài đặt. Cấu hình cụ thể sẽ được nối ở giai đoạn chức năng.</p>
+            </details>
+            <details>
+                <summary>Có cần kết nối Internet không?<span>+</span></summary>
+                <p>Một số tác vụ local có thể chạy trên máy; tải video, model cloud và đồng bộ tài khoản vẫn cần Internet.</p>
+            </details>
+        </div>
+    </section>
+
+    <section class="download-section" id="download" aria-labelledby="download-title">
+        <div class="section-wrap">
+            <div class="section-heading section-heading--center">
+                <span>BẮT ĐẦU VIỆT HOÁ VIDEO CỦA BẠN</span>
+                <h2 id="download-title">Tải EzmaxSub</h2>
+                <p>Cài trong vài phút, chạy ngay trên máy của bạn. Phiên bản mới nhất dành cho Windows 64-bit.</p>
+            </div>
+            <div class="download-grid">
+                <article class="download-card download-card--available">
+                    <div class="platform-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+                    <div><strong>Windows</strong><small>Windows 10/11 · 64-bit</small></div>
+                    <p>Đầy đủ công cụ tạo phụ đề, dịch và lồng tiếng AI.</p>
+                    <a class="button button--primary" href="#download"><span aria-hidden="true">↓</span> Tải xuống</a>
+                    <em>Phiên bản giao diện thử nghiệm</em>
+                </article>
+                <article class="download-card download-card--soon">
+                    <div class="apple-icon" aria-hidden="true">●</div>
+                    <div><strong>macOS</strong><small>Apple Silicon &amp; Intel</small></div>
+                    <p>Đang được tối ưu để mang lại trải nghiệm đồng nhất.</p>
+                    <button class="button button--disabled" type="button" disabled>Sắp ra mắt</button>
+                    <em>Nhận thông báo khi phát hành</em>
+                </article>
+            </div>
+        </div>
+    </section>
+
+    <footer class="landing-footer">
+        <div class="section-wrap footer-grid">
+            <div class="footer-about">
+                <a class="landing-brand" href="#top"><span class="landing-brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><strong>EZMAXSUB</strong></a>
+                <p>Phần mềm Việt hoá video bằng AI — từ phụ đề đến giọng đọc, trong một quy trình liền mạch.</p>
+            </div>
+            <div><strong>Sản phẩm</strong><a href="#tools">Công cụ AI</a><a href="#demo">Video demo</a><a href="#download">Tải ứng dụng</a></div>
+            <div><strong>Tài nguyên</strong><a href="#faq">Câu hỏi thường gặp</a><a href="#reviews">Đánh giá</a><a href="/openapi/v1.json">Tài liệu API</a></div>
+            <div><strong>Hỗ trợ</strong><a href="mailto:support@ezmaxsoft.com">support@ezmaxsoft.com</a><a href="#faq">Trung tâm trợ giúp</a><a asp-page="/Privacy">Chính sách riêng tư</a></div>
+        </div>
+        <div class="footer-wordmark">EZMAXSUB</div>
+        <div class="footer-bottom section-wrap"><span>© 2026 EZMAXSOFT. All rights reserved.</span><span>Thiết kế cho trải nghiệm Việt hoá video.</span></div>
+    </footer>
+
+    <div class="floating-contact" aria-label="Liên hệ hỗ trợ nhanh">
+        <a href="#faq" aria-label="Mở trợ giúp">?</a>
+        <a href="mailto:support@ezmaxsoft.com" aria-label="Gửi email hỗ trợ">✉</a>
+    </div>
+</div>

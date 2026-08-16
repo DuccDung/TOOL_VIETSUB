@@ -28,6 +28,12 @@ function defaultModel(
     if (qualityMode === 'high') return 'gpt-5.6-sol'
     return 'gpt-5.6-terra'
   }
+  if (provider === 'deepseek') {
+    return qualityMode === 'high' ? 'deepseek-v4-pro' : 'deepseek-v4-flash'
+  }
+  if (provider === 'groq') {
+    return qualityMode === 'fast' ? 'openai/gpt-oss-20b' : 'openai/gpt-oss-120b'
+  }
   return qualityMode === 'high' ? 'gemini-3.1-pro-preview' : 'gemini-3.6-flash'
 }
 
@@ -40,7 +46,8 @@ export function TranslationSettingsEditor({
 }: TranslationSettingsEditorProps) {
   const [draft, setDraft] = useState(settings)
   const [apiKey, setApiKey] = useState('')
-  const estimatedApiCalls = Math.ceil(subtitleCount / 12) * (draft.reviewEnabled ? 2 : 1)
+  const estimatedSceneSize = draft.provider === 'groq' ? 8 : 12
+  const estimatedApiCalls = Math.ceil(subtitleCount / estimatedSceneSize) * (draft.reviewEnabled ? 2 : 1)
 
   useEffect(() => {
     setDraft(settings)
@@ -55,6 +62,7 @@ export function TranslationSettingsEditor({
     update({
       provider,
       modelId: defaultModel(provider, draft.qualityMode, sourceLanguageCode),
+      reviewEnabled: provider === 'groq' ? draft.qualityMode !== 'fast' : draft.reviewEnabled,
     })
     setApiKey('')
   }
@@ -63,6 +71,7 @@ export function TranslationSettingsEditor({
     update({
       qualityMode,
       modelId: defaultModel(draft.provider, qualityMode, sourceLanguageCode),
+      reviewEnabled: draft.provider === 'groq' ? qualityMode !== 'fast' : draft.reviewEnabled,
     })
   }
 
@@ -79,12 +88,16 @@ export function TranslationSettingsEditor({
         disabled={disabled}
         helper={draft.provider === 'local'
           ? 'Chạy hoàn toàn trên máy, phù hợp chế độ riêng tư.'
-          : 'Chỉ văn bản phụ đề và ngữ cảnh được gửi tới nhà cung cấp.'}
+          : draft.provider === 'groq'
+            ? 'Dùng Groq Free Tier; chỉ văn bản phụ đề và ngữ cảnh được gửi đi.'
+            : 'Chỉ văn bản phụ đề và ngữ cảnh được gửi tới nhà cung cấp.'}
         onChange={(event) => chooseProvider(event.target.value as TranslationSettingsInfo['provider'])}
       >
         <option value="local">Local · Riêng tư</option>
         <option value="openai">OpenAI · Dịch có ngữ cảnh</option>
         <option value="gemini">Gemini · Ngữ cảnh dài</option>
+        <option value="deepseek">DeepSeek · Chi phí tối ưu</option>
+        <option value="groq">Groq · Free Tier tốc độ cao</option>
       </SelectField>
 
       <SelectField
@@ -108,7 +121,11 @@ export function TranslationSettingsEditor({
           spellCheck={false}
           onChange={(event) => update({ modelId: event.target.value })}
         />
-        <span className="field-helper">Có thể thay model mà không cần đổi pipeline.</span>
+        <span className="field-helper">
+          {draft.provider === 'groq'
+            ? 'GPT-OSS dùng JSON Schema nghiêm ngặt; model Groq khác dùng JSON Object Mode.'
+            : 'Có thể thay model mà không cần đổi pipeline.'}
+        </span>
       </label>
 
       {draft.provider !== 'local' ? (

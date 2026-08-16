@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -9,7 +10,12 @@ import {
 } from 'react'
 import {
   Crop,
+  Ellipsis,
   Expand,
+  Eye,
+  EyeOff,
+  FlipHorizontal2,
+  FlipVertical2,
   Focus,
   Hand,
   Image,
@@ -18,6 +24,7 @@ import {
   Palette,
   Pause,
   Play,
+  Plus,
   ScanLine,
   Type,
   UploadCloud,
@@ -26,11 +33,24 @@ import {
 } from 'lucide-react'
 import { formatBytes } from '../lib/format'
 import { normalizeSubtitleText } from '../lib/subtitleStyle'
-import type { SubtitleRemovalSettings, SubtitleStyleSettings, VideoInfo } from '../types'
+import {
+  createSubtitleRemovalRegion,
+  getSubtitleRemovalRegions,
+  maxSubtitleRemovalRegions,
+  withSubtitleRemovalRegions,
+} from '../lib/subtitleRemoval'
+import type {
+  SubtitleRemovalRegion,
+  SubtitleRemovalSettings,
+  SubtitleStyleSettings,
+  VideoInfo,
+  VideoTransformSettings,
+} from '../types'
 import { IconButton } from './Ui'
 
 type PreviewPanelProps = {
   video: VideoInfo | null
+  busy: boolean
   playing: boolean
   currentTime: number
   playbackRate: number
@@ -39,18 +59,22 @@ type PreviewPanelProps = {
   voiceAudioEnabled: boolean
   voiceVolume: number
   voicePlaybackUrl: string | null
+  vietnameseSubtitlesEnabled: boolean
   subtitleText: string
   subtitleRemoval: SubtitleRemovalSettings
   subtitleStyle: SubtitleStyleSettings
+  videoTransform: VideoTransformSettings
   onTogglePlay: () => void
   onTimeUpdate: (seconds: number) => void
   onPlaybackEnded: () => void
   onPlaybackError: () => void
   onVoicePlaybackError: () => void
+  onVietnameseSubtitlesEnabledChange: (enabled: boolean) => void
   onOpenVideo: () => void
   onDropVideo: (file: File) => void
   onSubtitleRemovalChange: (settings: SubtitleRemovalSettings) => void
   onSubtitleStyleChange: (style: SubtitleStyleSettings) => void
+  onVideoTransformChange: (settings: VideoTransformSettings) => void
 }
 
 type PreviewViewMode = 'fit' | 'fill' | 'actual'
@@ -73,6 +97,7 @@ function hexToRgba(hex: string, alpha: number) {
 
 export function PreviewPanel({
   video,
+  busy,
   playing,
   currentTime,
   playbackRate,
@@ -81,40 +106,52 @@ export function PreviewPanel({
   voiceAudioEnabled,
   voiceVolume,
   voicePlaybackUrl,
+  vietnameseSubtitlesEnabled,
   subtitleText,
   subtitleRemoval,
   subtitleStyle,
+  videoTransform,
   onTogglePlay,
   onTimeUpdate,
   onPlaybackEnded,
   onPlaybackError,
   onVoicePlaybackError,
+  onVietnameseSubtitlesEnabledChange,
   onOpenVideo,
   onDropVideo,
   onSubtitleRemovalChange,
   onSubtitleStyleChange,
+  onVideoTransformChange,
 }: PreviewPanelProps) {
   const [tool, setTool] = useState('pointer')
   const [zoom, setZoom] = useState(100)
   const [viewMode, setViewMode] = useState<PreviewViewMode>('fit')
   const [dragging, setDragging] = useState(false)
   const [playbackFailed, setPlaybackFailed] = useState(false)
+  const [playControlVisible, setPlayControlVisible] = useState(true)
+  const [compactToolsOpen, setCompactToolsOpen] = useState(false)
   const [stageSize, setStageSize] = useState<PreviewSize>({ width: 0, height: 0 })
   const [mediaSize, setMediaSize] = useState<PreviewSize | null>(null)
   const [draftRemoval, setDraftRemoval] = useState(subtitleRemoval)
+  const [activeRemovalRegionId, setActiveRemovalRegionId] = useState<string | null>(
+    getSubtitleRemovalRegions(subtitleRemoval)[0]?.id ?? null,
+  )
   const [draftSubtitleStyle, setDraftSubtitleStyle] = useState(subtitleStyle)
   const dragDepth = useRef(0)
   const stageRef = useRef<HTMLDivElement>(null)
   const playerRef = useRef<HTMLVideoElement>(null)
   const voicePlayerRef = useRef<HTMLAudioElement>(null)
   const playerShellRef = useRef<HTMLDivElement>(null)
+  const playControlTimerRef = useRef<number | null>(null)
+  const compactToolsRef = useRef<HTMLDivElement>(null)
   const draftRemovalRef = useRef(subtitleRemoval)
   const draftSubtitleStyleRef = useRef(subtitleStyle)
   const removalInteraction = useRef<{
     mode: 'move' | 'resize'
     clientX: number
     clientY: number
-    region: SubtitleRemovalSettings
+    settings: SubtitleRemovalSettings
+    region: SubtitleRemovalRegion
   } | null>(null)
   const subtitleInteraction = useRef<{
     clientX: number
@@ -126,6 +163,12 @@ export function PreviewPanel({
     if (removalInteraction.current) return
     setDraftRemoval(subtitleRemoval)
     draftRemovalRef.current = subtitleRemoval
+    const regions = getSubtitleRemovalRegions(subtitleRemoval)
+    setActiveRemovalRegionId((current) => (
+      current && regions.some((region) => region.id === current)
+        ? current
+        : regions[0]?.id ?? null
+    ))
   }, [subtitleRemoval])
 
   useEffect(() => {
@@ -133,6 +176,56 @@ export function PreviewPanel({
     setDraftSubtitleStyle(subtitleStyle)
     draftSubtitleStyleRef.current = subtitleStyle
   }, [subtitleStyle])
+
+  useEffect(() => {
+    if (!compactToolsOpen) return
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Node && !compactToolsRef.current?.contains(target)) {
+        setCompactToolsOpen(false)
+      }
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCompactToolsOpen(false)
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [compactToolsOpen])
+
+  useEffect(() => {
+    if (!video || busy) setCompactToolsOpen(false)
+  }, [busy, video])
+
+  const revealPlayControl = useCallback(() => {
+    if (playControlTimerRef.current !== null) {
+      window.clearTimeout(playControlTimerRef.current)
+      playControlTimerRef.current = null
+    }
+
+    setPlayControlVisible(true)
+    if (playing) {
+      playControlTimerRef.current = window.setTimeout(() => {
+        setPlayControlVisible(false)
+        playControlTimerRef.current = null
+      }, 3000)
+    }
+  }, [playing])
+
+  useEffect(() => {
+    revealPlayControl()
+    return () => {
+      if (playControlTimerRef.current !== null) {
+        window.clearTimeout(playControlTimerRef.current)
+        playControlTimerRef.current = null
+      }
+    }
+  }, [revealPlayControl, video?.playbackUrl])
 
   useEffect(() => {
     const stage = stageRef.current
@@ -270,6 +363,7 @@ export function PreviewPanel({
   const beginRemovalInteraction = (
     event: ReactPointerEvent<HTMLElement>,
     mode: 'move' | 'resize',
+    region: SubtitleRemovalRegion,
   ) => {
     if (!subtitleRemoval.enabled) return
     event.preventDefault()
@@ -279,8 +373,10 @@ export function PreviewPanel({
       mode,
       clientX: event.clientX,
       clientY: event.clientY,
-      region: draftRemovalRef.current,
+      settings: draftRemovalRef.current,
+      region,
     }
+    setActiveRemovalRegionId(region.id)
     setTool('scan')
   }
 
@@ -292,7 +388,7 @@ export function PreviewPanel({
     const bounds = shell.getBoundingClientRect()
     const deltaX = (event.clientX - interaction.clientX) / Math.max(1, bounds.width)
     const deltaY = (event.clientY - interaction.clientY) / Math.max(1, bounds.height)
-    const next = interaction.mode === 'move'
+    const nextRegion = interaction.mode === 'move'
       ? {
           ...interaction.region,
           x: Math.min(1 - interaction.region.width, Math.max(0, interaction.region.x + deltaX)),
@@ -303,6 +399,12 @@ export function PreviewPanel({
           width: Math.min(1 - interaction.region.x, Math.max(0.05, interaction.region.width + deltaX)),
           height: Math.min(1 - interaction.region.y, Math.max(0.04, interaction.region.height + deltaY)),
         }
+    const next = withSubtitleRemovalRegions(
+      interaction.settings,
+      getSubtitleRemovalRegions(interaction.settings).map((region) => (
+        region.id === interaction.region.id ? nextRegion : region
+      )),
+    )
     draftRemovalRef.current = next
     setDraftRemoval(next)
   }
@@ -315,14 +417,20 @@ export function PreviewPanel({
     onSubtitleRemovalChange(draftRemovalRef.current)
   }
 
-  const handleRemovalKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+  const handleRemovalKeyDown = (
+    event: ReactKeyboardEvent<HTMLDivElement>,
+    regionId: string,
+  ) => {
     if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
     event.preventDefault()
     const step = event.shiftKey ? 0.02 : 0.005
     const horizontal = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0
     const vertical = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0
-    const current = draftRemovalRef.current
-    const next = event.altKey
+    const currentSettings = draftRemovalRef.current
+    const currentRegions = getSubtitleRemovalRegions(currentSettings)
+    const current = currentRegions.find((region) => region.id === regionId)
+    if (!current) return
+    const nextRegion = event.altKey
       ? {
           ...current,
           width: Math.min(1 - current.x, Math.max(0.05, current.width + horizontal)),
@@ -333,8 +441,29 @@ export function PreviewPanel({
           x: Math.min(1 - current.width, Math.max(0, current.x + horizontal)),
           y: Math.min(1 - current.height, Math.max(0, current.y + vertical)),
         }
+    const next = withSubtitleRemovalRegions(
+      currentSettings,
+      currentRegions.map((region) => region.id === regionId ? nextRegion : region),
+    )
+    setActiveRemovalRegionId(regionId)
     draftRemovalRef.current = next
     setDraftRemoval(next)
+    onSubtitleRemovalChange(next)
+  }
+
+  const addRemovalRegion = () => {
+    const current = draftRemovalRef.current
+    const regions = getSubtitleRemovalRegions(current)
+    if (busy || regions.length >= maxSubtitleRemovalRegions) return
+    const region = createSubtitleRemovalRegion(regions.length)
+    const next = withSubtitleRemovalRegions(
+      { ...current, enabled: true },
+      [...regions, region],
+    )
+    draftRemovalRef.current = next
+    setDraftRemoval(next)
+    setActiveRemovalRegionId(region.id)
+    setTool('scan')
     onSubtitleRemovalChange(next)
   }
 
@@ -396,12 +525,7 @@ export function PreviewPanel({
     onSubtitleStyleChange(next)
   }
 
-  const removalStyle = {
-    left: `${draftRemoval.x * 100}%`,
-    top: `${draftRemoval.y * 100}%`,
-    width: `${draftRemoval.width * 100}%`,
-    height: `${draftRemoval.height * 100}%`,
-  } as CSSProperties
+  const draftRemovalRegions = getSubtitleRemovalRegions(draftRemoval)
 
   const subtitleVerticalAnchor = draftSubtitleStyle.verticalPosition === 'custom'
     ? draftSubtitleStyle.positionYPercent < 34 ? 'top'
@@ -458,19 +582,152 @@ export function PreviewPanel({
     >
       <div className="preview-toolbar">
         <div className="preview-toolbar__left">
-          <IconButton label="Cắt khung hình" size="small">
+          <div className="preview-toolbar__expanded-tools">
+          <IconButton
+            label="Cắt khung hình"
+            size="small"
+            className="preview-primary-tool preview-primary-tool--crop"
+          >
             <Crop size={16} />
           </IconButton>
+          <IconButton
+            label="Lật ngang"
+            size="small"
+            className="video-flip-button preview-primary-tool preview-primary-tool--flip-horizontal"
+            active={videoTransform.flipHorizontal}
+            aria-pressed={videoTransform.flipHorizontal}
+            disabled={!video || busy}
+            onClick={() => onVideoTransformChange({
+              ...videoTransform,
+              flipHorizontal: !videoTransform.flipHorizontal,
+            })}
+          >
+            <FlipHorizontal2 size={16} />
+          </IconButton>
+          <IconButton
+            label="Lật dọc"
+            size="small"
+            className="video-flip-button preview-primary-tool preview-primary-tool--flip-vertical"
+            active={videoTransform.flipVertical}
+            aria-pressed={videoTransform.flipVertical}
+            disabled={!video || busy}
+            onClick={() => onVideoTransformChange({
+              ...videoTransform,
+              flipVertical: !videoTransform.flipVertical,
+            })}
+          >
+            <FlipVertical2 size={16} />
+          </IconButton>
           <span
-            className={`source-pill ${subtitleText.trim() && !subtitleRemoval.enabled ? 'source-pill--warning' : ''}`}
+            className={`source-pill preview-primary-tool preview-primary-tool--source-status ${subtitleText.trim() && !subtitleRemoval.enabled ? 'source-pill--warning' : ''}`}
             title={subtitleText.trim() && !subtitleRemoval.enabled
               ? 'Phụ đề gốc vẫn còn hiển thị. Bật Xóa phụ đề gốc để tránh chữ chồng lên nhau.'
               : undefined}
           >
-            {subtitleRemoval.enabled
-              ? `Xóa sub · ${subtitleRemoval.mode === 'blur' ? 'Làm mờ' : 'Nền tối'}`
-              : subtitleText.trim() ? 'Sub gốc chưa xóa' : 'Original'}
+            <span className="source-pill__text">
+              {subtitleRemoval.enabled
+                ? `Xóa sub · ${subtitleRemoval.mode === 'blur' ? 'Làm mờ' : 'Nền tối'}`
+                : subtitleText.trim() ? 'Sub gốc chưa xóa' : 'Original'}
+            </span>
           </span>
+          <IconButton
+            label={vietnameseSubtitlesEnabled ? 'Ẩn phụ đề Việt' : 'Hiện phụ đề Việt'}
+            size="small"
+            className="vietnamese-subtitle-visibility preview-primary-tool preview-primary-tool--subtitle-visibility"
+            active={vietnameseSubtitlesEnabled}
+            aria-pressed={vietnameseSubtitlesEnabled}
+            onClick={() => onVietnameseSubtitlesEnabledChange(!vietnameseSubtitlesEnabled)}
+          >
+            {vietnameseSubtitlesEnabled ? <Eye size={16} /> : <EyeOff size={16} />}
+          </IconButton>
+          </div>
+
+          <div ref={compactToolsRef} className="preview-toolbar__compact-tools">
+            <IconButton
+              label="Công cụ video"
+              size="small"
+              className="compact-tools-trigger"
+              active={compactToolsOpen}
+              aria-haspopup="menu"
+              aria-expanded={compactToolsOpen}
+              onClick={() => setCompactToolsOpen((current) => !current)}
+            >
+              <Ellipsis size={18} />
+            </IconButton>
+
+            {compactToolsOpen ? (
+              <div className="compact-tools-popover" role="menu" aria-label="Công cụ video">
+                <div
+                  className={`compact-tools-status compact-overflow-item compact-overflow-item--source-status ${subtitleText.trim() && !subtitleRemoval.enabled ? 'is-warning' : ''}`}
+                  role="status"
+                >
+                  <span>Trạng thái sub gốc</span>
+                  <strong>
+                    {subtitleRemoval.enabled
+                      ? `Đã xóa · ${subtitleRemoval.mode === 'blur' ? 'Làm mờ' : 'Nền tối'}`
+                      : subtitleText.trim() ? 'Chưa xóa' : 'Original'}
+                  </strong>
+                </div>
+                <button
+                  type="button"
+                  className="compact-tool-item compact-overflow-item compact-overflow-item--crop"
+                  role="menuitem"
+                  disabled={!video || busy}
+                >
+                  <Crop size={16} />
+                  <span>Cắt khung hình</span>
+                </button>
+                <button
+                  type="button"
+                  className={`compact-tool-item compact-overflow-item compact-overflow-item--flip-horizontal ${videoTransform.flipHorizontal ? 'is-active' : ''}`}
+                  role="menuitemcheckbox"
+                  aria-checked={videoTransform.flipHorizontal}
+                  disabled={!video || busy}
+                  onClick={() => {
+                    onVideoTransformChange({
+                      ...videoTransform,
+                      flipHorizontal: !videoTransform.flipHorizontal,
+                    })
+                    setCompactToolsOpen(false)
+                  }}
+                >
+                  <FlipHorizontal2 size={16} />
+                  <span>Lật ngang</span>
+                </button>
+                <button
+                  type="button"
+                  className={`compact-tool-item compact-overflow-item compact-overflow-item--flip-vertical ${videoTransform.flipVertical ? 'is-active' : ''}`}
+                  role="menuitemcheckbox"
+                  aria-checked={videoTransform.flipVertical}
+                  disabled={!video || busy}
+                  onClick={() => {
+                    onVideoTransformChange({
+                      ...videoTransform,
+                      flipVertical: !videoTransform.flipVertical,
+                    })
+                    setCompactToolsOpen(false)
+                  }}
+                >
+                  <FlipVertical2 size={16} />
+                  <span>Lật dọc</span>
+                </button>
+                <button
+                  type="button"
+                  className={`compact-tool-item compact-overflow-item compact-overflow-item--subtitle-visibility ${vietnameseSubtitlesEnabled ? 'is-active' : ''}`}
+                  role="menuitemcheckbox"
+                  aria-checked={vietnameseSubtitlesEnabled}
+                  disabled={!video || busy}
+                  onClick={() => {
+                    onVietnameseSubtitlesEnabledChange(!vietnameseSubtitlesEnabled)
+                    setCompactToolsOpen(false)
+                  }}
+                >
+                  {vietnameseSubtitlesEnabled ? <Eye size={16} /> : <EyeOff size={16} />}
+                  <span>{vietnameseSubtitlesEnabled ? 'Ẩn phụ đề Việt' : 'Hiện phụ đề Việt'}</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div className="zoom-control" aria-label="Mức thu phóng">
@@ -534,6 +791,17 @@ export function PreviewPanel({
             </IconButton>
           ))}
           <IconButton
+            label={draftRemovalRegions.length >= maxSubtitleRemovalRegions
+              ? `Đã đạt tối đa ${maxSubtitleRemovalRegions} vùng che`
+              : 'Thêm vùng che'}
+            size="small"
+            className="editing-tool editing-tool--add-removal"
+            disabled={busy || draftRemovalRegions.length >= maxSubtitleRemovalRegions}
+            onClick={addRemovalRegion}
+          >
+            <Plus size={16} />
+          </IconButton>
+          <IconButton
             label="Toàn màn hình"
             size="small"
             className="editing-tool editing-tool--fullscreen"
@@ -551,10 +819,20 @@ export function PreviewPanel({
         {video ? (
           video.playbackUrl ? (
             <div className="preview-canvas" style={canvasStyle}>
-              <div ref={playerShellRef} className="video-player-shell" style={playerStyle}>
+              <div
+                ref={playerShellRef}
+                className="video-player-shell"
+                style={playerStyle}
+                onPointerEnter={revealPlayControl}
+                onPointerMove={revealPlayControl}
+                onPointerDown={revealPlayControl}
+              >
                 <video
                   ref={playerRef}
                   className="preview-video"
+                  style={{
+                    transform: `scale(${videoTransform.flipHorizontal ? -1 : 1}, ${videoTransform.flipVertical ? -1 : 1})`,
+                  }}
                   src={video.playbackUrl}
                   preload="metadata"
                   playsInline
@@ -586,35 +864,42 @@ export function PreviewPanel({
                     onError={onVoicePlaybackError}
                   />
                 ) : null}
-                {subtitleRemoval.enabled ? (
+                {subtitleRemoval.enabled ? draftRemovalRegions.map((region, index) => (
                   <div
-                    className={`subtitle-removal-region subtitle-removal-region--${subtitleRemoval.mode}`}
-                    style={removalStyle}
+                    key={region.id}
+                    className={`subtitle-removal-region subtitle-removal-region--${subtitleRemoval.mode} ${activeRemovalRegionId === region.id ? 'is-active' : ''}`}
+                    style={{
+                      left: `${region.x * 100}%`,
+                      top: `${region.y * 100}%`,
+                      width: `${region.width * 100}%`,
+                      height: `${region.height * 100}%`,
+                    } as CSSProperties}
                     role="slider"
                     tabIndex={0}
                     aria-label="Vùng xóa phụ đề Trung. Dùng phím mũi tên để di chuyển, Alt cộng phím mũi tên để đổi kích thước."
                     aria-valuemin={0}
                     aria-valuemax={100}
-                    aria-valuenow={Math.round(draftRemoval.y * 100)}
-                    aria-valuetext={`X ${Math.round(draftRemoval.x * 100)}%, Y ${Math.round(draftRemoval.y * 100)}%, rộng ${Math.round(draftRemoval.width * 100)}%, cao ${Math.round(draftRemoval.height * 100)}%`}
-                    onKeyDown={handleRemovalKeyDown}
-                    onPointerDown={(event) => beginRemovalInteraction(event, 'move')}
+                    aria-valuenow={Math.round(region.y * 100)}
+                    aria-valuetext={`X ${Math.round(region.x * 100)}%, Y ${Math.round(region.y * 100)}%, rộng ${Math.round(region.width * 100)}%, cao ${Math.round(region.height * 100)}%`}
+                    onFocus={() => setActiveRemovalRegionId(region.id)}
+                    onKeyDown={(event) => handleRemovalKeyDown(event, region.id)}
+                    onPointerDown={(event) => beginRemovalInteraction(event, 'move', region)}
                     onPointerMove={moveRemovalInteraction}
                     onPointerUp={finishRemovalInteraction}
                     onPointerCancel={finishRemovalInteraction}
                   >
-                    <span>Vùng xóa sub Trung</span>
+                    <span>Vùng che {index + 1}</span>
                     <i
                       className="subtitle-removal-region__handle"
                       aria-hidden="true"
-                      onPointerDown={(event) => beginRemovalInteraction(event, 'resize')}
+                      onPointerDown={(event) => beginRemovalInteraction(event, 'resize', region)}
                       onPointerMove={moveRemovalInteraction}
                       onPointerUp={finishRemovalInteraction}
                       onPointerCancel={finishRemovalInteraction}
                     />
                   </div>
-                ) : null}
-                {subtitleText.trim() ? (
+                )) : null}
+                {vietnameseSubtitlesEnabled && subtitleText.trim() ? (
                   <div
                     className={`preview-vietnamese-subtitle ${subtitleRemoval.enabled ? '' : 'is-source-visible'} ${subtitleInteraction.current ? 'is-dragging' : ''}`}
                     style={subtitleStyleValue}
@@ -633,13 +918,13 @@ export function PreviewPanel({
                     </span>
                   </div>
                 ) : null}
-                <div className="video-player-overlay">
+                <div className={`video-player-overlay ${playControlVisible ? 'is-visible' : ''}`}>
                   <span className="video-chip">{video.extension}</span>
                   <span className="video-player-name">{video.fileName}</span>
                 </div>
                 <button
                   type="button"
-                  className={`preview-play preview-play--real ${playing ? 'is-playing' : ''}`}
+                  className={`preview-play preview-play--real ${playing ? 'is-playing' : ''} ${playControlVisible ? 'is-visible' : ''}`}
                   aria-label={playing ? 'Tạm dừng' : 'Phát video'}
                   onClick={onTogglePlay}
                 >

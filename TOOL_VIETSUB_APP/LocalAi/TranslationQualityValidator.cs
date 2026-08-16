@@ -135,11 +135,15 @@ public static partial class TranslationQualityValidator
             return TranslationQualityResult.Valid;
         }
 
+        var sourceRepeatRun = FindMaximumIntentionalRepeatRun(source ?? string.Empty);
+        var maximumAllowedConsecutive = sourceRepeatRun >= 3
+            ? sourceRepeatRun + 1
+            : 3;
         var consecutive = 1;
         for (var index = 1; index < tokens.Length; index++)
         {
             consecutive = tokens[index] == tokens[index - 1] ? consecutive + 1 : 1;
-            if (consecutive >= 4)
+            if (consecutive > maximumAllowedConsecutive)
             {
                 return TranslationQualityResult.Invalid("REPEATED_TOKEN_RUN");
             }
@@ -148,7 +152,9 @@ public static partial class TranslationQualityValidator
         var dominantCount = tokens
             .GroupBy(token => token, StringComparer.Ordinal)
             .Max(group => group.Count());
-        if (dominantCount >= 6 && dominantCount * 100 >= tokens.Length * 35)
+        if (dominantCount >= 6
+            && dominantCount * 100 >= tokens.Length * 35
+            && (sourceRepeatRun < 3 || dominantCount > sourceRepeatRun + 1))
         {
             return TranslationQualityResult.Invalid("DOMINANT_REPEATED_TOKEN");
         }
@@ -162,7 +168,9 @@ public static partial class TranslationQualityValidator
                 frequencies[key] = frequencies.GetValueOrDefault(key) + 1;
             }
 
-            if (frequencies.Values.Any(count => count >= 4 && count * size * 100 >= tokens.Length * 55))
+            if (frequencies.Values.Any(count => count >= 4
+                && count * size * 100 >= tokens.Length * 55
+                && (sourceRepeatRun < 3 || count > sourceRepeatRun + 1)))
             {
                 return TranslationQualityResult.Invalid("REPEATED_PHRASE");
             }
@@ -174,6 +182,58 @@ public static partial class TranslationQualityValidator
     public static bool LooksPathological(string source, string translation) =>
         !string.IsNullOrWhiteSpace(translation)
         && !ValidateText(source, translation).IsValid;
+
+    private static int FindMaximumIntentionalRepeatRun(string source)
+    {
+        var normalized = WhitespaceRegex().Replace(source, " ").Trim().ToLowerInvariant();
+        var sourceTokens = WordRegex()
+            .Matches(normalized)
+            .Select(match => match.Value)
+            .ToArray();
+        var maximumTokenRun = FindMaximumRun(sourceTokens);
+
+        var maximumHanRun = 1;
+        var currentHanRun = 1;
+        char? previousHan = null;
+        foreach (var character in normalized)
+        {
+            if (!IsHanCharacter(character))
+            {
+                continue;
+            }
+
+            currentHanRun = previousHan == character ? currentHanRun + 1 : 1;
+            previousHan = character;
+            maximumHanRun = Math.Max(maximumHanRun, currentHanRun);
+        }
+
+        return Math.Max(maximumTokenRun, maximumHanRun);
+    }
+
+    private static int FindMaximumRun(IReadOnlyList<string> values)
+    {
+        if (values.Count == 0)
+        {
+            return 1;
+        }
+
+        var maximum = 1;
+        var current = 1;
+        for (var index = 1; index < values.Count; index++)
+        {
+            current = string.Equals(values[index], values[index - 1], StringComparison.Ordinal)
+                ? current + 1
+                : 1;
+            maximum = Math.Max(maximum, current);
+        }
+
+        return maximum;
+    }
+
+    private static bool IsHanCharacter(char character) =>
+        character is >= '\u3400' and <= '\u4DBF'
+        or >= '\u4E00' and <= '\u9FFF'
+        or >= '\uF900' and <= '\uFAFF';
 
     [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
     private static partial Regex WhitespaceRegex();

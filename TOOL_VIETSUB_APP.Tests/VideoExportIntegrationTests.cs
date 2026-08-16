@@ -49,6 +49,81 @@ public sealed class VideoExportIntegrationTests : IDisposable
     }
 
     [Fact]
+    public void BuildVideoFilter_BlursEveryConfiguredRemovalRegion()
+    {
+        var settings = new ProjectSettings
+        {
+            RemoveOriginalSubtitles = true,
+            OriginalSubtitleRemovalMode = "blur",
+            OriginalSubtitleRemovalRegions =
+            [
+                new SubtitleRemovalRegionSettings
+                {
+                    Id = "lower-third",
+                    X = 0.05,
+                    Y = 0.72,
+                    Width = 0.90,
+                    Height = 0.14,
+                },
+                new SubtitleRemovalRegionSettings
+                {
+                    Id = "watermark",
+                    X = 0.72,
+                    Y = 0.05,
+                    Width = 0.22,
+                    Height = 0.10,
+                },
+            ],
+        };
+
+        var filter = VideoExportJobExecutor.BuildVideoFilter(settings, @"C:\temp\viet.ass");
+
+        Assert.Contains("crop=w=iw*0.9:h=ih*0.14:x=iw*0.05:y=ih*0.72", filter);
+        Assert.Contains("crop=w=iw*0.22:h=ih*0.1:x=iw*0.72:y=ih*0.05", filter);
+        Assert.Contains("[clean_video_0]split=2[video_base_1][blur_source_1]", filter);
+        Assert.Equal(2, filter.Split("boxblur=", StringSplitOptions.None).Length - 1);
+        Assert.Equal(2, filter.Split("overlay=", StringSplitOptions.None).Length - 1);
+        Assert.Equal(1, filter.Split("subtitles=", StringSplitOptions.None).Length - 1);
+        Assert.EndsWith("[video]", filter);
+    }
+
+    [Fact]
+    public void BuildVideoFilter_CoverModeDrawsEveryConfiguredRemovalRegion()
+    {
+        var settings = new ProjectSettings
+        {
+            RemoveOriginalSubtitles = true,
+            OriginalSubtitleRemovalMode = "cover",
+            OriginalSubtitleRemovalRegions =
+            [
+                new SubtitleRemovalRegionSettings
+                {
+                    Id = "first",
+                    X = 0.05,
+                    Y = 0.70,
+                    Width = 0.90,
+                    Height = 0.16,
+                },
+                new SubtitleRemovalRegionSettings
+                {
+                    Id = "second",
+                    X = 0.08,
+                    Y = 0.08,
+                    Width = 0.30,
+                    Height = 0.10,
+                },
+            ],
+        };
+
+        var filter = VideoExportJobExecutor.BuildVideoFilter(settings, @"C:\temp\viet.ass");
+
+        Assert.Contains("drawbox=x=iw*0.05:y=ih*0.7:w=iw*0.9:h=ih*0.16", filter);
+        Assert.Contains("drawbox=x=iw*0.08:y=ih*0.08:w=iw*0.3:h=ih*0.1", filter);
+        Assert.Equal(2, filter.Split("drawbox=", StringSplitOptions.None).Length - 1);
+        Assert.EndsWith("[video]", filter);
+    }
+
+    [Fact]
     public void BuildVietnameseSubtitleAss_MapsStyleSortsCuesAndRejectsOverlappingLayers()
     {
         var later = new SubtitleCue
@@ -159,6 +234,71 @@ public sealed class VideoExportIntegrationTests : IDisposable
         var exception = Assert.Throws<LocalJobException>(() =>
             VideoExportJobExecutor.BuildVideoFilter(settings, @"C:\temp\viet.ass"));
         Assert.Equal("SUBTITLE_REMOVAL_REGION_INVALID", exception.Code);
+    }
+
+    [Fact]
+    public void BuildVideoFilter_HidesVietnameseSubtitleAndPassesVideoThrough()
+    {
+        var settings = new ProjectSettings
+        {
+            VietnameseSubtitlesEnabled = false,
+            RemoveOriginalSubtitles = false,
+        };
+
+        var filter = VideoExportJobExecutor.BuildVideoFilter(settings, @"C:\temp\viet.ass");
+
+        Assert.Equal("[0:v:0]null[video]", filter);
+        Assert.DoesNotContain("subtitles=", filter);
+    }
+
+    [Theory]
+    [InlineData(true, false, "hflip")]
+    [InlineData(false, true, "vflip")]
+    [InlineData(true, true, "hflip,vflip")]
+    public void BuildVideoFilter_AppliesVideoFlipBeforeSubtitleLayers(
+        bool flipHorizontal,
+        bool flipVertical,
+        string expectedTransform)
+    {
+        var settings = new ProjectSettings
+        {
+            FlipHorizontal = flipHorizontal,
+            FlipVertical = flipVertical,
+            RemoveOriginalSubtitles = true,
+            OriginalSubtitleRemovalMode = "cover",
+        };
+
+        var filter = VideoExportJobExecutor.BuildVideoFilter(settings, @"C:\temp\viet.ass");
+
+        var transformIndex = filter.IndexOf(expectedTransform, StringComparison.Ordinal);
+        var removalIndex = filter.IndexOf("drawbox=", StringComparison.Ordinal);
+        var subtitleIndex = filter.IndexOf("subtitles=", StringComparison.Ordinal);
+        Assert.True(transformIndex >= 0);
+        Assert.True(removalIndex > transformIndex);
+        Assert.True(subtitleIndex > removalIndex);
+        Assert.Contains($"[0:v:0]{expectedTransform}[transformed_video]", filter);
+        Assert.EndsWith("[video]", filter);
+    }
+
+    [Fact]
+    public void BuildVideoFilter_HidesVietnameseSubtitleButStillCoversOriginalSubtitle()
+    {
+        var settings = new ProjectSettings
+        {
+            VietnameseSubtitlesEnabled = false,
+            RemoveOriginalSubtitles = true,
+            OriginalSubtitleRemovalMode = "cover",
+            OriginalSubtitleRegionX = 0.05,
+            OriginalSubtitleRegionY = 0.70,
+            OriginalSubtitleRegionWidth = 0.90,
+            OriginalSubtitleRegionHeight = 0.16,
+        };
+
+        var filter = VideoExportJobExecutor.BuildVideoFilter(settings, @"C:\temp\viet.ass");
+
+        Assert.Contains("drawbox=x=iw*0.05:y=ih*0.7:w=iw*0.9:h=ih*0.16", filter);
+        Assert.DoesNotContain("subtitles=", filter);
+        Assert.EndsWith("[video]", filter);
     }
 
     [Fact]

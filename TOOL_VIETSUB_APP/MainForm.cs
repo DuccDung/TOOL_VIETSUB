@@ -37,6 +37,8 @@ public sealed class MainForm : Form
     private bool _authInitialized;
     private bool _shutdownStarted;
     private bool _shutdownCompleted;
+    private int _aiStoragePickerQueued;
+    private int _aiStorageChangeActive;
 
     public MainForm()
     {
@@ -147,6 +149,7 @@ public sealed class MainForm : Form
         core.Settings.AreBrowserAcceleratorKeysEnabled = false;
 #endif
         core.WebMessageReceived += OnWebMessageReceived;
+        core.ProcessFailed += OnWebViewProcessFailed;
         core.NavigationStarting += (_, args) =>
         {
             if (!Uri.TryCreate(args.Uri, UriKind.Absolute, out var uri)
@@ -160,6 +163,53 @@ public sealed class MainForm : Form
 
         var uiVersion = File.GetLastWriteTimeUtc(indexPath).Ticks;
         _webView.Source = new Uri($"https://{AppHostName}/index.html?v={uiVersion}");
+    }
+
+    private void OnWebViewProcessFailed(
+        object? sender,
+        CoreWebView2ProcessFailedEventArgs eventArgs)
+    {
+        try
+        {
+            var logDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "TOOL_VIETSUB",
+                "Logs");
+            Directory.CreateDirectory(logDirectory);
+            File.AppendAllText(
+                Path.Combine(logDirectory, "webview-process.log"),
+                $"{DateTimeOffset.Now:O}\t{eventArgs.ProcessFailedKind}\tWebView2 process failed.{Environment.NewLine}");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+#if DEBUG
+            System.Diagnostics.Debug.WriteLine(exception);
+#endif
+        }
+
+        if (eventArgs.ProcessFailedKind != CoreWebView2ProcessFailedKind.RenderProcessExited
+            || IsDisposed
+            || Disposing)
+        {
+            return;
+        }
+
+        try
+        {
+            BeginInvoke(new Action(() =>
+            {
+                if (!IsDisposed && !Disposing && _webView.CoreWebView2 is not null)
+                {
+                    _webView.Reload();
+                }
+            }));
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
+        {
+#if DEBUG
+            System.Diagnostics.Debug.WriteLine(exception);
+#endif
+        }
     }
 
     private void OnMediaResourceRequested(
@@ -218,6 +268,7 @@ public sealed class MainForm : Form
                 $"Content-Type: {GetMediaContentType(file.Extension)}",
                 $"Content-Length: {range.Length}",
                 "Accept-Ranges: bytes",
+                $"Access-Control-Allow-Origin: https://{AppHostName}",
                 "Cache-Control: no-store"
             };
             if (isPartial)
@@ -314,11 +365,38 @@ public sealed class MainForm : Form
                 case "project:audio-settings:update":
                     await UpdateAudioSettingsAsync(document.RootElement);
                     break;
+                case "project:voice-settings:update":
+                    await UpdateVoiceSettingsAsync(document.RootElement);
+                    break;
+                case "project:voice-cloud-settings:update":
+                    await UpdateFptVoiceCredentialAsync(document.RootElement);
+                    break;
+                case "voice:model:install":
+                    await InstallVoiceAsync(document.RootElement);
+                    break;
+                case "voice:cloud:preview":
+                    await PreviewFptVoiceAsync(document.RootElement);
+                    break;
+                case "ai-storage:select":
+                    QueueAiStorageSelection();
+                    break;
+                case "ai-storage:change":
+                    await ChangeAiStorageAsync(document.RootElement);
+                    break;
+                case "ai-storage:discard-pending":
+                    await DiscardPendingAiStorageMigrationAsync();
+                    break;
                 case "project:subtitle-removal:update":
                     await UpdateOriginalSubtitleRemovalAsync(document.RootElement);
                     break;
+                case "project:video-transform:update":
+                    await UpdateVideoTransformAsync(document.RootElement);
+                    break;
                 case "project:subtitle-style:update":
                     await UpdateSubtitleStyleAsync(document.RootElement);
+                    break;
+                case "project:vietnamese-subtitles:update":
+                    await UpdateVietnameseSubtitlesEnabledAsync(document.RootElement);
                     break;
                 case "job:audio:prepare":
                     await PrepareAudioAsync();
@@ -330,10 +408,10 @@ public sealed class MainForm : Form
                     await RunOcrAsync();
                     break;
                 case "job:translate":
-                    await TranslateAsync();
+                    await TranslateAsync(document.RootElement);
                     break;
                 case "job:voice:synthesize":
-                    await SynthesizeVoiceAsync();
+                    await SynthesizeVoiceAsync(document.RootElement);
                     break;
                 case "job:pause":
                     await ChangeJobStateAsync(document.RootElement, "pause");
@@ -352,6 +430,9 @@ public sealed class MainForm : Form
                     break;
                 case "subtitle:update":
                     await UpdateSubtitleAsync(document.RootElement);
+                    break;
+                case "subtitle:voice:update":
+                    await UpdateSubtitleVoiceAsync(document.RootElement);
                     break;
                 case "timeline:split":
                     await EditTimelineAsync(document.RootElement, "split");
@@ -799,6 +880,280 @@ public sealed class MainForm : Form
         }
     }
 
+    private async Task UpdateVoiceSettingsAsync(JsonElement message)
+    {
+        if (!TryGetRequiredString(message, "defaultVoiceId", out var defaultVoiceId)
+            || !message.TryGetProperty("speakerVoiceIds", out var mappingsElement)
+            || mappingsElement.ValueKind != JsonValueKind.Object)
+        {
+            PostWorkspaceError("PROJECT_VOICE_SETTINGS_INVALID", "Thiết lập giọng đọc không hợp lệ.");
+            return;
+        }
+
+        var mappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in mappingsElement.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(property.Value.GetString()))
+            {
+                PostWorkspaceError("PROJECT_VOICE_SETTINGS_INVALID", "Giọng đọc theo nhân vật không hợp lệ.");
+                return;
+            }
+
+            mappings[property.Name] = property.Value.GetString()!;
+        }
+
+        var speed = message.TryGetProperty("speed", out var speedElement)
+            && speedElement.TryGetInt32(out var parsedSpeed)
+                ? parsedSpeed
+                : 0;
+
+        try
+        {
+            var state = await _workspaceCoordinator.UpdateVoiceSettingsAsync(
+                defaultVoiceId,
+                mappings,
+                speed,
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "project:state", project = state });
+            PostMessage(new { type = "voice:settings:saved" });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+    }
+
+    private async Task UpdateFptVoiceCredentialAsync(JsonElement message)
+    {
+        var apiKey = message.TryGetProperty("apiKey", out var apiKeyElement)
+            && apiKeyElement.ValueKind == JsonValueKind.String
+                ? apiKeyElement.GetString()
+                : null;
+        var clearApiKey = message.TryGetProperty("clearApiKey", out var clearElement)
+            && clearElement.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && clearElement.GetBoolean();
+        try
+        {
+            var state = await _workspaceCoordinator.UpdateFptVoiceCredentialAsync(
+                apiKey,
+                clearApiKey,
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "project:state", project = state });
+            PostMessage(new { type = "voice:cloud:settings:saved" });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+    }
+
+    private async Task PreviewFptVoiceAsync(JsonElement message)
+    {
+        if (!TryGetRequiredString(message, "voiceId", out var voiceId))
+        {
+            PostWorkspaceError("VOICE_ID_INVALID", "Giọng FPT.AI cần nghe thử không hợp lệ.");
+            return;
+        }
+
+        var speed = message.TryGetProperty("speed", out var speedElement)
+            && speedElement.TryGetInt32(out var parsedSpeed)
+                ? parsedSpeed
+                : 0;
+        var apiKey = message.TryGetProperty("apiKey", out var apiKeyElement)
+            && apiKeyElement.ValueKind == JsonValueKind.String
+                ? apiKeyElement.GetString()
+                : null;
+        try
+        {
+            var bytes = await _workspaceCoordinator.PreviewFptVoiceAsync(
+                voiceId,
+                speed,
+                apiKey,
+                _lifetimeCancellation.Token);
+            PostMessage(new
+            {
+                type = "project:state",
+                project = _workspaceCoordinator.GetCurrentState(),
+            });
+            PostMessage(new
+            {
+                type = "voice:cloud:previewed",
+                voiceId,
+                audioDataUrl = "data:audio/wav;base64," + Convert.ToBase64String(bytes),
+            });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+    }
+
+    private async Task InstallVoiceAsync(JsonElement message)
+    {
+        if (!TryGetRequiredString(message, "voiceId", out var voiceId))
+        {
+            PostWorkspaceError("VOICE_ID_INVALID", "Giọng đọc cần cài không hợp lệ.");
+            return;
+        }
+
+        try
+        {
+            var state = await _workspaceCoordinator.InstallVoiceAsync(
+                voiceId,
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "project:state", project = state });
+            PostMessage(new { type = "voice:model:installed", voiceId });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+    }
+
+    private void QueueAiStorageSelection()
+    {
+        if (_workspaceCoordinator.CurrentProject is null)
+        {
+            PostWorkspaceError("PROJECT_REQUIRED", "Hãy mở dự án trước khi đổi thư mục AI local.");
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _aiStoragePickerQueued, 1, 0) != 0
+            || Volatile.Read(ref _aiStorageChangeActive) != 0)
+        {
+            PostWorkspaceError("AI_STORAGE_BUSY", "Một thao tác chọn hoặc chuyển thư mục AI đang được xử lý.");
+            return;
+        }
+
+        try
+        {
+            // FolderBrowserDialog must not start a nested native message loop while
+            // WebView2 is still dispatching WebMessageReceived.
+            BeginInvoke(new Action(ShowAiStorageSelectionDialog));
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
+        {
+            Interlocked.Exchange(ref _aiStoragePickerQueued, 0);
+            HandleWorkspaceException(exception);
+        }
+    }
+
+    private void ShowAiStorageSelectionDialog()
+    {
+        try
+        {
+            if (IsDisposed || Disposing || _workspaceCoordinator.CurrentProject is null)
+            {
+                return;
+            }
+
+            var current = _workspaceCoordinator.AiStorageStatus;
+            using var dialog = new FolderBrowserDialog
+            {
+                Description = "Chọn thư mục riêng để lưu runtime, model và cache AI local",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = true,
+                SelectedPath = Directory.Exists(current.RootPath)
+                    ? current.RootPath
+                    : current.RecommendedPath,
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+            {
+                PostMessage(new { type = "ai-storage:selection-cancelled" });
+                return;
+            }
+
+            PostMessage(new
+            {
+                type = "ai-storage:selected",
+                destinationPath = Path.GetFullPath(dialog.SelectedPath),
+                currentPath = current.RootPath,
+            });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _aiStoragePickerQueued, 0);
+        }
+    }
+
+    private async Task ChangeAiStorageAsync(JsonElement message)
+    {
+        if (!TryGetRequiredString(message, "destinationPath", out var destinationPath)
+            || !message.TryGetProperty("migrateExisting", out var migrateElement)
+            || migrateElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            PostWorkspaceError("AI_STORAGE_INVALID", "Yêu cầu chuyển thư mục AI không hợp lệ.");
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref _aiStorageChangeActive, 1, 0) != 0)
+        {
+            PostWorkspaceError("AI_STORAGE_BUSY", "Một thao tác chuyển thư mục AI đang chạy.");
+            return;
+        }
+
+        var current = _workspaceCoordinator.AiStorageStatus;
+        try
+        {
+            PostMessage(new
+            {
+                type = "ai-storage:busy",
+                destinationPath,
+                migrateExisting = migrateElement.GetBoolean(),
+            });
+            var state = await _workspaceCoordinator.ChangeAiStorageAsync(
+                destinationPath,
+                migrateElement.GetBoolean(),
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "project:state", project = state });
+            PostMessage(new
+            {
+                type = "ai-storage:saved",
+                previousPath = current.RootPath,
+                destinationPath = state.AiStorage.RootPath,
+            });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _aiStorageChangeActive, 0);
+        }
+    }
+
+    private async Task DiscardPendingAiStorageMigrationAsync()
+    {
+        if (Interlocked.CompareExchange(ref _aiStorageChangeActive, 1, 0) != 0)
+        {
+            PostWorkspaceError("AI_STORAGE_BUSY", "Một thao tác chuyển thư mục AI đang chạy.");
+            return;
+        }
+
+        try
+        {
+            PostMessage(new { type = "ai-storage:busy", operation = "discard" });
+            var state = await _workspaceCoordinator.DiscardPendingAiStorageMigrationAsync(
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "project:state", project = state });
+            PostMessage(new { type = "ai-storage:discarded" });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _aiStorageChangeActive, 0);
+        }
+    }
+
     private async Task UpdateOriginalSubtitleRemovalAsync(JsonElement message)
     {
         if (!message.TryGetProperty("enabled", out var enabledElement)
@@ -815,6 +1170,54 @@ public sealed class MainForm : Form
 
         try
         {
+            var regions = new List<SubtitleRemovalRegionSettings>();
+            if (message.TryGetProperty("regions", out var regionsElement))
+            {
+                if (regionsElement.ValueKind != JsonValueKind.Array
+                    || regionsElement.GetArrayLength() is < 1 or > DesktopWorkspaceCoordinator.MaxSubtitleRemovalRegions)
+                {
+                    PostWorkspaceError("PROJECT_SETTINGS_INVALID", "Danh sách vùng che không hợp lệ.");
+                    return;
+                }
+
+                foreach (var regionElement in regionsElement.EnumerateArray())
+                {
+                    if (regionElement.ValueKind != JsonValueKind.Object
+                        || !TryGetFiniteDouble(regionElement, "x", out var regionX)
+                        || !TryGetFiniteDouble(regionElement, "y", out var regionY)
+                        || !TryGetFiniteDouble(regionElement, "width", out var regionWidth)
+                        || !TryGetFiniteDouble(regionElement, "height", out var regionHeight))
+                    {
+                        PostWorkspaceError("PROJECT_SETTINGS_INVALID", "Tọa độ vùng che không hợp lệ.");
+                        return;
+                    }
+
+                    var regionId = regionElement.TryGetProperty("id", out var idElement)
+                        && idElement.ValueKind == JsonValueKind.String
+                        ? idElement.GetString() ?? string.Empty
+                        : string.Empty;
+                    regions.Add(new SubtitleRemovalRegionSettings
+                    {
+                        Id = regionId,
+                        X = regionX,
+                        Y = regionY,
+                        Width = regionWidth,
+                        Height = regionHeight,
+                    });
+                }
+            }
+            else
+            {
+                regions.Add(new SubtitleRemovalRegionSettings
+                {
+                    Id = "legacy",
+                    X = x,
+                    Y = y,
+                    Width = width,
+                    Height = height,
+                });
+            }
+
             var state = await _workspaceCoordinator.UpdateOriginalSubtitleRemovalAsync(
                 enabledElement.GetBoolean(),
                 mode,
@@ -822,6 +1225,32 @@ public sealed class MainForm : Form
                 y,
                 width,
                 height,
+                regions,
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "project:state", project = state });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+    }
+
+    private async Task UpdateVideoTransformAsync(JsonElement message)
+    {
+        if (!message.TryGetProperty("flipHorizontal", out var horizontalElement)
+            || horizontalElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+            || !message.TryGetProperty("flipVertical", out var verticalElement)
+            || verticalElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            PostWorkspaceError("PROJECT_VIDEO_TRANSFORM_INVALID", "Thiết lập lật video không hợp lệ.");
+            return;
+        }
+
+        try
+        {
+            var state = await _workspaceCoordinator.UpdateVideoTransformAsync(
+                horizontalElement.GetBoolean(),
+                verticalElement.GetBoolean(),
                 _lifetimeCancellation.Token);
             PostMessage(new { type = "project:state", project = state });
         }
@@ -853,6 +1282,28 @@ public sealed class MainForm : Form
         {
             var state = await _workspaceCoordinator.UpdateSubtitleStyleAsync(
                 style!,
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "project:state", project = state });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+    }
+
+    private async Task UpdateVietnameseSubtitlesEnabledAsync(JsonElement message)
+    {
+        if (!message.TryGetProperty("enabled", out var enabledElement)
+            || enabledElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            PostWorkspaceError("PROJECT_SUBTITLE_VISIBILITY_INVALID", "Thiết lập hiển thị phụ đề Việt không hợp lệ.");
+            return;
+        }
+
+        try
+        {
+            var state = await _workspaceCoordinator.UpdateVietnameseSubtitlesEnabledAsync(
+                enabledElement.GetBoolean(),
                 _lifetimeCancellation.Token);
             PostMessage(new { type = "project:state", project = state });
         }
@@ -931,18 +1382,34 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task TranslateAsync()
+    private async Task TranslateAsync(JsonElement message)
     {
+        var translationRunMode = message.TryGetProperty("translationMode", out var modeElement)
+            && modeElement.ValueKind == JsonValueKind.String
+                ? modeElement.GetString()
+                : null;
         await RunWorkspaceJobAsync(
             "translate",
-            token => _workspaceCoordinator.TranslateAsync(token));
+            token => _workspaceCoordinator.TranslateAsync(token, translationRunMode));
     }
 
-    private async Task SynthesizeVoiceAsync()
+    private async Task SynthesizeVoiceAsync(JsonElement message)
     {
+        var voiceId = message.TryGetProperty("voiceId", out var voiceIdElement)
+            && voiceIdElement.ValueKind == JsonValueKind.String
+                ? voiceIdElement.GetString()
+                : null;
+        var speed = message.TryGetProperty("speed", out var speedElement)
+            && speedElement.TryGetInt32(out var parsedSpeed)
+                ? parsedSpeed
+                : (int?)null;
+        var apiKey = message.TryGetProperty("apiKey", out var apiKeyElement)
+            && apiKeyElement.ValueKind == JsonValueKind.String
+                ? apiKeyElement.GetString()
+                : null;
         await RunWorkspaceJobAsync(
             "synthesize-voice",
-            token => _workspaceCoordinator.SynthesizeVoiceAsync(token));
+            token => _workspaceCoordinator.SynthesizeVoiceAsync(voiceId, speed, apiKey, token));
     }
 
     private async Task RunWorkspaceJobAsync(
@@ -973,11 +1440,18 @@ public sealed class MainForm : Form
         try
         {
             PostMessage(new { type = "job:busy", operation, jobId });
+            var translationRunMode = message.TryGetProperty("translationMode", out var modeElement)
+                && modeElement.ValueKind == JsonValueKind.String
+                    ? modeElement.GetString()
+                    : null;
             var state = operation switch
             {
                 "pause" => await _workspaceCoordinator.PauseJobAsync(jobId, _lifetimeCancellation.Token),
                 "resume" => await _workspaceCoordinator.ResumeJobAsync(jobId, _lifetimeCancellation.Token),
-                "retry" => await _workspaceCoordinator.RetryJobAsync(jobId, _lifetimeCancellation.Token),
+                "retry" => await _workspaceCoordinator.RetryJobAsync(
+                    jobId,
+                    _lifetimeCancellation.Token,
+                    translationRunMode),
                 "cancel" => await _workspaceCoordinator.CancelJobAsync(jobId, _lifetimeCancellation.Token),
                 _ => throw new InvalidOperationException("Thao tác job không được hỗ trợ."),
             };
@@ -1040,6 +1514,45 @@ public sealed class MainForm : Form
                 _lifetimeCancellation.Token);
             PostMessage(new { type = "project:state", project = state });
             PostMessage(new { type = "subtitle:saved", operation = "update" });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+    }
+
+    private async Task UpdateSubtitleVoiceAsync(JsonElement message)
+    {
+        if (!TryGetRequiredString(message, "cueId", out var cueText)
+            || !Guid.TryParse(cueText, out var cueId)
+            || !TryGetRequiredString(message, "speaker", out var speaker))
+        {
+            PostWorkspaceError("SUBTITLE_VOICE_REQUEST_INVALID", "Thiết lập giọng đọc của phân đoạn không hợp lệ.");
+            return;
+        }
+
+        string? voiceId = null;
+        if (message.TryGetProperty("voiceId", out var voiceElement)
+            && voiceElement.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))
+        {
+            if (voiceElement.ValueKind != JsonValueKind.String)
+            {
+                PostWorkspaceError("SUBTITLE_VOICE_REQUEST_INVALID", "Mã giọng đọc không hợp lệ.");
+                return;
+            }
+
+            voiceId = voiceElement.GetString();
+        }
+
+        try
+        {
+            var state = await _workspaceCoordinator.UpdateSubtitleVoiceAsync(
+                cueId,
+                speaker,
+                voiceId,
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "project:state", project = state });
+            PostMessage(new { type = "subtitle:saved", operation = "voice" });
         }
         catch (Exception exception)
         {
@@ -1317,6 +1830,7 @@ public sealed class MainForm : Form
 
         _shutdownStarted = true;
         _sessionTimer.Stop();
+        _lifetimeCancellation.Cancel();
         try
         {
             await _workspaceCoordinator.DisposeAsync();

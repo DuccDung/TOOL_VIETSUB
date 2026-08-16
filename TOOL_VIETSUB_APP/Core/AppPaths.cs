@@ -2,25 +2,32 @@ namespace TOOL_VIETSUB_APP.Core;
 
 public sealed class AppPaths
 {
-    public AppPaths(string? rootDirectory = null, string? modelsDirectory = null)
+    public AppPaths(
+        string? rootDirectory = null,
+        string? modelsDirectory = null,
+        string? aiRootDirectory = null)
     {
         RootDirectory = Path.GetFullPath(rootDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "TOOL_VIETSUB"));
         ProjectsDirectory = Path.Combine(RootDirectory, "Projects");
         LogsDirectory = Path.Combine(RootDirectory, "Logs");
-        ToolsDirectory = Path.Combine(RootDirectory, "Tools");
+
+        var configuredAiRoot = aiRootDirectory
+            ?? Environment.GetEnvironmentVariable("TOOL_VIETSUB_AI_ROOT")
+            ?? (rootDirectory is null ? AiStorageSettingsStore.TryLoad(RootDirectory)?.AiRootPath : null);
+        ApplyAiRoot(
+            string.IsNullOrWhiteSpace(configuredAiRoot) ? RootDirectory : configuredAiRoot,
+            useLegacyLayout: string.IsNullOrWhiteSpace(configuredAiRoot));
+
         var configuredModelDirectory = modelsDirectory
             ?? Environment.GetEnvironmentVariable("TOOL_VIETSUB_MODEL_ROOT");
-        ModelsDirectory = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredModelDirectory)
-            ? Path.Combine(RootDirectory, "Models")
-            : configuredModelDirectory);
+        if (!string.IsNullOrWhiteSpace(configuredModelDirectory))
+        {
+            ModelsDirectory = Path.GetFullPath(configuredModelDirectory);
+        }
 
-        Directory.CreateDirectory(RootDirectory);
-        Directory.CreateDirectory(ProjectsDirectory);
-        Directory.CreateDirectory(LogsDirectory);
-        Directory.CreateDirectory(ToolsDirectory);
-        Directory.CreateDirectory(ModelsDirectory);
+        EnsureDirectories();
     }
 
     public string RootDirectory { get; }
@@ -29,9 +36,40 @@ public sealed class AppPaths
 
     public string LogsDirectory { get; }
 
-    public string ToolsDirectory { get; }
+    public string AiRootDirectory { get; private set; } = string.Empty;
 
-    public string ModelsDirectory { get; }
+    public string ToolsDirectory { get; private set; } = string.Empty;
+
+    public string VieNeuRuntimeDirectory { get; private set; } = string.Empty;
+
+    public string ModelsDirectory { get; private set; } = string.Empty;
+
+    public string AiCacheDirectory { get; private set; } = string.Empty;
+
+    public string AiTempDirectory { get; private set; } = string.Empty;
+
+    public bool UsesLegacyAiLayout { get; private set; }
+
+    public void ApplyAiRoot(string aiRootDirectory, bool useLegacyLayout = false)
+    {
+        var resolved = Path.GetFullPath(aiRootDirectory);
+        AiRootDirectory = resolved;
+        UsesLegacyAiLayout = useLegacyLayout;
+        ToolsDirectory = useLegacyLayout
+            ? Path.Combine(resolved, "Tools")
+            : Path.Combine(resolved, "Runtimes", "Language");
+        VieNeuRuntimeDirectory = useLegacyLayout
+            ? Path.Combine(resolved, "Tools", "VieNeu")
+            : Path.Combine(resolved, "Runtimes", "VieNeu");
+        ModelsDirectory = Path.Combine(resolved, "Models");
+        AiCacheDirectory = useLegacyLayout
+            ? Path.Combine(resolved, "Tools", "Cache")
+            : Path.Combine(resolved, "Cache");
+        AiTempDirectory = useLegacyLayout
+            ? Path.Combine(resolved, "Tools", "Temp")
+            : Path.Combine(resolved, "Temp");
+        EnsureDirectories();
+    }
 
     public string GetProjectDirectory(Guid projectId) =>
         Path.Combine(ProjectsDirectory, projectId.ToString("N"));
@@ -41,15 +79,7 @@ public sealed class AppPaths
         var projectDirectory = Path.GetFullPath(GetProjectDirectory(projectId));
         var candidate = segments.Aggregate(projectDirectory, Path.Combine);
         var resolved = Path.GetFullPath(candidate);
-        var prefix = projectDirectory.EndsWith(Path.DirectorySeparatorChar)
-            ? projectDirectory
-            : projectDirectory + Path.DirectorySeparatorChar;
-        if (!resolved.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(resolved, projectDirectory, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("Đường dẫn dự án không hợp lệ.");
-        }
-
+        EnsureWithin(projectDirectory, resolved, "Đường dẫn dự án không hợp lệ.");
         return resolved;
     }
 
@@ -58,15 +88,33 @@ public sealed class AppPaths
         var modelDirectory = Path.GetFullPath(ModelsDirectory);
         var candidate = segments.Aggregate(modelDirectory, Path.Combine);
         var resolved = Path.GetFullPath(candidate);
-        var prefix = modelDirectory.EndsWith(Path.DirectorySeparatorChar)
-            ? modelDirectory
-            : modelDirectory + Path.DirectorySeparatorChar;
-        if (!resolved.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(resolved, modelDirectory, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("Đường dẫn model không hợp lệ.");
-        }
-
+        EnsureWithin(modelDirectory, resolved, "Đường dẫn model không hợp lệ.");
         return resolved;
+    }
+
+    private void EnsureDirectories()
+    {
+        Directory.CreateDirectory(RootDirectory);
+        Directory.CreateDirectory(ProjectsDirectory);
+        Directory.CreateDirectory(LogsDirectory);
+        if (string.IsNullOrWhiteSpace(AiRootDirectory)) return;
+        Directory.CreateDirectory(AiRootDirectory);
+        Directory.CreateDirectory(ToolsDirectory);
+        Directory.CreateDirectory(VieNeuRuntimeDirectory);
+        Directory.CreateDirectory(ModelsDirectory);
+        Directory.CreateDirectory(AiCacheDirectory);
+        Directory.CreateDirectory(AiTempDirectory);
+    }
+
+    private static void EnsureWithin(string root, string candidate, string message)
+    {
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar)
+            ? root
+            : root + Path.DirectorySeparatorChar;
+        if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(candidate, root, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(message);
+        }
     }
 }

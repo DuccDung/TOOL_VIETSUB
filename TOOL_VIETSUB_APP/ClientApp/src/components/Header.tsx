@@ -127,7 +127,7 @@ export function Header({
               aria-current={activeNav === id ? 'page' : undefined}
               onClick={() => {
                 onNavChange(id)
-                if (id !== 'subtitle' && id !== 'account') {
+                if (id !== 'subtitle' && id !== 'voice' && id !== 'library' && id !== 'account') {
                   onNotify(label, 'Màn hình này sẽ được hoàn thiện ở bước UI tiếp theo.')
                 }
               }}

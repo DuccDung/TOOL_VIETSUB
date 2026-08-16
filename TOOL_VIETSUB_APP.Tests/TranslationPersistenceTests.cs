@@ -30,6 +30,43 @@ public sealed class TranslationPersistenceTests : IDisposable
     }
 
     [Fact]
+    public void CredentialStore_SeparatesDeepSeekFromOtherProviderKeys()
+    {
+        var paths = new AppPaths(_root);
+        var store = new ProtectedTranslationCredentialStore(paths);
+
+        store.SaveKey(TranslationProviders.OpenAi, "secret-openai-key-value");
+        store.SaveKey(TranslationProviders.DeepSeek, "secret-deepseek-key-value");
+
+        Assert.Equal("secret-openai-key-value", store.GetKey(TranslationProviders.OpenAi));
+        Assert.Equal("secret-deepseek-key-value", store.GetKey(TranslationProviders.DeepSeek));
+        var raw = File.ReadAllBytes(Path.Combine(paths.RootDirectory, "translation.credentials"));
+        Assert.DoesNotContain("secret-deepseek-key-value", Encoding.UTF8.GetString(raw));
+
+        store.DeleteKey(TranslationProviders.DeepSeek);
+        Assert.False(store.HasKey(TranslationProviders.DeepSeek));
+        Assert.True(store.HasKey(TranslationProviders.OpenAi));
+    }
+
+    [Fact]
+    public void CredentialStore_EncryptsAndSeparatesGroqKey()
+    {
+        var paths = new AppPaths(_root);
+        var store = new ProtectedTranslationCredentialStore(paths);
+
+        store.SaveKey(TranslationProviders.OpenAi, "secret-openai-key-value");
+        store.SaveKey(TranslationProviders.Groq, "secret-groq-key-value");
+
+        Assert.Equal("secret-groq-key-value", store.GetKey(TranslationProviders.Groq));
+        var raw = File.ReadAllBytes(Path.Combine(paths.RootDirectory, "translation.credentials"));
+        Assert.DoesNotContain("secret-groq-key-value", Encoding.UTF8.GetString(raw));
+
+        store.DeleteKey(TranslationProviders.Groq);
+        Assert.False(store.HasKey(TranslationProviders.Groq));
+        Assert.True(store.HasKey(TranslationProviders.OpenAi));
+    }
+
+    [Fact]
     public async Task ManualSubtitleEdit_UpdatesTranslationMemoryAndKeepsLatestVersion()
     {
         var paths = new AppPaths(_root);

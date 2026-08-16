@@ -91,6 +91,9 @@ public sealed class ProjectWorkspaceServiceTests : IDisposable
         created.Settings.OriginalAudioVolumePercent = 42;
         created.Settings.VietnameseVoiceEnabled = true;
         created.Settings.VietnameseVoiceVolumePercent = 88;
+        created.Settings.VietnameseSubtitlesEnabled = false;
+        created.Settings.FlipHorizontal = true;
+        created.Settings.FlipVertical = true;
         await service.SaveAsync(created);
 
         var opened = await service.OpenAsync(created.ProjectId);
@@ -99,6 +102,48 @@ public sealed class ProjectWorkspaceServiceTests : IDisposable
         Assert.Equal(42, opened.Settings.OriginalAudioVolumePercent);
         Assert.True(opened.Settings.VietnameseVoiceEnabled);
         Assert.Equal(88, opened.Settings.VietnameseVoiceVolumePercent);
+        Assert.False(opened.Settings.VietnameseSubtitlesEnabled);
+        Assert.True(opened.Settings.FlipHorizontal);
+        Assert.True(opened.Settings.FlipVertical);
+    }
+
+    [Fact]
+    public async Task SaveAndOpen_PreservesMultipleSubtitleRemovalRegions()
+    {
+        var paths = new AppPaths(_root);
+        var service = new ProjectWorkspaceService(paths);
+        var created = await service.CreateAsync(Guid.NewGuid(), "Nhiều vùng che");
+        created.Settings.RemoveOriginalSubtitles = true;
+        created.Settings.OriginalSubtitleRemovalRegions =
+        [
+            new SubtitleRemovalRegionSettings
+            {
+                Id = "subtitle",
+                X = 0.05,
+                Y = 0.70,
+                Width = 0.90,
+                Height = 0.16,
+            },
+            new SubtitleRemovalRegionSettings
+            {
+                Id = "logo",
+                X = 0.72,
+                Y = 0.06,
+                Width = 0.20,
+                Height = 0.10,
+            },
+        ];
+        await service.SaveAsync(created);
+
+        var opened = await service.OpenAsync(created.ProjectId);
+
+        Assert.True(opened.Settings.RemoveOriginalSubtitles);
+        Assert.Equal(2, opened.Settings.OriginalSubtitleRemovalRegions.Count);
+        Assert.Equal("subtitle", opened.Settings.OriginalSubtitleRemovalRegions[0].Id);
+        Assert.Equal("logo", opened.Settings.OriginalSubtitleRemovalRegions[1].Id);
+        Assert.Equal(0.72, opened.Settings.OriginalSubtitleRemovalRegions[1].X);
+        Assert.Equal(0.05, opened.Settings.OriginalSubtitleRegionX);
+        Assert.Equal(0.90, opened.Settings.OriginalSubtitleRegionWidth);
     }
 
     [Fact]
@@ -111,6 +156,9 @@ public sealed class ProjectWorkspaceServiceTests : IDisposable
         Assert.Equal(85, settings.OriginalAudioVolumePercent);
         Assert.True(settings.VietnameseVoiceEnabled);
         Assert.Equal(100, settings.VietnameseVoiceVolumePercent);
+        Assert.True(settings.VietnameseSubtitlesEnabled);
+        Assert.False(settings.FlipHorizontal);
+        Assert.False(settings.FlipVertical);
     }
 
     [Fact]

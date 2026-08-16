@@ -32,6 +32,33 @@ export type LocalJobInfo = {
   currentStep: string | null
   errorCode: string | null
   errorMessage: string | null
+  translationMetrics?: TranslationJobMetrics | null
+  voiceMetrics?: VoiceSynthesisJobMetrics | null
+}
+
+export type TranslationJobMetrics = {
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  apiRequests: number
+  retryRequests: number
+  cacheHitScenes: number
+  translatedScenes: number
+  reviewedCues: number
+  autoRepairedCues: number
+  skippedCues: number
+  completedCues: number
+  totalPendingCues: number
+}
+
+export type VoiceSynthesisJobMetrics = {
+  totalCharacters: number
+  submittedCharacters: number
+  apiRequests: number
+  retryRequests: number
+  cacheHitCues: number
+  completedCues: number
+  totalCues: number
 }
 
 export type ProjectSummaryInfo = {
@@ -54,10 +81,19 @@ export type ProjectInfo = {
   sourceLanguageCode: 'auto' | 'en' | 'zh' | string
   targetLanguageCode: string
   settings: ProjectSettingsInfo
+  aiStorage: AiStorageInfo
   video: VideoInfo | null
   voicePlaybackUrl: string | null
   subtitles: SubtitleSegment[]
   jobs: LocalJobInfo[]
+}
+
+export type AiStorageInfo = {
+  rootPath: string
+  freeBytes: number
+  usesLegacyLocation: boolean
+  recommendedPath: string
+  pendingMigrationPath: string | null
 }
 
 export type ProjectSettingsInfo = {
@@ -65,21 +101,49 @@ export type ProjectSettingsInfo = {
   ocrLanguageCode: 'auto' | 'en' | 'zh' | string
   translationModelId: string
   translation: TranslationSettingsInfo
+  voice: VoiceSettingsInfo
   originalAudioEnabled: boolean
   originalAudioVolumePercent: number
   vietnameseVoiceEnabled: boolean
   vietnameseVoiceVolumePercent: number
+  vietnameseSubtitlesEnabled: boolean
+  flipHorizontal: boolean
+  flipVertical: boolean
   removeOriginalSubtitles: boolean
   originalSubtitleRemovalMode: 'blur' | 'cover'
   originalSubtitleRegionX: number
   originalSubtitleRegionY: number
   originalSubtitleRegionWidth: number
   originalSubtitleRegionHeight: number
+  originalSubtitleRemovalRegions?: SubtitleRemovalRegion[]
   subtitleStyle: SubtitleStyleSettings
 }
 
+export type VoiceSettingsInfo = {
+  defaultVoiceId: string
+  speakerVoiceIds: Record<string, string>
+  voices: VoiceInfo[]
+  speed: number
+  fptApiKeyConfigured: boolean
+  estimatedCharacters: number
+}
+
+export type VoiceInfo = {
+  voiceId: string
+  engine: 'piper' | 'vieneu' | 'fpt' | string
+  displayName: string
+  gender: string
+  region: string
+  style: string
+  modelVersion: string
+  license: string
+  installed: boolean
+  isCloud: boolean
+  requiresInstall: boolean
+}
+
 export type TranslationSettingsInfo = {
-  provider: 'local' | 'openai' | 'gemini'
+  provider: 'local' | 'openai' | 'gemini' | 'deepseek' | 'groq'
   modelId: string
   qualityMode: 'fast' | 'balanced' | 'high'
   reviewEnabled: boolean
@@ -99,6 +163,20 @@ export type SubtitleRemovalSettings = {
   y: number
   width: number
   height: number
+  regions: SubtitleRemovalRegion[]
+}
+
+export type SubtitleRemovalRegion = {
+  id: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export type VideoTransformSettings = {
+  flipHorizontal: boolean
+  flipVertical: boolean
 }
 
 export type SubtitleStyleSettings = {
@@ -138,6 +216,9 @@ export type SubtitleSegment = {
   end: number
   original: string
   translated: string
+  speaker?: string
+  voiceId?: string | null
+  resolvedVoiceId?: string
   status: 'translated' | 'review' | 'missing-audio' | 'invalid-translation'
   hasVoice?: boolean
   translationConfidence?: number | null

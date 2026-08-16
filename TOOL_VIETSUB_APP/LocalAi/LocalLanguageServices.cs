@@ -149,7 +149,7 @@ public sealed class ArgosLocalTranslator : ILocalTranslator
                 targetLanguage,
                 texts,
             },
-            TimeSpan.FromMinutes(10),
+            TimeSpan.FromMinutes(60),
             cancellationToken);
         if (response.Translations.Count != texts.Count
             || response.Translations.Any(string.IsNullOrWhiteSpace))
@@ -268,12 +268,33 @@ public sealed class OpusMtChineseVietnameseTranslator : ILocalTranslator
         IReadOnlyList<TransformersTranslationWorkerResult> Results);
 }
 
-public sealed record VoiceSynthesisRequest(Guid CueId, string Text, string OutputPath);
+public sealed record VoiceSynthesisRequest(
+    Guid CueId,
+    string Text,
+    string OutputPath,
+    string VoiceId = LocalVoiceCatalog.DefaultVoiceId,
+    int Speed = 0,
+    VoiceProviderCheckpoint? ProviderCheckpoint = null);
 
-public interface ILocalVoiceSynthesizer
+public sealed record VoiceProviderCheckpoint(
+    string? RequestId,
+    string? ResultUrl,
+    Func<string?, string?, CancellationToken, ValueTask>? SaveAsync = null);
+
+public interface IVoiceSynthesizer
 {
     Task SynthesizeAsync(
         IReadOnlyList<VoiceSynthesisRequest> items,
+        CancellationToken cancellationToken);
+}
+
+public interface ILocalVoiceSynthesizer : IVoiceSynthesizer;
+
+public interface IIncrementalVoiceSynthesizer : IVoiceSynthesizer
+{
+    Task SynthesizeIncrementallyAsync(
+        IReadOnlyList<VoiceSynthesisRequest> items,
+        Func<VoiceSynthesisRequest, ValueTask> onCompleted,
         CancellationToken cancellationToken);
 }
 
@@ -329,4 +350,208 @@ public sealed class PiperLocalVoiceSynthesizer : ILocalVoiceSynthesizer
     }
 
     private sealed record PiperWorkerResponse(IReadOnlyList<string> Written);
+}
+
+public sealed class VieNeuLocalVoiceSynthesizer : ILocalVoiceSynthesizer
+{
+    private readonly AppPaths _paths;
+    private readonly LocalWorkerProcess _worker;
+    private readonly LocalWorkerRuntimeLocator _runtime;
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    public VieNeuLocalVoiceSynthesizer(AppPaths paths, LocalWorkerProcess? worker = null)
+    {
+        _paths = paths;
+        _worker = worker ?? new LocalWorkerProcess();
+        _runtime = new LocalWorkerRuntimeLocator(paths);
+    }
+
+    public bool IsReady
+    {
+        get
+        {
+            try
+            {
+                return File.Exists(ReadyMarkerPath)
+                    && string.Equals(
+                        File.ReadAllText(ReadyMarkerPath).Trim(),
+                        LocalVoiceCatalog.VieNeuModelVersion,
+                        StringComparison.Ordinal)
+                    && Directory.Exists(HuggingFaceCacheRoot)
+                    && Directory.EnumerateFiles(
+                        HuggingFaceCacheRoot,
+                        "*",
+                        SearchOption.AllDirectories).Any();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+    }
+
+    public async Task EnsureReadyAsync(CancellationToken cancellationToken)
+    {
+        if (IsReady)
+        {
+            return;
+        }
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (IsReady)
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(ModelRoot);
+            _ = await RunWorkerAsync([], prepareOnly: true, cancellationToken);
+            await File.WriteAllTextAsync(
+                ReadyMarkerPath,
+                LocalVoiceCatalog.VieNeuModelVersion,
+                cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task SynthesizeAsync(
+        IReadOnlyList<VoiceSynthesisRequest> items,
+        CancellationToken cancellationToken)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        if (items.Any(item => LocalVoiceCatalog.Resolve(item.VoiceId).Engine != LocalVoiceEngines.VieNeu))
+        {
+            throw new LocalModelException("VOICE_ID_INVALID", "Danh sách tạo giọng VieNeu chứa giọng không hợp lệ.");
+        }
+
+        await EnsureReadyAsync(cancellationToken);
+        var response = await RunWorkerAsync(items, prepareOnly: false, cancellationToken);
+        if (response.Written.Count != items.Count
+            || items.Any(item => !File.Exists(item.OutputPath) || new FileInfo(item.OutputPath).Length <= 44))
+        {
+            throw new LocalModelException(
+                "VOICE_RESULT_INVALID",
+                "VieNeu không tạo đủ file giọng đọc.");
+        }
+    }
+
+    private async Task<VieNeuWorkerResponse> RunWorkerAsync(
+        IReadOnlyList<VoiceSynthesisRequest> items,
+        bool prepareOnly,
+        CancellationToken cancellationToken) =>
+        await _worker.RunAsync<VieNeuWorkerResponse>(
+            _runtime.RequireVieNeuPython(),
+            _runtime.RequireWorker("vieneu_worker.py"),
+            new
+            {
+                prepareOnly,
+                mode = "v3turbo",
+                backend = "onnx",
+                precision = "int8",
+                items = items.Select(item => new
+                {
+                    item.Text,
+                    item.OutputPath,
+                    voice = LocalVoiceCatalog.Resolve(item.VoiceId).ProviderVoiceId,
+                }).ToArray(),
+            },
+            TimeSpan.FromMinutes(60),
+            cancellationToken,
+            new Dictionary<string, string>
+            {
+                ["HF_HOME"] = HuggingFaceCacheRoot,
+                ["HF_HUB_DISABLE_TELEMETRY"] = "1",
+                ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1",
+                ["TEMP"] = _paths.AiTempDirectory,
+                ["TMP"] = _paths.AiTempDirectory,
+            },
+            _paths.AiTempDirectory);
+
+    private string ModelRoot => _paths.GetModelPath("vieneu", "v3-turbo");
+
+    private string HuggingFaceCacheRoot => Path.Combine(_paths.AiCacheDirectory, "HuggingFace");
+
+    private string ReadyMarkerPath => Path.Combine(ModelRoot, ".ready");
+
+    private sealed record VieNeuWorkerResponse(IReadOnlyList<string> Written);
+}
+
+public sealed class CompositeLocalVoiceSynthesizer : ILocalVoiceSynthesizer, IIncrementalVoiceSynthesizer
+{
+    private readonly ILocalVoiceSynthesizer _piper;
+    private readonly ILocalVoiceSynthesizer _vieNeu;
+    private readonly IIncrementalVoiceSynthesizer? _fpt;
+
+    public CompositeLocalVoiceSynthesizer(
+        ILocalVoiceSynthesizer piper,
+        ILocalVoiceSynthesizer vieNeu,
+        IIncrementalVoiceSynthesizer? fpt = null)
+    {
+        _piper = piper;
+        _vieNeu = vieNeu;
+        _fpt = fpt;
+    }
+
+    public async Task SynthesizeAsync(
+        IReadOnlyList<VoiceSynthesisRequest> items,
+        CancellationToken cancellationToken) =>
+        await SynthesizeIncrementallyAsync(items, _ => ValueTask.CompletedTask, cancellationToken);
+
+    public async Task SynthesizeIncrementallyAsync(
+        IReadOnlyList<VoiceSynthesisRequest> items,
+        Func<VoiceSynthesisRequest, ValueTask> onCompleted,
+        CancellationToken cancellationToken)
+    {
+        foreach (var item in items)
+        {
+            if (LocalVoiceCatalog.Find(item.VoiceId) is null)
+            {
+                throw new LocalModelException("VOICE_ID_INVALID", $"Không tìm thấy giọng đọc '{item.VoiceId}'.");
+            }
+        }
+
+        var piperItems = items
+            .Where(item => LocalVoiceCatalog.Resolve(item.VoiceId).Engine == LocalVoiceEngines.Piper)
+            .ToArray();
+        var vieNeuItems = items
+            .Where(item => LocalVoiceCatalog.Resolve(item.VoiceId).Engine == LocalVoiceEngines.VieNeu)
+            .ToArray();
+        var fptItems = items
+            .Where(item => LocalVoiceCatalog.Resolve(item.VoiceId).Engine == LocalVoiceEngines.Fpt)
+            .ToArray();
+
+        if (fptItems.Length > 0 && _fpt is null)
+        {
+            throw new VoiceSynthesisException(
+                "FPT_API_KEY_REQUIRED",
+                "Hãy lưu API key FPT.AI trước khi tạo giọng online.",
+                retryable: false);
+        }
+
+        // Chạy tuần tự để tránh giữ đồng thời hai model giọng trong RAM.
+        await _piper.SynthesizeAsync(piperItems, cancellationToken);
+        foreach (var item in piperItems)
+        {
+            await onCompleted(item);
+        }
+
+        await _vieNeu.SynthesizeAsync(vieNeuItems, cancellationToken);
+        foreach (var item in vieNeuItems)
+        {
+            await onCompleted(item);
+        }
+
+        if (_fpt is not null)
+        {
+            await _fpt.SynthesizeIncrementallyAsync(fptItems, onCompleted, cancellationToken);
+        }
+    }
 }

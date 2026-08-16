@@ -92,6 +92,11 @@ public sealed class ProjectSettings
 
     public string? VoiceId { get; set; }
 
+    public int VoiceSpeed { get; set; }
+
+    public Dictionary<string, string> SpeakerVoiceIds { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public bool OriginalAudioEnabled { get; set; } = true;
 
     public double OriginalAudioVolumePercent { get; set; } = 85;
@@ -100,9 +105,15 @@ public sealed class ProjectSettings
 
     public double VietnameseVoiceVolumePercent { get; set; } = 100;
 
+    public bool VietnameseSubtitlesEnabled { get; set; } = true;
+
     public string ExportContainer { get; set; } = "mp4";
 
     public string ExportVideoCodec { get; set; } = "h264";
+
+    public bool FlipHorizontal { get; set; }
+
+    public bool FlipVertical { get; set; }
 
     public bool RemoveOriginalSubtitles { get; set; }
 
@@ -116,7 +127,22 @@ public sealed class ProjectSettings
 
     public double OriginalSubtitleRegionHeight { get; set; } = 0.16;
 
+    public List<SubtitleRemovalRegionSettings> OriginalSubtitleRemovalRegions { get; set; } = [];
+
     public SubtitleStyleSettings SubtitleStyle { get; set; } = new();
+}
+
+public sealed class SubtitleRemovalRegionSettings
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
+    public double X { get; set; } = 0.05;
+
+    public double Y { get; set; } = 0.70;
+
+    public double Width { get; set; } = 0.90;
+
+    public double Height { get; set; } = 0.16;
 }
 
 public static class TranslationProviders
@@ -124,15 +150,19 @@ public static class TranslationProviders
     public const string Local = "local";
     public const string OpenAi = "openai";
     public const string Gemini = "gemini";
+    public const string DeepSeek = "deepseek";
+    public const string Groq = "groq";
 
     public static string Normalize(string? provider) => provider?.Trim().ToLowerInvariant() switch
     {
         OpenAi => OpenAi,
         Gemini => Gemini,
+        DeepSeek => DeepSeek,
+        Groq => Groq,
         _ => Local,
     };
 
-    public static bool IsCloud(string? provider) => Normalize(provider) is OpenAi or Gemini;
+    public static bool IsCloud(string? provider) => Normalize(provider) is OpenAi or Gemini or DeepSeek or Groq;
 }
 
 public static class TranslationQualityModes
@@ -392,6 +422,8 @@ public sealed class SubtitleCue
 
     public string Speaker { get; set; } = "speaker_1";
 
+    public string? VoiceId { get; set; }
+
     public string OriginalText { get; set; } = string.Empty;
 
     public string TranslatedText { get; set; } = string.Empty;
@@ -471,6 +503,54 @@ public sealed class LocalJob
     public List<LocalJobStep> Steps { get; set; } = [];
 
     public Dictionary<string, string> Parameters { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public TranslationJobMetrics? TranslationMetrics { get; set; }
+
+    public VoiceSynthesisJobMetrics? VoiceMetrics { get; set; }
+}
+
+public sealed class VoiceSynthesisJobMetrics
+{
+    public int TotalCharacters { get; set; }
+
+    public int SubmittedCharacters { get; set; }
+
+    public int ApiRequests { get; set; }
+
+    public int RetryRequests { get; set; }
+
+    public int CacheHitCues { get; set; }
+
+    public int CompletedCues { get; set; }
+
+    public int TotalCues { get; set; }
+}
+
+public sealed class TranslationJobMetrics
+{
+    public long InputTokens { get; set; }
+
+    public long OutputTokens { get; set; }
+
+    public long CachedInputTokens { get; set; }
+
+    public int ApiRequests { get; set; }
+
+    public int RetryRequests { get; set; }
+
+    public int CacheHitScenes { get; set; }
+
+    public int TranslatedScenes { get; set; }
+
+    public int ReviewedCues { get; set; }
+
+    public int AutoRepairedCues { get; set; }
+
+    public int SkippedCues { get; set; }
+
+    public int CompletedCues { get; set; }
+
+    public int TotalPendingCues { get; set; }
 }
 
 public sealed class LocalJobStep

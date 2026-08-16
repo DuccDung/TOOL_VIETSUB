@@ -8,10 +8,12 @@ import {
   LoaderCircle,
   Pause,
   Play,
+  Plus,
   RotateCcw,
   ScanLine,
   Sparkles,
   Square,
+  Trash2,
   Type,
 } from 'lucide-react'
 import type {
@@ -20,6 +22,12 @@ import type {
   SubtitleStyleSettings,
   TranslationSettingsInfo,
 } from '../types'
+import {
+  createSubtitleRemovalRegion,
+  getSubtitleRemovalRegions,
+  maxSubtitleRemovalRegions,
+  withSubtitleRemovalRegions,
+} from '../lib/subtitleRemoval'
 import { SubtitleStyleEditor } from './SubtitleStyleEditor'
 import { TranslationSettingsEditor } from './TranslationSettingsEditor'
 import { SectionCard, SegmentTab, SelectField, Toggle } from './Ui'
@@ -57,6 +65,8 @@ type SettingsPanelProps = {
 }
 
 const terminalStates = ['completed', 'cancelled']
+
+const formatTokenCount = (value: number) => new Intl.NumberFormat('vi-VN').format(Math.max(0, value))
 
 export function SettingsPanel({
   sourceLanguageCode,
@@ -97,6 +107,24 @@ export function SettingsPanel({
   const displayJob = jobs.find((job) => ['pending', 'running', 'paused', 'interrupted'].includes(job.status))
     ?? jobs[0]
   const canStart = !displayJob || terminalStates.includes(displayJob.status)
+  const removalRegions = getSubtitleRemovalRegions(subtitleRemoval)
+
+  const addRemovalRegion = () => {
+    if (jobBusy || removalRegions.length >= maxSubtitleRemovalRegions) return
+    const region = createSubtitleRemovalRegion(removalRegions.length)
+    onSubtitleRemovalChange(withSubtitleRemovalRegions(
+      { ...subtitleRemoval, enabled: true },
+      [...removalRegions, region],
+    ))
+  }
+
+  const removeRemovalRegion = (regionId: string) => {
+    if (jobBusy || removalRegions.length <= 1) return
+    onSubtitleRemovalChange(withSubtitleRemovalRegions(
+      subtitleRemoval,
+      removalRegions.filter((region) => region.id !== regionId),
+    ))
+  }
 
   const jobTitle = () => {
     if (!displayJob) return 'Chưa nhận dạng giọng nói'
@@ -107,6 +135,7 @@ export function SettingsPanel({
       TRANSLATE_LOCAL: 'Dịch sang tiếng Việt',
       TRANSLATE_CLOUD: 'Dịch sang tiếng Việt bằng cloud',
       SYNTHESIZE_VOICE_LOCAL: 'Tạo giọng Việt',
+      SYNTHESIZE_VOICE_CLOUD: 'Tạo giọng Việt bằng FPT.AI',
       EXPORT_VIDEO_LOCAL: 'Đồng bộ và xuất video',
     }
     const name = jobName[displayJob.jobType] ?? 'Xử lý local'
@@ -282,10 +311,55 @@ export function SettingsPanel({
                 y: 0.70,
                 width: 0.90,
                 height: 0.16,
+                regions: [{
+                  id: 'primary',
+                  x: 0.05,
+                  y: 0.70,
+                  width: 0.90,
+                  height: 0.16,
+                }],
               })}
             >
               Đặt lại
             </button>
+          </div>
+
+          <div className="subtitle-removal-regions">
+            <div className="subtitle-removal-regions__heading">
+              <div>
+                <strong>{removalRegions.length} vùng che</strong>
+                <span>Tối đa {maxSubtitleRemovalRegions} vùng trên một video</span>
+              </div>
+              <button
+                type="button"
+                className="subtitle-removal-add"
+                disabled={jobBusy || removalRegions.length >= maxSubtitleRemovalRegions}
+                onClick={addRemovalRegion}
+              >
+                <Plus size={14} />
+                Thêm vùng che
+              </button>
+            </div>
+            <div className="subtitle-removal-region-list">
+              {removalRegions.map((region, index) => (
+                <div className="subtitle-removal-region-item" key={region.id}>
+                  <span className="subtitle-removal-region-index">{index + 1}</span>
+                  <span className="subtitle-removal-region-size">
+                    X {Math.round(region.x * 100)} · Y {Math.round(region.y * 100)} ·{' '}
+                    {Math.round(region.width * 100)}×{Math.round(region.height * 100)}%
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Xóa vùng che ${index + 1}`}
+                    title={removalRegions.length <= 1 ? 'Cần giữ lại ít nhất một vùng' : `Xóa vùng che ${index + 1}`}
+                    disabled={jobBusy || removalRegions.length <= 1}
+                    onClick={() => removeRemovalRegion(region.id)}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="panel-tip panel-tip--removal">
@@ -320,7 +394,36 @@ export function SettingsPanel({
             <span className={`job-state-dot job-state-dot--${displayJob.status}`} />
             <div>
               <strong>{jobTitle()}</strong>
-              <span>{Math.round(displayJob.progressPercent)}% · {displayJob.currentStep ?? 'EXTRACT_AUDIO'}</span>
+              <span title={displayJob.errorMessage ?? undefined}>
+                {displayJob.status === 'failed' && displayJob.errorCode
+                  ? `${displayJob.errorCode} · ${displayJob.errorMessage ?? 'Không có mô tả lỗi'}`
+                  : `${Math.round(displayJob.progressPercent)}% · ${displayJob.currentStep ?? displayJob.jobType}`}
+              </span>
+              {displayJob.translationMetrics && displayJob.jobType === 'TRANSLATE_CLOUD' ? (
+                <span>
+                  {formatTokenCount(displayJob.translationMetrics.inputTokens + displayJob.translationMetrics.outputTokens)} token
+                  {' · '}{displayJob.translationMetrics.apiRequests} request
+                  {displayJob.translationMetrics.cacheHitScenes > 0
+                    ? ` · ${displayJob.translationMetrics.cacheHitScenes} cache hit`
+                    : ''}
+                  {displayJob.translationMetrics.autoRepairedCues > 0
+                    ? ` · sửa ${displayJob.translationMetrics.autoRepairedCues} cue`
+                    : ''}
+                  {displayJob.translationMetrics.skippedCues > 0
+                    ? ` · chú ý ${displayJob.translationMetrics.skippedCues} cue`
+                    : ''}
+                </span>
+              ) : null}
+              {displayJob.voiceMetrics && displayJob.jobType === 'SYNTHESIZE_VOICE_CLOUD' ? (
+                <span>
+                  {formatTokenCount(displayJob.voiceMetrics.submittedCharacters)} ký tự đã gửi
+                  {' · '}{displayJob.voiceMetrics.apiRequests} request
+                  {' · '}{displayJob.voiceMetrics.completedCues}/{displayJob.voiceMetrics.totalCues} cue
+                  {displayJob.voiceMetrics.cacheHitCues > 0
+                    ? ` · ${displayJob.voiceMetrics.cacheHitCues} cache hit`
+                    : ''}
+                </span>
+              ) : null}
             </div>
           </div>
         ) : (

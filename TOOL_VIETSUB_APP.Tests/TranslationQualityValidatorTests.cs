@@ -23,6 +23,25 @@ public sealed class TranslationQualityValidatorTests
         Assert.False(TranslationQualityValidator.LooksPathological(source, translation));
     }
 
+    [Theory]
+    [InlineData("\u5bf9\u5bf9\u5bf9\u5bf9", "\u0110\u00fang, \u0111\u00fang, \u0111\u00fang, \u0111\u00fang.")]
+    [InlineData("\u5bf9\u5bf9\u5bf9\u5bf9", "\u0110\u00fang r\u1ed3i, \u0111\u00fang r\u1ed3i, \u0111\u00fang r\u1ed3i, \u0111\u00fang r\u1ed3i.")]
+    [InlineData("\u5bf9\uff0c\u5bf9\uff0c\u5bf9\uff0c\u5bf9", "\u0110\u00fang, \u0111\u00fang, \u0111\u00fang, \u0111\u00fang.")]
+    [InlineData("no no no no", "Kh\u00f4ng, kh\u00f4ng, kh\u00f4ng, kh\u00f4ng.")]
+    [InlineData("\u597d\u597d\u597d", "\u0110\u01b0\u1ee3c, \u0111\u01b0\u1ee3c, \u0111\u01b0\u1ee3c.")]
+    public void AcceptsIntentionalRepetitionPresentInSource(string source, string translation)
+    {
+        Assert.False(TranslationQualityValidator.LooksPathological(source, translation));
+    }
+
+    [Fact]
+    public void RejectsOutputThatGreatlyExceedsIntentionalSourceRepetition()
+    {
+        Assert.True(TranslationQualityValidator.LooksPathological(
+            "\u5bf9\u5bf9\u5bf9\u5bf9",
+            "\u0110\u00fang \u0111\u00fang \u0111\u00fang \u0111\u00fang \u0111\u00fang \u0111\u00fang \u0111\u00fang \u0111\u00fang."));
+    }
+
     [Fact]
     public void RejectsOutputWithoutEndToken()
     {

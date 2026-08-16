@@ -100,8 +100,11 @@ Server dùng transaction `Serializable` cùng `UPDLOCK/HOLDLOCK` theo user, vì 
   timestamp, checkpoint và bảo vệ cue khóa.
 - `OCR_LOCAL`: FFmpeg trích vùng frame, PaddleOCR English V5 CPU và gộp frame
   thành cue theo timeline.
-- `TRANSLATE_LOCAL`: Argos worker process cô lập, batch English -> Vietnamese,
-  checkpoint và không ghi đè bản dịch khóa.
+- `TRANSLATE_LOCAL`: Argos/OPUS-MT worker process cô lập cho English/Chinese ->
+  Vietnamese, checkpoint và không ghi đè bản dịch khóa.
+- `TRANSLATE_CLOUD`: OpenAI, Gemini, DeepSeek hoặc Groq theo lựa chọn của người dùng;
+  chỉ gửi văn bản/ngữ cảnh, dùng output JSON được kiểm tra cue ID và có thể
+  fallback sang local với lỗi tạm thời.
 - `SYNTHESIZE_VOICE_LOCAL`: Piper worker process cô lập, voice VAIS-1000,
   cache theo nội dung/model/voice và WAV theo từng cue.
 - `EXPORT_VIDEO_LOCAL`: fit voice cue bằng atempo/pad/trim, tạo voice timeline,

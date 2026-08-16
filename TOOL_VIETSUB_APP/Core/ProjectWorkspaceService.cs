@@ -321,5 +321,72 @@ public sealed class ProjectWorkspaceService
         }
 
         _ = NormalizeName(manifest.Name);
+        manifest.Settings ??= new ProjectSettings();
+        manifest.Settings.VoiceSpeed = Math.Clamp(manifest.Settings.VoiceSpeed, -3, 3);
+        manifest.Settings.SpeakerVoiceIds = manifest.Settings.SpeakerVoiceIds is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(
+                manifest.Settings.SpeakerVoiceIds,
+                StringComparer.OrdinalIgnoreCase);
+        manifest.Settings.OriginalSubtitleRemovalRegions ??= [];
+        var validRemovalRegions = manifest.Settings.OriginalSubtitleRemovalRegions
+            .Where(region => IsValidSubtitleRemovalRegion(region))
+            .Take(DesktopWorkspaceCoordinator.MaxSubtitleRemovalRegions)
+            .ToList();
+        if (validRemovalRegions.Count == 0)
+        {
+            var legacyRegion = new SubtitleRemovalRegionSettings
+            {
+                Id = "legacy",
+                X = manifest.Settings.OriginalSubtitleRegionX,
+                Y = manifest.Settings.OriginalSubtitleRegionY,
+                Width = manifest.Settings.OriginalSubtitleRegionWidth,
+                Height = manifest.Settings.OriginalSubtitleRegionHeight,
+            };
+            validRemovalRegions.Add(IsValidSubtitleRemovalRegion(legacyRegion)
+                ? legacyRegion
+                : new SubtitleRemovalRegionSettings());
+        }
+
+        var usedRemovalRegionIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var region in validRemovalRegions)
+        {
+            var id = region.Id?.Trim() ?? string.Empty;
+            if (id.Length is < 1 or > 64 || id.Any(char.IsControl) || !usedRemovalRegionIds.Add(id))
+            {
+                do
+                {
+                    id = Guid.NewGuid().ToString("N");
+                }
+                while (!usedRemovalRegionIds.Add(id));
+            }
+            region.Id = id;
+        }
+
+        manifest.Settings.OriginalSubtitleRemovalRegions = validRemovalRegions;
+        var primaryRemovalRegion = validRemovalRegions[0];
+        manifest.Settings.OriginalSubtitleRegionX = primaryRemovalRegion.X;
+        manifest.Settings.OriginalSubtitleRegionY = primaryRemovalRegion.Y;
+        manifest.Settings.OriginalSubtitleRegionWidth = primaryRemovalRegion.Width;
+        manifest.Settings.OriginalSubtitleRegionHeight = primaryRemovalRegion.Height;
+        foreach (var cue in manifest.SubtitleTracks.SelectMany(track => track.Cues))
+        {
+            if (string.IsNullOrWhiteSpace(cue.Speaker))
+            {
+                cue.Speaker = "speaker_1";
+            }
+        }
     }
+
+    private static bool IsValidSubtitleRemovalRegion(SubtitleRemovalRegionSettings region) =>
+        double.IsFinite(region.X)
+        && double.IsFinite(region.Y)
+        && double.IsFinite(region.Width)
+        && double.IsFinite(region.Height)
+        && region.X >= 0
+        && region.Y >= 0
+        && region.Width >= 0.05
+        && region.Height >= 0.04
+        && region.X + region.Width <= 1.000001
+        && region.Y + region.Height <= 1.000001;
 }
