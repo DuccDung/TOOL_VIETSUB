@@ -1,0 +1,65 @@
+@{
+    var isLandingPage = ViewData["IsLandingPage"] as bool? == true;
+    var pageTitle = ViewData["Title"]?.ToString();
+}
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#070b13" />
+    <meta name="description" content="@(isLandingPage ? "SubVid giúp tạo phụ đề, dịch theo ngữ cảnh và lồng tiếng AI cho video." : "Trung tâm quản trị SubVid Server")" />
+    <title>@pageTitle@(isLandingPage ? " | SubVid" : " · SubVid SERVER")</title>
+    <link rel="icon" type="image/png" href="~/images/favicon.png" />
+    <link rel="shortcut icon" href="~/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body class="@(isLandingPage ? "marketing-body" : "server-body")">
+    @if (!isLandingPage)
+    {
+        <header class="server-header">
+            <a class="server-brand" asp-page="/Index" aria-label="SubVid Server">
+                <img class="server-logo" src="~/images/subvid-icon.png" alt="" aria-hidden="true" />
+                <span><strong>SubVid</strong><small>SERVER</small></span>
+            </a>
+            <nav aria-label="Điều hướng chính">
+                <a asp-page="/Index">Tổng quan</a>
+                @if (User.Identity?.IsAuthenticated == true && User.IsInRole("ADMIN"))
+                {
+                    <a asp-page="/Admin/Subscriptions">Nâng cấp tài khoản</a>
+                }
+                <a href="/openapi/v1.json">OpenAPI</a>
+            </nav>
+            <div class="server-header-actions">
+                <span class="server-status"><i></i> API V1 sẵn sàng</span>
+                @if (User.Identity?.IsAuthenticated == true && User.IsInRole("ADMIN"))
+                {
+                    <form method="post" asp-page="/Admin/Logout"><button type="submit">Đăng xuất</button></form>
+                }
+                else
+                {
+                    <a class="admin-login-link" asp-page="/Admin/Login">Quản trị</a>
+                }
+            </div>
+        </header>
+    }
+
+    <main class="@(isLandingPage ? "landing-main" : "server-main")">
+        @RenderBody()
+    </main>
+
+    @if (!isLandingPage)
+    {
+        <footer class="server-footer">
+            <span>SubVid SERVER</span>
+            <span>ASP.NET Core · SQL Server · HTTPS API</span>
+        </footer>
+    }
+
+    <script src="~/js/site.js" asp-append-version="true" defer></script>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

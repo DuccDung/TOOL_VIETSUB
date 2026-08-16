@@ -1,0 +1,29 @@
+@{
+    Layout = "_Layout";
+    ViewData["IsLandingPage"] = true;
+}
+
+<div class="marketing account-auth-page">
+    <header class="landing-header account-auth-header">
+        <nav class="landing-nav" aria-label="Điều hướng tài khoản">
+            <a class="landing-brand" asp-page="/Index" aria-label="SubVid - Trang chủ">
+                <img class="landing-brand-logo" src="~/images/subvid-logo.png" alt="" aria-hidden="true" />
+                <strong>SubVid</strong>
+            </a>
+            <div class="account-auth-nav">
+                <a asp-page="/Index">Trang chủ</a>
+                <a class="nav-download" asp-page="/Index" asp-fragment="download"><span aria-hidden="true">↓</span> Tải ứng dụng</a>
+            </div>
+        </nav>
+    </header>
+
+    <main class="account-auth-main">
+        @RenderBody()
+    </main>
+
+    <footer class="account-auth-footer">
+        <span>© 2026 SubVid</span>
+        <span><i></i> Kết nối được bảo vệ qua HTTPS</span>
+        <a asp-page="/Privacy">Chính sách riêng tư</a>
+    </footer>
+</div>

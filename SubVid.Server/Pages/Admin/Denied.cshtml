@@ -1,0 +1,11 @@
+@page
+@{
+    ViewData["Title"] = "Không có quyền truy cập";
+}
+
+<section class="admin-denied">
+    <span>!</span>
+    <h1>Không có quyền truy cập</h1>
+    <p>Chức năng này chỉ dành cho tài khoản quản trị đang hoạt động.</p>
+    <a class="primary-link" asp-page="/Admin/Login">Đăng nhập quản trị <span>→</span></a>
+</section>

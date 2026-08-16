@@ -1,0 +1,84 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>SubVid.App</RootNamespace>
+    <AssemblyName>SubVid.App</AssemblyName>
+    <AssemblyTitle>SubVid Studio</AssemblyTitle>
+    <Product>SubVid</Product>
+    <Company>SubVid</Company>
+    <ApplicationIcon>Assets\subvid.ico</ApplicationIcon>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ClientAppDir>$(MSBuildProjectDirectory)\ClientApp</ClientAppDir>
+    <WebUiOutputDir>$(MSBuildProjectDirectory)\wwwroot</WebUiOutputDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\subvid-logo.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\subvid-icon.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
+    <PackageReference Include="Sdcb.PaddleOCR" Version="3.3.1" />
+    <PackageReference Include="Sdcb.PaddleOCR.Models.Local" Version="3.3.1" />
+    <PackageReference Include="Sdcb.PaddleOCR.Models.LocalV5" Version="3.3.1" />
+    <PackageReference Include="Sdcb.PaddleInference.runtime.win64.mkl" Version="3.3.1.70" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.11.0.20250507" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="LocalAi\Workers\*.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>workers\%(Filename)%(Extension)</TargetPath>
+    </Content>
+  </ItemGroup>
+
+  <!-- WebView2 ships WPF and WinForms references together. This app only uses
+       WinForms, so remove the unused WPF assembly to avoid WindowsBase conflicts. -->
+  <Target Name="RemoveUnusedWebView2WpfReference"
+          BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)"
+                 Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="BuildWebUi"
+          BeforeTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <Exec WorkingDirectory="$(ClientAppDir)"
+          Command="npm ci"
+          Condition="!Exists('$(ClientAppDir)\node_modules')" />
+    <Exec WorkingDirectory="$(ClientAppDir)"
+          Command="npm run build" />
+  </Target>
+
+  <Target Name="CopyWebUiToOutput"
+          AfterTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <WebUiFiles Include="$(WebUiOutputDir)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(WebUiFiles)"
+          DestinationFiles="@(WebUiFiles->'$(TargetDir)wwwroot\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyWebUiToPublish"
+          AfterTargets="Publish"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <PublishedWebUiFiles Include="$(WebUiOutputDir)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PublishedWebUiFiles)"
+          DestinationFiles="@(PublishedWebUiFiles->'$(PublishDir)wwwroot\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

@@ -1,0 +1,111 @@
+@page
+@model SubVid.Server.Pages.Account.LoginModel
+@{
+    Layout = "/Pages/Shared/_AccountAuthLayout.cshtml";
+    ViewData["Title"] = "Đăng nhập SubVid";
+}
+
+<div class="account-login-layout">
+    <aside class="account-login-showcase" aria-label="Lợi ích khi sử dụng SubVid">
+        <div class="account-login-glow" aria-hidden="true"></div>
+        <div class="account-login-showcase-content">
+            <span class="account-login-kicker"><i></i> SUBVID WORKSPACE</span>
+            <h1>Tiếp tục dự án.<br /><span>Giữ trọn nhịp sáng tạo.</span></h1>
+            <p>Quản lý phụ đề, bản dịch và giọng Việt trong một quy trình liền mạch trên máy tính của bạn.</p>
+
+            <div class="account-login-pipeline" aria-label="Quy trình xử lý video">
+                <div>
+                    <span class="account-login-step-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M15 10l4.6-2.3A1 1 0 0121 8.6v6.8a1 1 0 01-1.4.9L15 14M4 6h9a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2z" /></svg>
+                    </span>
+                    <span><small>BƯỚC 01</small><strong>Nhập video</strong></span>
+                    <i></i>
+                </div>
+                <div>
+                    <span class="account-login-step-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h11M4 18h8" /></svg>
+                    </span>
+                    <span><small>BƯỚC 02</small><strong>Dịch phụ đề</strong></span>
+                    <i></i>
+                </div>
+                <div>
+                    <span class="account-login-step-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M12 3v18M8 7v10M4 10v4M16 6v12M20 9v6" /></svg>
+                    </span>
+                    <span><small>BƯỚC 03</small><strong>Tạo giọng Việt</strong></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="account-login-local-note">
+            <span aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-2.8 8.1-7 10-4.2-1.9-7-5.4-7-10V6l7-3z" /><path d="M9 12l2 2 4-4" /></svg>
+            </span>
+            <div><strong>Local-first &amp; riêng tư</strong><small>Video và audio được xử lý trực tiếp trên thiết bị.</small></div>
+        </div>
+    </aside>
+
+    <section class="account-auth-card account-auth-card--login" aria-labelledby="login-title">
+        <div class="account-auth-tabs" aria-label="Chọn hình thức tài khoản">
+            <a class="is-active" asp-page="/Account/Login" aria-current="page">Đăng nhập</a>
+            <a asp-page="/Account/Register">Đăng ký</a>
+        </div>
+
+        <div class="account-login-heading">
+            <span class="account-login-eyebrow">CHÀO MỪNG TRỞ LẠI</span>
+            <h2 id="login-title">Đăng nhập vào SubVid</h2>
+            <p>Tiếp tục quản lý dự án và hạn mức xử lý video của bạn.</p>
+        </div>
+
+        @if (Model.Registered)
+        {
+            <div class="account-auth-alert account-auth-alert--success"><span>✓</span><div><strong>Đăng ký thành công</strong><small>Email đã được xác nhận. Bạn có thể đăng nhập ngay.</small></div></div>
+        }
+        @if (Model.PasswordReset)
+        {
+            <div class="account-auth-alert account-auth-alert--success"><span>✓</span><div><strong>Đã đổi mật khẩu</strong><small>Tất cả phiên cũ đã được đăng xuất để bảo vệ tài khoản.</small></div></div>
+        }
+
+        <form method="post" class="account-auth-form account-login-form">
+            <input asp-for="ReturnUrl" type="hidden" />
+            <div asp-validation-summary="ModelOnly" class="account-validation-summary"></div>
+
+            <label class="account-field">
+                <span>Email</span>
+                <span class="account-input-wrap account-input-wrap--login">
+                    <i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V7a2 2 0 012-2z" /><path d="M3 7l9 6 9-6" /></svg></i>
+                    <input asp-for="Input.Email" type="email" autocomplete="username" inputmode="email" placeholder="ban@example.com" autofocus />
+                </span>
+                <small><span asp-validation-for="Input.Email"></span></small>
+            </label>
+
+            <label class="account-field">
+                <span>Mật khẩu</span>
+                <span class="account-input-wrap account-input-wrap--login account-password-wrap">
+                    <i aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2" /><path d="M8 10V7a4 4 0 018 0v3" /></svg></i>
+                    <input asp-for="Input.Password" type="password" autocomplete="current-password" placeholder="Nhập mật khẩu" />
+                    <button type="button" class="account-password-toggle" data-password-toggle aria-label="Hiện mật khẩu" aria-pressed="false">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z" /><circle cx="12" cy="12" r="2.5" /></svg>
+                    </button>
+                </span>
+                <small><span asp-validation-for="Input.Password"></span></small>
+            </label>
+
+            <div class="account-form-options">
+                <label class="account-check"><input asp-for="Input.RememberMe" /><span><i></i></span> Ghi nhớ đăng nhập</label>
+                <a asp-page="/Account/ForgotPassword">Quên mật khẩu?</a>
+            </div>
+
+            <button class="account-primary-action account-login-submit" type="submit">
+                <span>Đăng nhập</span>
+                <span aria-hidden="true">→</span>
+            </button>
+        </form>
+
+        <div class="account-auth-switch">Chưa có tài khoản? <a asp-page="/Account/Register">Tạo tài khoản miễn phí</a></div>
+        <div class="account-security-note account-login-security-note">
+            <span aria-hidden="true">✓</span>
+            Mật khẩu được truyền qua HTTPS và chỉ lưu trên hệ thống dưới dạng hàm băm an toàn.
+        </div>
+    </section>
+</div>

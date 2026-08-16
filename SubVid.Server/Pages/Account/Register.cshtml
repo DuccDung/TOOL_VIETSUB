@@ -1,0 +1,62 @@
+@page
+@model SubVid.Server.Pages.Account.RegisterModel
+@{
+    Layout = "/Pages/Shared/_AccountAuthLayout.cshtml";
+    ViewData["Title"] = "Đăng ký SubVid";
+}
+
+<div class="account-auth-grid">
+    <partial name="_AccountAuthIntro" />
+
+    <section class="account-auth-card" aria-labelledby="register-title">
+        <div class="account-auth-tabs" aria-label="Chọn hình thức tài khoản">
+            <a asp-page="/Account/Login">Đăng nhập</a>
+            <a class="is-active" asp-page="/Account/Register">Đăng ký</a>
+        </div>
+
+        <div class="account-auth-heading">
+            <span class="account-auth-icon" aria-hidden="true">＋</span>
+            <div><small>BẮT ĐẦU MIỄN PHÍ</small><h2 id="register-title">Tạo tài khoản SubVid</h2></div>
+        </div>
+        <p class="account-auth-lead">Nhận gói FREE, xác nhận email bằng OTP và bắt đầu Việt hoá video trên ứng dụng desktop.</p>
+
+        <form method="post" class="account-auth-form">
+            <div asp-validation-summary="ModelOnly" class="account-validation-summary"></div>
+
+            <label class="account-field">
+                <span>Tên hiển thị</span>
+                <span class="account-input-wrap"><i aria-hidden="true">◇</i><input asp-for="Input.DisplayName" autocomplete="name" placeholder="Tên của bạn" autofocus /></span>
+                <small><span asp-validation-for="Input.DisplayName"></span></small>
+            </label>
+            <label class="account-field">
+                <span>Email</span>
+                <span class="account-input-wrap"><i aria-hidden="true">@@</i><input asp-for="Input.Email" type="email" autocomplete="email" placeholder="ban@example.com" /></span>
+                <small><span asp-validation-for="Input.Email"></span></small>
+            </label>
+            <div class="account-field-row">
+                <label class="account-field">
+                    <span>Mật khẩu</span>
+                    <span class="account-input-wrap"><i aria-hidden="true">●</i><input asp-for="Input.Password" type="password" autocomplete="new-password" placeholder="Tối thiểu 8 ký tự" /></span>
+                    <small><span asp-validation-for="Input.Password"></span></small>
+                </label>
+                <label class="account-field">
+                    <span>Nhập lại mật khẩu</span>
+                    <span class="account-input-wrap"><i aria-hidden="true">●</i><input asp-for="Input.ConfirmPassword" type="password" autocomplete="new-password" placeholder="Nhập lại mật khẩu" /></span>
+                    <small><span asp-validation-for="Input.ConfirmPassword"></span></small>
+                </label>
+            </div>
+
+            <label class="account-check account-check--terms">
+                <input asp-for="Input.AcceptTerms" />
+                <span><i></i></span>
+                <em>Tôi đồng ý với <a asp-page="/Privacy">chính sách riêng tư</a> và điều khoản sử dụng.</em>
+            </label>
+            <small class="account-terms-error"><span asp-validation-for="Input.AcceptTerms"></span></small>
+
+            <button class="account-primary-action" type="submit"><span>Gửi mã OTP</span><span>→</span></button>
+        </form>
+
+        <div class="account-auth-switch">Đã có tài khoản? <a asp-page="/Account/Login">Đăng nhập</a></div>
+        <div class="account-security-note"><span>✦</span> Mã xác nhận gồm 6 số, có hiệu lực 5 phút và chỉ dùng một lần.</div>
+    </section>
+</div>

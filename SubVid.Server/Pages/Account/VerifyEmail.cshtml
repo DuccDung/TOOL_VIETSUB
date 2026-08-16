@@ -1,0 +1,53 @@
+@page
+@model SubVid.Server.Pages.Account.VerifyEmailModel
+@{
+    Layout = "/Pages/Shared/_AccountAuthLayout.cshtml";
+    ViewData["Title"] = "Xác nhận email";
+}
+
+<div class="account-auth-grid">
+    <partial name="_AccountAuthIntro" />
+
+    <section class="account-auth-card account-auth-card--otp" aria-labelledby="verify-title">
+        <div class="account-flow-steps" aria-label="Tiến trình đăng ký">
+            <span class="is-done"><i>✓</i> Thông tin</span><b></b><span class="is-active"><i>2</i> OTP email</span><b></b><span><i>3</i> Hoàn tất</span>
+        </div>
+
+        <div class="account-auth-heading">
+            <span class="account-auth-icon" aria-hidden="true">✦</span>
+            <div><small>XÁC NHẬN EMAIL</small><h2 id="verify-title">Nhập mã OTP</h2></div>
+        </div>
+        <p class="account-auth-lead">Mã gồm 6 chữ số đã được gửi tới <strong>@Model.MaskedEmail</strong>.</p>
+
+        @if (TempData["OtpResent"] is string resentMessage)
+        {
+            <div class="account-auth-alert account-auth-alert--success"><span>✓</span><div><strong>Đã gửi mã mới</strong><small>@resentMessage</small></div></div>
+        }
+
+        <form method="post" class="account-auth-form">
+            <input asp-for="ChallengeId" type="hidden" />
+            <input asp-for="DeviceId" type="hidden" />
+            <input asp-for="MaskedEmail" type="hidden" />
+            <div asp-validation-summary="ModelOnly" class="account-validation-summary"></div>
+
+            <label class="account-field account-otp-field">
+                <span>Mã xác nhận</span>
+                <input asp-for="Input.Otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000" autofocus />
+                <small><span asp-validation-for="Input.Otp"></span></small>
+            </label>
+
+            <button class="account-primary-action" type="submit"><span>Xác nhận đăng ký</span><span>→</span></button>
+        </form>
+
+        <form method="post" asp-page-handler="Resend" class="account-resend-form">
+            <input asp-for="ChallengeId" type="hidden" />
+            <input asp-for="DeviceId" type="hidden" />
+            <input asp-for="MaskedEmail" type="hidden" />
+            <span>Chưa nhận được email?</span>
+            <button type="submit">Gửi lại mã OTP</button>
+        </form>
+
+        <a class="account-back-link" asp-page="/Account/Register">← Dùng email khác</a>
+        <div class="account-security-note"><span>⌁</span> Không chia sẻ OTP. SubVid không bao giờ hỏi mã qua điện thoại hoặc tin nhắn.</div>
+    </section>
+</div>
