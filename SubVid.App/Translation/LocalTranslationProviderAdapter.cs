@@ -122,13 +122,21 @@ public sealed class LocalTranslationProviderAdapter : ITranslationProvider
 public sealed class FallbackTranslationProvider(
     ITranslationProvider primary,
     ITranslationProvider fallback)
-    : ITranslationProvider
+    : ITranslationProvider, ILocalJobAwareTranslationProvider
 {
     public string ProviderId => primary.ProviderId;
 
     public string ModelId => primary.ModelId;
 
     public bool SupportsContextualReview => primary.SupportsContextualReview;
+
+    public void BindJob(LocalJob job)
+    {
+        if (primary is ILocalJobAwareTranslationProvider jobAwareProvider)
+        {
+            jobAwareProvider.BindJob(job);
+        }
+    }
 
     public async Task<TranslationSceneResult> TranslateAsync(
         TranslationSceneRequest request,

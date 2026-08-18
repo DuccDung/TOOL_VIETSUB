@@ -6359,6 +6359,58 @@ body.is-resizing-rows * {
   color: #4ade80;
 }
 
+.translation-managed-key {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, #38bdf8 28%, var(--border-subtle));
+  border-radius: 11px;
+  background: linear-gradient(135deg, rgba(14, 116, 144, 0.13), rgba(37, 99, 235, 0.08));
+  padding: 11px;
+}
+
+.translation-managed-key > span {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+}
+
+.translation-managed-key > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.translation-managed-key strong {
+  color: var(--text-primary);
+  font-size: 10px;
+}
+
+.translation-managed-key small {
+  color: var(--text-muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.translation-managed-key em {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  background: rgba(52, 211, 153, 0.1);
+  color: #6ee7b7;
+  padding: 5px 7px;
+  font-size: 7px;
+  font-style: normal;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .translation-settings .field-label {
   display: flex;
   align-items: center;
@@ -6394,4 +6446,367 @@ body.is-resizing-rows * {
 .translation-settings__actions button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+.account-content-grid {
+  grid-template-areas: "permissions details" "tools tools" "history history";
+}
+
+.video-tools-panel {
+  grid-area: tools;
+}
+
+.tool-status {
+  border: 1px solid #6b3d27;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.09);
+  color: #fbbf24 !important;
+  padding: 4px 8px;
+  font-weight: 700;
+}
+
+.tool-status.is-ready {
+  border-color: #205b4b;
+  background: rgba(52, 211, 153, 0.09);
+  color: #6ee7b7 !important;
+}
+
+.video-tools-body {
+  display: flex;
+  min-height: 84px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 18px;
+}
+
+.video-tools-copy {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.video-tools-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #264a72;
+  border-radius: 12px;
+  background: #10243d;
+  color: #79b8ff;
+}
+
+.video-tools-copy > div {
+  display: grid;
+  gap: 4px;
+}
+
+.video-tools-copy strong {
+  color: #dce8f6;
+  font-size: 11px;
+}
+
+.video-tools-copy small {
+  color: #70839b;
+  font-size: 8px;
+}
+
+.video-tools-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.video-tools-actions button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #2a405a;
+  border-radius: 8px;
+  background: #101c2b;
+  color: #a8bdd5;
+  padding: 0 10px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.video-tools-actions button:first-child {
+  border-color: #2d68a3;
+  background: #123157;
+  color: #bfdbfe;
+}
+
+.video-tools-actions button:hover:not(:disabled) {
+  border-color: #4e82b9;
+  color: #eff6ff;
+}
+
+.video-tools-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ffmpeg-dialog-backdrop {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 7, 15, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.ffmpeg-dialog {
+  width: min(560px, calc(100vw - 36px));
+  overflow: hidden;
+  border: 1px solid #294867;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #0d1929, #09121f);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58);
+}
+
+.ffmpeg-dialog > header {
+  display: grid;
+  grid-template-columns: 46px 1fr 34px;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid #1e3047;
+  padding: 17px 18px;
+}
+
+.ffmpeg-dialog__mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid #3475b7;
+  border-radius: 12px;
+  background: #12345d;
+  color: #93c5fd;
+}
+
+.ffmpeg-dialog > header > div:nth-child(2) {
+  display: grid;
+  gap: 3px;
+}
+
+.ffmpeg-dialog > header span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #6fa9e8;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ffmpeg-dialog h2 {
+  margin: 0;
+  color: #e4eef9;
+  font-size: 19px;
+}
+
+.ffmpeg-dialog > header > button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #71849c;
+}
+
+.ffmpeg-dialog > header > button:hover {
+  background: #17263a;
+  color: #dce8f6;
+}
+
+.ffmpeg-dialog__body {
+  display: grid;
+  gap: 13px;
+  padding: 18px;
+}
+
+.ffmpeg-dialog__pending {
+  margin: 0;
+  color: #91a4bc;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.ffmpeg-dialog__pending strong {
+  color: #dbeafe;
+}
+
+.ffmpeg-package-card {
+  display: grid;
+  grid-template-columns: 38px 1fr 24px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #243b57;
+  border-radius: 11px;
+  background: #0e1c2e;
+  padding: 12px;
+  color: #6ee7b7;
+}
+
+.ffmpeg-package-card > span {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 9px;
+  background: #142d49;
+  color: #8bc4ff;
+}
+
+.ffmpeg-package-card > div {
+  display: grid;
+  gap: 3px;
+}
+
+.ffmpeg-package-card strong {
+  color: #d9e7f6;
+  font-size: 11px;
+}
+
+.ffmpeg-package-card small {
+  color: #6f849d;
+  font-size: 8px;
+}
+
+.ffmpeg-progress {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #284d77;
+  border-radius: 11px;
+  background: rgba(18, 51, 88, 0.45);
+  padding: 12px;
+}
+
+.ffmpeg-progress > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #bfdbfe;
+  font-size: 9px;
+}
+
+.ffmpeg-progress > div:first-child span {
+  color: #60a5fa;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-weight: 700;
+}
+
+.ffmpeg-progress__track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #0a1422;
+}
+
+.ffmpeg-progress__track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2563eb, #60a5fa);
+  transition: width 180ms ease;
+}
+
+.ffmpeg-progress small {
+  color: #6f849d;
+  font-size: 8px;
+}
+
+.ffmpeg-dialog__error,
+.ffmpeg-security-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: 9px;
+  padding: 10px;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.ffmpeg-dialog__error {
+  border: 1px solid #7a3f36;
+  background: rgba(127, 29, 29, 0.2);
+  color: #fca5a5;
+}
+
+.ffmpeg-security-note {
+  border: 1px solid #234d43;
+  background: rgba(6, 78, 59, 0.13);
+  color: #84cdb7;
+}
+
+.ffmpeg-dialog__error svg,
+.ffmpeg-security-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.ffmpeg-dialog > footer {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 8px;
+  border-top: 1px solid #1e3047;
+  padding: 13px 18px;
+}
+
+.ffmpeg-dialog > footer button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 8px;
+  padding: 0 12px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.ffmpeg-dialog > footer .secondary {
+  border: 1px solid #2b4059;
+  background: #101b2a;
+  color: #9eb1c8;
+}
+
+.ffmpeg-dialog > footer .primary {
+  border: 1px solid #3b82c4;
+  background: #174b80;
+  color: #eff6ff;
+}
+
+.ffmpeg-dialog > footer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+@media (max-width: 760px) {
+  .video-tools-body {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .video-tools-actions {
+    justify-content: flex-start;
+  }
+
+  .ffmpeg-dialog > footer {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .ffmpeg-dialog > footer > span {
+    display: none;
+  }
 }

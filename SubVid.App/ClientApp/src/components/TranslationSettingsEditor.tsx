@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BookOpenText, KeyRound, Save, ShieldCheck, Trash2, Users } from 'lucide-react'
+import { BookOpenText, Save, ServerCog, ShieldCheck, Users } from 'lucide-react'
 import type { TranslationSettingsInfo } from '../types'
 import { SelectField, Toggle } from './Ui'
 
@@ -45,13 +45,11 @@ export function TranslationSettingsEditor({
   onSave,
 }: TranslationSettingsEditorProps) {
   const [draft, setDraft] = useState(settings)
-  const [apiKey, setApiKey] = useState('')
   const estimatedSceneSize = draft.provider === 'groq' ? 8 : 12
   const estimatedApiCalls = Math.ceil(subtitleCount / estimatedSceneSize) * (draft.reviewEnabled ? 2 : 1)
 
   useEffect(() => {
     setDraft(settings)
-    setApiKey('')
   }, [settings])
 
   const update = (patch: Partial<TranslationSettingsInfo>) => {
@@ -64,7 +62,6 @@ export function TranslationSettingsEditor({
       modelId: defaultModel(provider, draft.qualityMode, sourceLanguageCode),
       reviewEnabled: provider === 'groq' ? draft.qualityMode !== 'fast' : draft.reviewEnabled,
     })
-    setApiKey('')
   }
 
   const chooseQuality = (qualityMode: TranslationSettingsInfo['qualityMode']) => {
@@ -76,8 +73,7 @@ export function TranslationSettingsEditor({
   }
 
   const save = () => {
-    onSave(draft, apiKey.trim() || undefined, false)
-    setApiKey('')
+    onSave(draft, undefined, false)
   }
 
   return (
@@ -129,25 +125,14 @@ export function TranslationSettingsEditor({
       </label>
 
       {draft.provider !== 'local' ? (
-        <label className="field-group">
-          <span className="field-label">
-            API KEY
-            <span className={`translation-key-status ${draft.apiKeyConfigured ? 'is-ready' : ''}`}>
-              {draft.apiKeyConfigured ? <ShieldCheck size={12} /> : <KeyRound size={12} />}
-              {draft.apiKeyConfigured ? 'Đã lưu' : 'Chưa lưu'}
-            </span>
-          </span>
-          <input
-            className="translation-settings__input"
-            type="password"
-            value={apiKey}
-            disabled={disabled}
-            autoComplete="off"
-            placeholder={draft.apiKeyConfigured ? 'Nhập để thay key hiện tại' : 'Nhập API key'}
-            onChange={(event) => setApiKey(event.target.value)}
-          />
-          <span className="field-helper">Key được mã hóa theo tài khoản Windows và không lưu trong project.</span>
-        </label>
+        <div className="translation-managed-key">
+          <span><ServerCog size={17} /></span>
+          <div>
+            <strong>API key do Server quản lý</strong>
+            <small>App chỉ nhận key vào RAM khi bắt đầu mỗi lượt Cloud, sau đó gọi thẳng nhà cung cấp.</small>
+          </div>
+          <em><ShieldCheck size={12} /> Không lưu local</em>
+        </div>
       ) : null}
 
       <Toggle
@@ -235,17 +220,6 @@ export function TranslationSettingsEditor({
           <Save size={14} />
           Lưu cấu hình
         </button>
-        {draft.provider !== 'local' && draft.apiKeyConfigured ? (
-          <button
-            type="button"
-            className="is-danger"
-            disabled={disabled}
-            onClick={() => onSave(draft, undefined, true)}
-          >
-            <Trash2 size={14} />
-            Xóa key
-          </button>
-        ) : null}
       </div>
     </div>
   )

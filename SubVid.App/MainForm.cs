@@ -31,6 +31,7 @@ public sealed class MainForm : Form
     private readonly WebView2 _webView;
     private readonly AuthSessionManager _authSessionManager = new();
     private readonly DesktopWorkspaceCoordinator _workspaceCoordinator;
+    private readonly FfmpegRuntimeProvisioner _ffmpegProvisioner;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly System.Windows.Forms.Timer _sessionTimer;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
@@ -39,10 +40,14 @@ public sealed class MainForm : Form
     private bool _shutdownCompleted;
     private int _aiStoragePickerQueued;
     private int _aiStorageChangeActive;
+    private CancellationTokenSource? _ffmpegInstallCancellation;
+    private Task? _ffmpegInstallTask;
+    private PendingVideoImport? _pendingVideoImport;
 
     public MainForm()
     {
         _workspaceCoordinator = new DesktopWorkspaceCoordinator(_authSessionManager);
+        _ffmpegProvisioner = new FfmpegRuntimeProvisioner(new AppPaths());
         _workspaceCoordinator.ImportProgressChanged += (_, progress) => PostMessage(new
         {
             type = "video:import:progress",
@@ -335,6 +340,25 @@ public sealed class MainForm : Form
                 case "video:import:cancel":
                     _workspaceCoordinator.CancelImport();
                     break;
+                case "ffmpeg:status":
+                    PostFfmpegStatus();
+                    break;
+                case "ffmpeg:install":
+                    if (_ffmpegInstallTask is null || _ffmpegInstallTask.IsCompleted)
+                    {
+                        _ffmpegInstallTask = InstallFfmpegAsync(document.RootElement);
+                    }
+                    await _ffmpegInstallTask;
+                    break;
+                case "ffmpeg:install:cancel":
+                    CancelFfmpegInstall();
+                    break;
+                case "ffmpeg:folder:select":
+                    await SelectFfmpegFolderAsync();
+                    break;
+                case "ffmpeg:folder:open":
+                    OpenFfmpegFolder();
+                    break;
                 case "video:export":
                     await ExportVideoAsync();
                     break;
@@ -446,6 +470,7 @@ public sealed class MainForm : Form
                 case "app:ready":
                     SendWindowState();
                     await InitializeAuthAsync();
+                    PostFfmpegStatus();
                     break;
                 case "auth:login":
                     await LoginAsync(document.RootElement);
@@ -1679,16 +1704,33 @@ public sealed class MainForm : Form
             && string.Equals(modeElement.GetString(), "link", StringComparison.OrdinalIgnoreCase)
             ? MediaImportMode.Link
             : MediaImportMode.Copy;
+        if (!_ffmpegProvisioner.GetStatus().Ready)
+        {
+            _pendingVideoImport = new PendingVideoImport(dialog.FileName, mode);
+            PostMessage(new
+            {
+                type = "ffmpeg:install:required",
+                status = _ffmpegProvisioner.GetStatus(),
+                fileName = Path.GetFileName(dialog.FileName),
+            });
+            return;
+        }
+
+        await ImportVideoFileAsync(dialog.FileName, mode);
+    }
+
+    private async Task ImportVideoFileAsync(string fileName, MediaImportMode mode)
+    {
         try
         {
             PostMessage(new
             {
                 type = "video:import:started",
-                fileName = Path.GetFileName(dialog.FileName),
+                fileName = Path.GetFileName(fileName),
                 mode = mode.ToString().ToUpperInvariant(),
             });
             var state = await _workspaceCoordinator.ImportVideoAsync(
-                dialog.FileName,
+                fileName,
                 mode,
                 _lifetimeCancellation.Token);
             PostMessage(new { type = "project:state", project = state });
@@ -1704,6 +1746,134 @@ public sealed class MainForm : Form
             HandleWorkspaceException(exception);
         }
     }
+
+    private async Task InstallFfmpegAsync(JsonElement message)
+    {
+        if (_ffmpegInstallCancellation is not null)
+        {
+            PostMessage(new
+            {
+                type = "ffmpeg:install:failed",
+                code = "FFMPEG_INSTALL_BUSY",
+                message = "Một lượt cài FFmpeg đang chạy.",
+            });
+            return;
+        }
+
+        var force = message.TryGetProperty("force", out var forceElement)
+            && forceElement.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && forceElement.GetBoolean();
+        _ffmpegInstallCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var progress = new Progress<FfmpegInstallProgress>(value => PostMessage(new
+        {
+            type = "ffmpeg:install:progress",
+            progress = value,
+        }));
+        try
+        {
+            var status = await _ffmpegProvisioner.EnsureReadyAsync(
+                progress,
+                force,
+                _ffmpegInstallCancellation.Token);
+            PostMessage(new { type = "ffmpeg:install:completed", status });
+            var pending = _pendingVideoImport;
+            _pendingVideoImport = null;
+            if (pending is not null)
+            {
+                await ImportVideoFileAsync(pending.FileName, pending.Mode);
+            }
+        }
+        catch (OperationCanceledException) when (_ffmpegInstallCancellation.IsCancellationRequested)
+        {
+            if (!_lifetimeCancellation.IsCancellationRequested)
+            {
+                PostMessage(new { type = "ffmpeg:install:cancelled", status = _ffmpegProvisioner.GetStatus() });
+            }
+        }
+        catch (FfmpegRuntimeException exception)
+        {
+            PostMessage(new
+            {
+                type = "ffmpeg:install:failed",
+                code = exception.Code,
+                message = exception.Message,
+                status = _ffmpegProvisioner.GetStatus(),
+            });
+        }
+        finally
+        {
+            _ffmpegInstallCancellation.Dispose();
+            _ffmpegInstallCancellation = null;
+        }
+    }
+
+    private void CancelFfmpegInstall()
+    {
+        _pendingVideoImport = null;
+        if (_ffmpegInstallCancellation is not null)
+        {
+            _ffmpegInstallCancellation.Cancel();
+            return;
+        }
+
+        PostMessage(new { type = "ffmpeg:install:cancelled", status = _ffmpegProvisioner.GetStatus() });
+    }
+
+    private async Task SelectFfmpegFolderAsync()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Chọn thư mục chứa ffmpeg.exe và ffprobe.exe",
+            UseDescriptionForTitle = true,
+            ShowNewFolderButton = false,
+            InitialDirectory = _ffmpegProvisioner.ManagedDirectory,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            var status = _ffmpegProvisioner.UseExternalDirectory(dialog.SelectedPath);
+            PostMessage(new { type = "ffmpeg:status", status });
+            var pending = _pendingVideoImport;
+            _pendingVideoImport = null;
+            if (pending is not null)
+            {
+                await ImportVideoFileAsync(pending.FileName, pending.Mode);
+            }
+        }
+        catch (FfmpegRuntimeException exception)
+        {
+            PostMessage(new
+            {
+                type = "ffmpeg:install:failed",
+                code = exception.Code,
+                message = exception.Message,
+                status = _ffmpegProvisioner.GetStatus(),
+            });
+        }
+    }
+
+    private void OpenFfmpegFolder()
+    {
+        var status = _ffmpegProvisioner.GetStatus();
+        var directory = status.FfmpegPath is null
+            ? status.InstallDirectory
+            : Path.GetDirectoryName(status.FfmpegPath) ?? status.InstallDirectory;
+        Directory.CreateDirectory(directory);
+        var startInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            UseShellExecute = true,
+        };
+        startInfo.ArgumentList.Add(directory);
+        System.Diagnostics.Process.Start(startInfo);
+    }
+
+    private void PostFfmpegStatus() => PostMessage(new
+    {
+        type = "ffmpeg:status",
+        status = _ffmpegProvisioner.GetStatus(),
+    });
 
     private void HandleWorkspaceException(Exception exception)
     {
@@ -1721,6 +1891,12 @@ public sealed class MainForm : Form
         if (exception is MediaInspectionException mediaException)
         {
             PostWorkspaceError(mediaException.Code, mediaException.Message);
+            return;
+        }
+
+        if (exception is FfmpegRuntimeException ffmpegException)
+        {
+            PostWorkspaceError(ffmpegException.Code, ffmpegException.Message);
             return;
         }
 
@@ -1825,9 +2001,14 @@ public sealed class MainForm : Form
         _shutdownStarted = true;
         _sessionTimer.Stop();
         _lifetimeCancellation.Cancel();
+        _ffmpegInstallCancellation?.Cancel();
         try
         {
             await _workspaceCoordinator.DisposeAsync();
+            if (_ffmpegInstallTask is not null)
+            {
+                await _ffmpegInstallTask;
+            }
         }
         catch (Exception exception)
         {
@@ -1850,6 +2031,7 @@ public sealed class MainForm : Form
         _lifetimeCancellation.Cancel();
         _lifetimeCancellation.Dispose();
         _authSessionManager.Dispose();
+        _ffmpegProvisioner.Dispose();
     }
 
     private void ShowStartupError(Exception exception)
@@ -1901,6 +2083,8 @@ public sealed class MainForm : Form
 
         base.WndProc(ref message);
     }
+
+    private sealed record PendingVideoImport(string FileName, MediaImportMode Mode);
 
     [DllImport("user32.dll")]
     private static extern bool ReleaseCapture();

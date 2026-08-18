@@ -6,6 +6,9 @@ import {
   Clock3,
   Crown,
   History,
+  Download,
+  FolderOpen,
+  HardDrive,
   LogOut,
   Mail,
   RefreshCw,
@@ -13,14 +16,25 @@ import {
   Sparkles,
   UserRound,
 } from 'lucide-react'
-import type { AccountInfo, EntitlementsInfo, UsageHistory } from '../types'
+import type {
+  AccountInfo,
+  EntitlementsInfo,
+  FfmpegInstallProgress,
+  FfmpegRuntimeStatus,
+  UsageHistory,
+} from '../types'
 
 type AccountViewProps = {
   account: AccountInfo
   entitlements: EntitlementsInfo
   history: UsageHistory | null
+  ffmpegStatus: FfmpegRuntimeStatus
+  ffmpegProgress: FfmpegInstallProgress | null
   onRefresh: () => void
   onLogout: () => void
+  onManageFfmpeg: () => void
+  onSelectFfmpegFolder: () => void
+  onOpenFfmpegFolder: () => void
 }
 
 const featureLabels: Record<string, string> = {
@@ -65,8 +79,13 @@ export function AccountView({
   account,
   entitlements,
   history,
+  ffmpegStatus,
+  ffmpegProgress,
   onRefresh,
   onLogout,
+  onManageFfmpeg,
+  onSelectFfmpegFolder,
+  onOpenFfmpegFolder,
 }: AccountViewProps) {
   const { plan, quota, features } = entitlements
   const quotaPercent = quota.monthlyMinutes && quota.monthlyMinutes > 0
@@ -172,6 +191,43 @@ export function AccountView({
           <div className="security-callout">
             <ShieldCheck size={17} />
             <div><strong>Phiên này đang được bảo vệ</strong><span>Refresh token được mã hóa bằng Windows DPAPI.</span></div>
+          </div>
+        </article>
+
+        <article className="account-panel video-tools-panel">
+          <header>
+            <div><HardDrive size={17} /><span><strong>Công cụ video</strong><small>FFmpeg và FFprobe chạy trực tiếp trên máy</small></span></div>
+            <span className={ffmpegStatus.ready ? 'tool-status is-ready' : 'tool-status is-missing'}>
+              {ffmpegProgress ? `${Math.round(ffmpegProgress.percent)}%` : ffmpegStatus.ready ? 'Sẵn sàng' : 'Chưa cài'}
+            </span>
+          </header>
+          <div className="video-tools-body">
+            <div className="video-tools-copy">
+              <span className="video-tools-icon"><HardDrive size={21} /></span>
+              <div>
+                <strong>{ffmpegStatus.ready ? `FFmpeg ${ffmpegStatus.version ?? 'đã nhận diện'}` : `FFmpeg ${ffmpegStatus.targetVersion}`}</strong>
+                <small>
+                  {ffmpegProgress?.message
+                    ?? (ffmpegStatus.ready
+                      ? ffmpegStatus.source === 'MANAGED' ? 'Bản do SubVid quản lý và đã xác minh.' : 'Đang dùng bản FFmpeg bên ngoài.'
+                      : 'Cần cài để nhập, xử lý và xuất video.')}
+                </small>
+              </div>
+            </div>
+            <div className="video-tools-actions">
+              <button type="button" onClick={onManageFfmpeg} disabled={ffmpegProgress !== null}>
+                <Download size={14} />
+                {ffmpegStatus.ready
+                  ? ffmpegStatus.version && ffmpegStatus.version !== ffmpegStatus.targetVersion ? 'Cập nhật' : 'Cài lại'
+                  : 'Cài đặt'}
+              </button>
+              <button type="button" onClick={onSelectFfmpegFolder} disabled={ffmpegProgress !== null}>
+                <FolderOpen size={14} /> Chọn thủ công
+              </button>
+              <button type="button" onClick={onOpenFfmpegFolder}>
+                <FolderOpen size={14} /> Mở thư mục
+              </button>
+            </div>
           </div>
         </article>
 

@@ -5,12 +5,14 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using SubVid.Server.Auth;
+using SubVid.Server.Cloud;
 using SubVid.Server.Contracts;
 using SubVid.Server.Data;
 using SubVid.Server.Models;
@@ -43,6 +45,8 @@ builder.Services.AddControllers().ConfigureApiBehaviorOptions(options =>
     };
 });
 builder.Services.AddOpenApi();
+builder.Services.AddDataProtection()
+    .SetApplicationName("SubVid.Server");
 
 var connectionString = builder.Configuration.GetConnectionString("SubVidDatabase")
     ?? throw new InvalidOperationException(
@@ -76,6 +80,11 @@ builder.Services.AddOptions<QuotaOptions>()
     .Bind(builder.Configuration.GetSection(QuotaOptions.SectionName))
     .Validate(options => options.ReservationLifetimeMinutes is >= 15 and <= 240,
         "Quota reservation lifetime is invalid.")
+    .ValidateOnStart();
+builder.Services.AddOptions<CloudAccessOptions>()
+    .Bind(builder.Configuration.GetSection(CloudAccessOptions.SectionName))
+    .Validate(options => options.ReservationLifetimeMinutes is >= 10 and <= 240,
+        "Cloud reservation lifetime is invalid.")
     .ValidateOnStart();
 builder.Services
     .AddAuthentication(options =>
@@ -267,6 +276,14 @@ builder.Services.AddScoped<WebAccountAuthService>();
 builder.Services.AddScoped<AdminSubscriptionService>();
 builder.Services.AddScoped<UsageService>();
 builder.Services.AddScoped<QuotaService>();
+builder.Services.AddScoped<CloudCredentialProtector>();
+builder.Services.AddScoped<CloudAccessService>();
+builder.Services.AddHttpClient<CloudCredentialProbeService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(10);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("SubVid-Admin-Credential-Probe/1.0");
+});
+builder.Services.AddScoped<AdminCloudService>();
 builder.Services.AddScoped<DevelopmentAdminSeeder>();
 builder.Services.AddSingleton<OtpService>();
 builder.Services.AddScoped<RegistrationService>();
@@ -274,6 +291,7 @@ builder.Services.AddScoped<PasswordResetService>();
 builder.Services.AddScoped<IRegistrationEmailSender, SmtpRegistrationEmailSender>();
 builder.Services.AddHostedService<RegistrationCleanupService>();
 builder.Services.AddHostedService<QuotaReservationCleanupService>();
+builder.Services.AddHostedService<CloudReservationCleanupService>();
 
 var app = builder.Build();
 

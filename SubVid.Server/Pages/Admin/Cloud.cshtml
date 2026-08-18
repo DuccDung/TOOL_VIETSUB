@@ -1,0 +1,284 @@
+@page
+@model SubVid.Server.Pages.Admin.CloudModel
+@{
+    Layout = "_AdminLayout";
+    ViewData["Title"] = "Cloud API";
+}
+
+<section class="admin-light-heading">
+    <div>
+        <span>QUẢN LÝ CLOUD API</span>
+        <h1>Kiểm soát key và token tại một nơi.</h1>
+        <p>Server lưu key đã mã hóa, cấp quyền theo hạn mức và ghi ledger. Nội dung dịch vẫn được App xử lý trực tiếp.</p>
+    </div>
+    <div class="admin-light-period" aria-label="Chu kỳ hạn mức hiện tại">
+        <small>CHU KỲ HIỆN TẠI</small>
+        <strong>@Model.Overview.PeriodStartsAtUtc.ToString("dd/MM") — @Model.Overview.PeriodEndsAtUtc.AddDays(-1).ToString("dd/MM/yyyy")</strong>
+    </div>
+</section>
+
+@if (!string.IsNullOrWhiteSpace(Model.SuccessMessage))
+{
+    <div class="admin-light-alert is-success" role="status"><span>✓</span><div><strong>Đã hoàn tất</strong><p>@Model.SuccessMessage</p></div></div>
+}
+@if (!string.IsNullOrWhiteSpace(Model.ProbeMessage))
+{
+    <div class="admin-light-alert @(Model.ProbeMessageKind == "success" ? "is-success" : "is-error")" role="status"><span>@(Model.ProbeMessageKind == "success" ? "✓" : "!")</span><div><strong>Kiểm tra kết nối</strong><p>@Model.ProbeMessage</p></div></div>
+}
+<div asp-validation-summary="ModelOnly" class="admin-light-alert is-error"></div>
+
+@if (Model.Overview.ActiveCredentials == 0 || Model.Overview.ConfiguredUsers == 0)
+{
+    <section class="admin-setup-banner" aria-label="Các bước cần hoàn tất">
+        <div><span>!</span><div><strong>Cloud API chưa sẵn sàng</strong><p>Hoàn thành hai bước dưới đây trước khi chạy dịch thật trên App.</p></div></div>
+        <ol>
+            <li class="@(Model.Overview.ActiveCredentials > 0 ? "is-done" : null)"><span>1</span><div><strong>Thêm API key</strong><small>@(Model.Overview.ActiveCredentials > 0 ? "Đã có key hoạt động" : "Kiểm tra rồi lưu key mới")</small></div></li>
+            <li class="@(Model.Overview.ConfiguredUsers > 0 ? "is-done" : null)"><span>2</span><div><strong>Cấp token cho user</strong><small>@(Model.Overview.ConfiguredUsers > 0 ? "Đã có user được cấp" : "Quota mặc định đang bằng 0")</small></div></li>
+        </ol>
+    </section>
+}
+
+<section class="admin-light-stats" aria-label="Tổng quan Cloud API">
+    <article><span class="is-blue">⌁</span><div><small>KEY ĐANG BẬT</small><strong>@Model.Overview.ActiveCredentials</strong><em>key riêng và key pool</em></div></article>
+    <article><span class="is-violet">◎</span><div><small>USER CÓ QUOTA</small><strong>@Model.Overview.ConfiguredUsers</strong><em>hạn mức lớn hơn 0</em></div></article>
+    <article><span class="is-emerald">↗</span><div><small>TOKEN ĐÃ DÙNG</small><strong>@Model.Overview.UsedTokens.ToString("N0")</strong><em>trong chu kỳ hiện tại</em></div></article>
+    <article><span class="is-amber">◷</span><div><small>ĐANG GIỮ CHỖ</small><strong>@Model.Overview.HeldTokens.ToString("N0")</strong><em>@Model.Overview.RequestsToday request hôm nay</em></div></article>
+</section>
+
+<section class="admin-light-grid">
+    <article class="admin-light-card admin-key-card">
+        <header>
+            <div><span class="admin-card-icon is-blue">⌘</span><div><h2>Kho API key</h2><p>Key riêng được ưu tiên trước key pool; giá trị bí mật không hiển thị lại sau khi lưu.</p></div></div>
+            <span class="admin-count-pill">@Model.Credentials.Count key</span>
+        </header>
+        <form method="post" asp-page-handler="SaveCredential" class="admin-light-form admin-credential-form" autocomplete="off" data-credential-form>
+            <input asp-for="CredentialId" type="hidden" />
+            <input asp-for="Email" type="hidden" />
+            <label>
+                <span>Nhà cung cấp</span>
+                <select asp-for="ProviderCode" data-provider-select data-testid="provider-select">
+                    <option value="openai">OpenAI</option>
+                    <option value="groq">Groq</option>
+                    <option value="deepseek">DeepSeek</option>
+                    <option value="gemini">Gemini</option>
+                </select>
+                <small class="admin-field-error"><span asp-validation-for="ProviderCode"></span></small>
+            </label>
+            <label>
+                <span>Tên nhận diện</span>
+                <input asp-for="CredentialName" data-credential-name placeholder="OpenAI pool chính" />
+                <small class="admin-field-error"><span asp-validation-for="CredentialName"></span></small>
+            </label>
+            <label class="is-wide">
+                <span>API key @(Model.CredentialId is null ? "" : "· để trống nếu không thay đổi")</span>
+                <div class="admin-secret-field">
+                    <input asp-for="ApiKey" type="password" placeholder="Dán key mới tại đây" autocomplete="new-password" data-api-key data-testid="api-key-input" />
+                    <button type="button" data-secret-toggle aria-label="Hiện API key" aria-pressed="false">Hiện</button>
+                </div>
+                <small class="admin-field-help">Chỉ gửi tới endpoint xác thực của provider khi bạn bấm kiểm tra. Server không ghi key vào log.</small>
+                <small class="admin-field-error"><span asp-validation-for="ApiKey"></span></small>
+            </label>
+            <label>
+                <span>Gán riêng cho email <em>Tùy chọn</em></span>
+                <input asp-for="AssignedEmail" type="email" placeholder="Để trống để dùng làm key pool" />
+                <small class="admin-field-help">Key riêng chỉ được cấp cho đúng tài khoản này.</small>
+                <small class="admin-field-error"><span asp-validation-for="AssignedEmail"></span></small>
+            </label>
+            <label>
+                <span>Độ ưu tiên</span>
+                <input asp-for="Priority" type="number" min="0" max="10000" />
+                <small class="admin-field-help">Số nhỏ hơn sẽ được chọn trước.</small>
+                <small class="admin-field-error"><span asp-validation-for="Priority"></span></small>
+            </label>
+            <output class="admin-probe-result is-idle is-wide" data-probe-result aria-live="polite">
+                <span>i</span><div><strong>Chưa kiểm tra kết nối</strong><small>Kiểm tra chỉ xác thực key, không tạo nội dung và không dùng token model.</small></div>
+            </output>
+            <div class="admin-form-actions is-wide">
+                @if (Model.CredentialId is not null)
+                {
+                    <a asp-page="/Admin/Cloud" asp-route-email="@Model.Email">Hủy chỉnh sửa</a>
+                }
+                <button class="admin-secondary-button" type="button" data-credential-probe data-testid="probe-key-button"><span>⌁</span> Kiểm tra key</button>
+                <button type="submit" data-testid="save-key-button">@(Model.CredentialId is null ? "Lưu API key" : "Lưu thay đổi") <span>→</span></button>
+            </div>
+        </form>
+        <div class="admin-key-list">
+            @if (Model.Credentials.Count == 0)
+            {
+                <div class="admin-empty-state"><span>⌘</span><strong>Kho key đang trống</strong><p>Thêm key đầu tiên để App có thể xin quyền dịch Cloud.</p></div>
+            }
+            @foreach (var credential in Model.Credentials)
+            {
+                <div class="admin-key-row">
+                    <span class="provider-mark provider-@credential.ProviderCode">@credential.ProviderCode[..1].ToUpperInvariant()</span>
+                    <div class="admin-key-name"><strong>@credential.DisplayName</strong><small>@credential.ProviderCode · ••••••@credential.KeySuffix</small></div>
+                    <div class="admin-key-owner"><small>PHÂN BỔ</small><strong>@(credential.AssignedEmail ?? "Key pool dùng chung")</strong></div>
+                    <div class="admin-key-owner"><small>HOẠT ĐỘNG GẦN NHẤT</small><strong>@(credential.LastIssuedAtUtc?.ToLocalTime().ToString("dd/MM HH:mm") ?? "Chưa cấp lần nào")</strong></div>
+                    <div class="admin-key-owner"><small>ƯU TIÊN</small><strong>@credential.Priority</strong></div>
+                    <span class="admin-status @(credential.Status == "ACTIVE" ? "is-active" : "is-disabled")">@(credential.Status == "ACTIVE" ? "Đang bật" : "Đã tắt")</span>
+                    <div class="admin-row-actions">
+                        <form method="post" asp-page-handler="ProbeStoredCredential">
+                            <input name="id" type="hidden" value="@credential.CredentialId" />
+                            <input name="Email" type="hidden" value="@Model.Email" />
+                            <button type="submit" title="Kiểm tra key đã lưu">Kiểm tra</button>
+                        </form>
+                        <a asp-page="/Admin/Cloud" asp-route-email="@Model.Email" asp-route-editCredentialId="@credential.CredentialId">Sửa</a>
+                        <form method="post" asp-page-handler="ToggleCredential">
+                            <input name="id" type="hidden" value="@credential.CredentialId" />
+                            <input name="Email" type="hidden" value="@Model.Email" />
+                            <button type="submit" data-confirm="@(credential.Status == "ACTIVE" ? "Tắt key này? App sẽ không thể xin key cho request mới." : "Bật lại key này?")">@(credential.Status == "ACTIVE" ? "Tắt" : "Bật")</button>
+                        </form>
+                    </div>
+                </div>
+            }
+        </div>
+    </article>
+
+    <article class="admin-light-card admin-quota-card">
+        <header><div><span class="admin-card-icon is-violet">◎</span><div><h2>Cấp token theo user</h2><p>Không có cấu hình nghĩa là hạn mức Cloud bằng 0.</p></div></div></header>
+        <form method="post" asp-page-handler="Search" class="admin-user-search" novalidate>
+            <label>
+                <span>Email người dùng</span>
+                <span><input asp-for="Email" type="email" placeholder="user@example.com" aria-label="Email người dùng" /><button type="submit">Tìm tài khoản</button></span>
+                <small class="admin-field-error"><span asp-validation-for="Email"></span></small>
+            </label>
+        </form>
+        @if (Model.Account is null)
+        {
+            <div class="admin-empty-state admin-user-empty"><span>⌕</span><strong>Chưa chọn tài khoản</strong><p>Tìm theo email để xem mức sử dụng và điều chỉnh token.</p></div>
+        }
+        else
+        {
+            <div class="admin-user-profile">
+                <span>@Model.Account.DisplayName[..1].ToUpperInvariant()</span>
+                <div><strong>@Model.Account.DisplayName</strong><small>@Model.Account.Email</small></div>
+                <em>@(Model.Account.Status == "ACTIVE" ? "Đang hoạt động" : Model.Account.Status)</em>
+            </div>
+            <div class="admin-quota-progress">
+                @{ var percent = Model.Account.MonthlyLimit <= 0 ? 0 : Math.Min(100, (Model.Account.UsedUnits + Model.Account.HeldUnits) * 100d / Model.Account.MonthlyLimit); }
+                <div><span>Đã dùng + đang giữ</span><strong>@((Model.Account.UsedUnits + Model.Account.HeldUnits).ToString("N0")) / @Model.Account.MonthlyLimit.ToString("N0")</strong></div>
+                <i><span style="width: @percent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></span></i>
+                <div><small>Đã dùng @Model.Account.UsedUnits.ToString("N0")</small><small>Đang giữ @Model.Account.HeldUnits.ToString("N0")</small><small>Còn lại @Model.Account.RemainingUnits.ToString("N0")</small></div>
+            </div>
+            <form method="post" asp-page-handler="SaveQuota" class="admin-quota-form">
+                <input asp-for="Email" type="hidden" />
+                <label><span>Token dịch mỗi tháng</span><input asp-for="MonthlyLlmTokens" type="number" min="0" max="1000000000000" step="1000" /><small class="admin-field-error"><span asp-validation-for="MonthlyLlmTokens"></span></small></label>
+                <div class="admin-quota-presets" aria-label="Mức token gợi ý"><button type="button" data-quota="100000">100K</button><button type="button" data-quota="500000">500K</button><button type="button" data-quota="2000000">2M</button><button type="button" data-quota="10000000">10M</button></div>
+                <button class="admin-primary-button" type="submit">Lưu hạn mức token <span>→</span></button>
+            </form>
+        }
+    </article>
+</section>
+
+<section class="admin-light-card admin-ledger-card">
+    <header><div><span class="admin-card-icon is-emerald">≋</span><div><h2>Usage ledger gần đây</h2><p>Mỗi reservation chỉ được chốt một lần; không lưu prompt hoặc kết quả dịch.</p></div></div><span class="admin-count-pill">30 bản ghi gần nhất</span></header>
+    <div class="admin-table-wrap">
+        <table class="admin-ledger-table">
+            <thead><tr><th>Thời gian</th><th>Người dùng</th><th>Provider / model</th><th>Credential</th><th>Input</th><th>Output</th><th>Tổng token</th><th>Request</th></tr></thead>
+            <tbody>
+            @if (Model.RecentLedger.Count == 0)
+            {
+                <tr><td colspan="8" class="admin-table-empty">Chưa có usage Cloud được chốt.</td></tr>
+            }
+            @foreach (var item in Model.RecentLedger)
+            {
+                <tr>
+                    <td><strong>@item.OccurredAtUtc.ToLocalTime().ToString("dd/MM HH:mm")</strong></td>
+                    <td>@item.UserEmail</td>
+                    <td><strong>@item.ProviderCode</strong><small>@item.ModelId</small></td>
+                    <td>@item.CredentialName</td>
+                    <td>@item.InputUnits.ToString("N0")</td>
+                    <td>@item.OutputUnits.ToString("N0")</td>
+                    <td><strong class="admin-token-value">@item.TotalUnits.ToString("N0")</strong></td>
+                    <td><span class="admin-request-badge">@item.ApiRequests API · @item.RetryRequests retry</span></td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+    <script>
+        (() => {
+            document.querySelectorAll('[data-quota]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    const input = document.getElementById('MonthlyLlmTokens');
+                    if (input) input.value = button.getAttribute('data-quota');
+                });
+            });
+
+            document.querySelectorAll('[data-confirm]').forEach((button) => {
+                button.addEventListener('click', (event) => {
+                    if (!window.confirm(button.getAttribute('data-confirm'))) event.preventDefault();
+                });
+            });
+
+            const form = document.querySelector('[data-credential-form]');
+            if (!form) return;
+            const provider = form.querySelector('[data-provider-select]');
+            const nameInput = form.querySelector('[data-credential-name]');
+            const keyInput = form.querySelector('[data-api-key]');
+            const toggle = form.querySelector('[data-secret-toggle]');
+            const probeButton = form.querySelector('[data-credential-probe]');
+            const probeResult = form.querySelector('[data-probe-result]');
+            const placeholders = { openai: 'OpenAI pool chính', groq: 'Groq pool chính', deepseek: 'DeepSeek pool chính', gemini: 'Gemini pool chính' };
+
+            provider?.addEventListener('change', () => {
+                if (nameInput && !nameInput.value) nameInput.placeholder = placeholders[provider.value] || 'Key pool chính';
+                probeResult.className = 'admin-probe-result is-idle is-wide';
+                probeResult.innerHTML = '<span>i</span><div><strong>Chưa kiểm tra kết nối</strong><small>Provider đã thay đổi; hãy kiểm tra lại trước khi lưu.</small></div>';
+            });
+
+            toggle?.addEventListener('click', () => {
+                const visible = keyInput.type === 'text';
+                keyInput.type = visible ? 'password' : 'text';
+                toggle.textContent = visible ? 'Hiện' : 'Ẩn';
+                toggle.setAttribute('aria-label', visible ? 'Hiện API key' : 'Ẩn API key');
+                toggle.setAttribute('aria-pressed', String(!visible));
+                keyInput.focus({ preventScroll: true });
+            });
+
+            const showProbe = (kind, title, detail) => {
+                probeResult.className = `admin-probe-result is-${kind} is-wide`;
+                probeResult.innerHTML = `<span>${kind === 'success' ? '✓' : kind === 'loading' ? '…' : '!'}</span><div><strong></strong><small></small></div>`;
+                probeResult.querySelector('strong').textContent = title;
+                probeResult.querySelector('small').textContent = detail;
+            };
+
+            probeButton?.addEventListener('click', async () => {
+                if (!keyInput.value.trim()) {
+                    showProbe('error', 'Chưa có API key', 'Hãy dán key mới trước khi kiểm tra.');
+                    keyInput.focus();
+                    return;
+                }
+
+                const token = form.querySelector('input[name="__RequestVerificationToken"]')?.value;
+                const body = new FormData();
+                body.append('__RequestVerificationToken', token || '');
+                body.append('probeProviderCode', provider.value);
+                body.append('probeApiKey', keyInput.value);
+                probeButton.disabled = true;
+                showProbe('loading', 'Đang kiểm tra kết nối', 'Server đang xác thực trực tiếp với provider…');
+                try {
+                    const response = await fetch(`${window.location.pathname}?handler=ProbeCredential`, {
+                        method: 'POST',
+                        body,
+                        cache: 'no-store',
+                        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                    });
+                    const payload = await response.json();
+                    const detail = payload.latencyMilliseconds != null
+                        ? `${payload.message} Độ trễ ${Number(payload.latencyMilliseconds).toLocaleString('vi-VN')} ms${payload.providerRequestId ? ` · Request ${payload.providerRequestId}` : ''}`
+                        : payload.message;
+                    showProbe(payload.success ? 'success' : 'error', payload.success ? 'Key hoạt động tốt' : 'Kiểm tra chưa đạt', detail);
+                } catch {
+                    showProbe('error', 'Không thể hoàn tất kiểm tra', 'Phiên quản trị hoặc kết nối Server đã bị gián đoạn.');
+                } finally {
+                    probeButton.disabled = false;
+                }
+            });
+        })();
+    </script>
+}

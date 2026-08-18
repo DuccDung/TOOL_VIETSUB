@@ -507,6 +507,47 @@ public sealed class LocalJob
     public TranslationJobMetrics? TranslationMetrics { get; set; }
 
     public VoiceSynthesisJobMetrics? VoiceMetrics { get; set; }
+
+    public List<CloudUsageSettlement> CloudSettlements { get; set; } = [];
+}
+
+public sealed class CloudUsageSettlement
+{
+    public Guid RequestId { get; set; } = Guid.NewGuid();
+
+    public Guid? ReservationId { get; set; }
+
+    public string ProviderCode { get; set; } = string.Empty;
+
+    public string ModelId { get; set; } = string.Empty;
+
+    public string UnitCode { get; set; } = "LLM_TOKEN";
+
+    public string Status { get; set; } = "AUTHORIZING";
+
+    public long EstimatedInputUnits { get; set; }
+
+    public long EstimatedOutputUnits { get; set; }
+
+    public long ActualInputUnits { get; set; }
+
+    public long ActualOutputUnits { get; set; }
+
+    public long CachedInputUnits { get; set; }
+
+    public int ApiRequests { get; set; }
+
+    public int RetryRequests { get; set; }
+
+    public bool UsageWasEstimated { get; set; }
+
+    public DateTime? ExpiresAtUtc { get; set; }
+
+    public string? ErrorMessage { get; set; }
+
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
 public sealed class VoiceSynthesisJobMetrics

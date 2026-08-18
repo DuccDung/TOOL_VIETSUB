@@ -209,6 +209,29 @@ export type MediaImportState = {
   megabytesPerSecond: number
 }
 
+export type FfmpegRuntimeStatus = {
+  state: 'MISSING' | 'READY' | 'INSTALLING' | 'ERROR'
+  ready: boolean
+  managed: boolean
+  source: 'NONE' | 'MANAGED' | 'CUSTOM' | 'ENVIRONMENT' | 'SYSTEM'
+  version: string | null
+  targetVersion: string
+  ffmpegPath: string | null
+  ffprobePath: string | null
+  installDirectory: string
+  downloadBytes: number
+  license: string
+  sourceUrl: string
+}
+
+export type FfmpegInstallProgress = {
+  phase: 'DOWNLOAD' | 'EXTRACT' | 'VERIFY' | 'INSTALL' | 'READY'
+  percent: number
+  message: string
+  bytesProcessed: number
+  totalBytes: number
+}
+
 export type SubtitleSegment = {
   cueId: string
   id: number

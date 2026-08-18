@@ -23,7 +23,7 @@ public sealed class LoginModel(AdminWebAuthService authService) : PageModel
     {
         if (User.Identity?.IsAuthenticated == true && User.IsInRole("ADMIN"))
         {
-            return RedirectToPage("/Admin/Subscriptions");
+            return RedirectToPage("/Admin/Cloud");
         }
 
         return Page();
@@ -68,7 +68,7 @@ public sealed class LoginModel(AdminWebAuthService authService) : PageModel
 
         return !string.IsNullOrWhiteSpace(ReturnUrl) && Url.IsLocalUrl(ReturnUrl)
             ? LocalRedirect(ReturnUrl)
-            : RedirectToPage("/Admin/Subscriptions");
+            : RedirectToPage("/Admin/Cloud");
     }
 
     public sealed class LoginInput

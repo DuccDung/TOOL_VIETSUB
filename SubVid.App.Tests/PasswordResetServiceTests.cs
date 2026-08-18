@@ -12,8 +12,7 @@ namespace SubVid.App.Tests;
 [Collection("SQL Server integration")]
 public sealed class PasswordResetServiceTests
 {
-    private const string ConnectionString =
-        "Data Source=DUNGDEV;Initial Catalog=TOOL_VIETSUB;Integrated Security=True;Trust Server Certificate=True";
+    private static string ConnectionString => TestDatabase.ConnectionString;
 
     [Fact]
     public async Task ValidOtp_ChangesPasswordAndRevokesExistingSessions()

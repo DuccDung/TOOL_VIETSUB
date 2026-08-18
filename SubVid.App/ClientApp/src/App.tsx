@@ -9,6 +9,7 @@ import { AccountView } from './components/AccountView'
 import { AiStorageDialog, type AiStorageSelection } from './components/AiStorageDialog'
 import { ApiErrorDialog } from './components/ApiErrorDialog'
 import { AuthScreen } from './components/AuthScreen'
+import { FfmpegSetupDialog } from './components/FfmpegSetupDialog'
 import { Header } from './components/Header'
 import { ImportProgress } from './components/ImportProgress'
 import { ImportVideoDialog } from './components/ImportVideoDialog'
@@ -25,6 +26,8 @@ import { hasNativeHost, postToHost, subscribeToHost } from './lib/host'
 import { defaultSubtitleStyle } from './lib/subtitleStyle'
 import type {
   AuthState,
+  FfmpegInstallProgress,
+  FfmpegRuntimeStatus,
   MediaImportState,
   LocalJobInfo,
   ProjectInfo,
@@ -359,6 +362,21 @@ const emptyImportState: MediaImportState = {
   megabytesPerSecond: 0,
 }
 
+const emptyFfmpegStatus: FfmpegRuntimeStatus = {
+  state: 'MISSING',
+  ready: false,
+  managed: false,
+  source: 'NONE',
+  version: null,
+  targetVersion: '9.0.1',
+  ffmpegPath: null,
+  ffprobePath: null,
+  installDirectory: '',
+  downloadBytes: 111253802,
+  license: 'GPL-3.0',
+  sourceUrl: 'https://github.com/FFmpeg/FFmpeg',
+}
+
 const otpPreviewChallenge: RegistrationChallenge = {
   challengeId: '03e775cb-089f-4c91-9d80-dc0578e433ee',
   maskedEmail: 'd***g@gmail.com',
@@ -386,6 +404,12 @@ function App() {
   const [subtitleBusy, setSubtitleBusy] = useState(false)
   const [projectError, setProjectError] = useState<string | null>(null)
   const [importState, setImportState] = useState<MediaImportState>(emptyImportState)
+  const [ffmpegStatus, setFfmpegStatus] = useState<FfmpegRuntimeStatus>(emptyFfmpegStatus)
+  const [ffmpegProgress, setFfmpegProgress] = useState<FfmpegInstallProgress | null>(null)
+  const [ffmpegDialogOpen, setFfmpegDialogOpen] = useState(false)
+  const [ffmpegError, setFfmpegError] = useState<string | null>(null)
+  const [ffmpegPendingFileName, setFfmpegPendingFileName] = useState<string | null>(null)
+  const [ffmpegForce, setFfmpegForce] = useState(false)
   const [segments, setSegments] = useState<SubtitleSegment[]>(demoMode ? demoSegments : [])
   const [selectedSegmentId, setSelectedSegmentId] = useState<number | null>(
     demoMode ? demoSegments[0].id : null,
@@ -678,6 +702,75 @@ function App() {
         }
       }
 
+      if (message.type === 'ffmpeg:status'
+        && typeof message.status === 'object'
+        && message.status !== null) {
+        const status = message.status as FfmpegRuntimeStatus
+        setFfmpegStatus(status)
+        if (status.ready) {
+          setFfmpegDialogOpen(false)
+          setFfmpegError(null)
+          setFfmpegPendingFileName(null)
+        }
+      }
+
+      if (message.type === 'ffmpeg:install:required'
+        && typeof message.status === 'object'
+        && message.status !== null) {
+        setFfmpegStatus(message.status as FfmpegRuntimeStatus)
+        setFfmpegPendingFileName(String(message.fileName ?? 'video'))
+        setFfmpegProgress(null)
+        setFfmpegError(null)
+        setFfmpegForce(false)
+        setFfmpegDialogOpen(true)
+      }
+
+      if (message.type === 'ffmpeg:install:progress'
+        && typeof message.progress === 'object'
+        && message.progress !== null) {
+        const progress = message.progress as FfmpegInstallProgress
+        if (progress.phase === 'READY') {
+          setFfmpegProgress(null)
+          return
+        }
+        setFfmpegProgress(progress)
+        setFfmpegError(null)
+        setFfmpegStatus((current) => ({ ...current, state: 'INSTALLING' }))
+      }
+
+      if (message.type === 'ffmpeg:install:completed'
+        && typeof message.status === 'object'
+        && message.status !== null) {
+        const status = message.status as FfmpegRuntimeStatus
+        setFfmpegStatus(status)
+        setFfmpegProgress(null)
+        setFfmpegError(null)
+        setFfmpegDialogOpen(false)
+        setFfmpegPendingFileName(null)
+        notify('Công cụ video đã sẵn sàng', `FFmpeg ${status.version ?? status.targetVersion} đã được cài và xác minh.`, 'success')
+      }
+
+      if (message.type === 'ffmpeg:install:failed') {
+        if (typeof message.status === 'object' && message.status !== null) {
+          setFfmpegStatus({ ...(message.status as FfmpegRuntimeStatus), state: 'ERROR' })
+        } else {
+          setFfmpegStatus((current) => ({ ...current, state: 'ERROR' }))
+        }
+        setFfmpegProgress(null)
+        setFfmpegError(String(message.message ?? 'Không thể cài FFmpeg.'))
+        setFfmpegDialogOpen(true)
+      }
+
+      if (message.type === 'ffmpeg:install:cancelled') {
+        if (typeof message.status === 'object' && message.status !== null) {
+          setFfmpegStatus(message.status as FfmpegRuntimeStatus)
+        }
+        setFfmpegProgress(null)
+        setFfmpegError(null)
+        setFfmpegDialogOpen(false)
+        setFfmpegPendingFileName(null)
+      }
+
       if (message.type === 'video:import:started') {
         setImportDialogOpen(false)
         setImportState({
@@ -790,7 +883,7 @@ function App() {
       if (message.type === 'translation:settings:saved') {
         notify(
           'Đã lưu cấu hình dịch',
-          'Bối cảnh, glossary và API key đã được cập nhật an toàn.',
+          'Bối cảnh, glossary và cấu hình Cloud đã được cập nhật.',
           'success',
         )
       }
@@ -967,6 +1060,7 @@ function App() {
   useEffect(() => {
     if (authState.status === 'authenticated' && hasNativeHost()) {
       postToHost('project:list')
+      postToHost('ffmpeg:status')
     }
   }, [authState.status])
 
@@ -1475,8 +1569,28 @@ function App() {
           account={authState.account}
           entitlements={authState.entitlements}
           history={authState.history}
+          ffmpegStatus={ffmpegStatus}
+          ffmpegProgress={ffmpegProgress}
           onRefresh={() => postToHost('auth:refresh')}
           onLogout={() => postToHost('auth:logout')}
+          onManageFfmpeg={() => {
+            if (jobBusy || importState.active) {
+              notify('Công cụ video đang được sử dụng', 'Hãy chờ tác vụ video hiện tại hoàn tất trước khi cài lại FFmpeg.', 'warning')
+              return
+            }
+            setFfmpegForce(ffmpegStatus.ready)
+            setFfmpegPendingFileName(null)
+            setFfmpegError(null)
+            setFfmpegDialogOpen(true)
+          }}
+          onSelectFfmpegFolder={() => {
+            if (jobBusy || importState.active) {
+              notify('Công cụ video đang được sử dụng', 'Hãy chờ tác vụ video hiện tại hoàn tất trước khi đổi thư mục FFmpeg.', 'warning')
+              return
+            }
+            postToHost('ffmpeg:folder:select')
+          }}
+          onOpenFfmpegFolder={() => postToHost('ffmpeg:folder:open')}
         />
       ) : activeNav === 'voice' || activeNav === 'library' ? (
         <VoiceWorkspace
@@ -1788,6 +1902,25 @@ function App() {
           setProjectBusy(true)
           setProjectError(null)
           if (hasNativeHost()) postToHost('project:rename', { name })
+        }}
+      />
+
+      <FfmpegSetupDialog
+        open={ffmpegDialogOpen}
+        status={ffmpegStatus}
+        progress={ffmpegProgress}
+        error={ffmpegError}
+        pendingFileName={ffmpegPendingFileName}
+        force={ffmpegForce}
+        onInstall={() => {
+          setFfmpegError(null)
+          postToHost('ffmpeg:install', { force: ffmpegForce })
+        }}
+        onSelectFolder={() => postToHost('ffmpeg:folder:select')}
+        onCancel={() => {
+          postToHost('ffmpeg:install:cancel')
+          setFfmpegDialogOpen(false)
+          setFfmpegError(null)
         }}
       />
 

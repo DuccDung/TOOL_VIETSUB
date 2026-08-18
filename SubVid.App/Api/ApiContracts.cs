@@ -150,6 +150,60 @@ public sealed record QuotaReservationApiResponse(
     decimal? RemainingMinutes,
     bool Duplicate);
 
+public sealed record AuthorizeCloudAccessApiRequest(
+    Guid RequestId,
+    Guid? ProjectId,
+    Guid? LocalJobId,
+    string OperationCode,
+    string ProviderCode,
+    string ModelId,
+    long EstimatedInputTokens,
+    long EstimatedOutputTokens);
+
+public sealed record CommitCloudUsageApiRequest(
+    long InputTokens,
+    long OutputTokens,
+    long CachedInputTokens,
+    int ApiRequests,
+    int RetryRequests,
+    string? ProviderRequestId);
+
+public sealed record CloudAuthorizationApiResponse(
+    Guid ReservationId,
+    string Status,
+    string ProviderCode,
+    string ModelId,
+    string UnitCode,
+    long ReservedUnits,
+    DateTime ExpiresAtUtc,
+    long MonthlyLimit,
+    long UsedUnits,
+    long HeldUnits,
+    long RemainingUnits,
+    bool Duplicate,
+    string ApiKey);
+
+public sealed record CloudReservationApiResponse(
+    Guid ReservationId,
+    string Status,
+    string ProviderCode,
+    string ModelId,
+    string UnitCode,
+    long ReservedUnits,
+    long? CommittedUnits,
+    DateTime ExpiresAtUtc,
+    long RemainingUnits,
+    bool Duplicate);
+
+public sealed record CloudQuotaBalanceApiResponse(
+    string UnitCode,
+    long MonthlyLimit,
+    long UsedUnits,
+    long HeldUnits,
+    long RemainingUnits,
+    DateTime PeriodStartsAtUtc,
+    DateTime PeriodEndsAtUtc);
+
 public sealed record LogoutResponse(bool Revoked);
 
 public sealed record StoredAuthSession(

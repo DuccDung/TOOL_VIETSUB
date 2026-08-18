@@ -190,6 +190,57 @@ public sealed class DesktopApiClient : IDisposable
             authenticated: true,
             cancellationToken);
 
+    public Task<CloudAuthorizationApiResponse> AuthorizeCloudAccessAsync(
+        AuthorizeCloudAccessApiRequest request,
+        CancellationToken cancellationToken) =>
+        SendAsync<CloudAuthorizationApiResponse>(
+            HttpMethod.Post,
+            "api/v1/cloud/authorize",
+            request,
+            authenticated: true,
+            cancellationToken);
+
+    public Task<CloudReservationApiResponse> CommitCloudUsageAsync(
+        Guid reservationId,
+        CommitCloudUsageApiRequest request,
+        CancellationToken cancellationToken) =>
+        SendAsync<CloudReservationApiResponse>(
+            HttpMethod.Post,
+            $"api/v1/cloud/reservations/{reservationId:D}/commit",
+            request,
+            authenticated: true,
+            cancellationToken);
+
+    public Task<CloudReservationApiResponse> ReleaseCloudUsageAsync(
+        Guid reservationId,
+        CancellationToken cancellationToken) =>
+        SendAsync<CloudReservationApiResponse>(
+            HttpMethod.Post,
+            $"api/v1/cloud/reservations/{reservationId:D}/release",
+            body: null,
+            authenticated: true,
+            cancellationToken);
+
+    public Task<CloudReservationApiResponse> GetCloudReservationAsync(
+        Guid reservationId,
+        CancellationToken cancellationToken) =>
+        SendAsync<CloudReservationApiResponse>(
+            HttpMethod.Get,
+            $"api/v1/cloud/reservations/{reservationId:D}",
+            body: null,
+            authenticated: true,
+            cancellationToken);
+
+    public Task<CloudQuotaBalanceApiResponse> GetCloudBalanceAsync(
+        string unitCode,
+        CancellationToken cancellationToken) =>
+        SendAsync<CloudQuotaBalanceApiResponse>(
+            HttpMethod.Get,
+            $"api/v1/cloud/balance?unitCode={Uri.EscapeDataString(unitCode)}",
+            body: null,
+            authenticated: true,
+            cancellationToken);
+
     private async Task<T> SendAsync<T>(
         HttpMethod method,
         string path,

@@ -19,6 +19,14 @@ public partial class SubVidDbContext
 
     public DbSet<UsageReservation> UsageReservations => Set<UsageReservation>();
 
+    public DbSet<CloudProviderCredential> CloudProviderCredentials => Set<CloudProviderCredential>();
+
+    public DbSet<CloudQuotaLimit> CloudQuotaLimits => Set<CloudQuotaLimit>();
+
+    public DbSet<CloudUsageReservation> CloudUsageReservations => Set<CloudUsageReservation>();
+
+    public DbSet<CloudUsageLedger> CloudUsageLedger => Set<CloudUsageLedger>();
+
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<ServicePlan>(entity =>
@@ -80,6 +88,75 @@ public partial class SubVidDbContext
                 .HasForeignKey(item => item.ProjectId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("FK_usage_reservations_project");
+        });
+
+        modelBuilder.Entity<CloudProviderCredential>(entity =>
+        {
+            entity.Property(item => item.CredentialId)
+                .HasDefaultValueSql("(newsequentialid())", "DF_cloud_credentials_id");
+            entity.Property(item => item.StatusCode)
+                .HasDefaultValue("ACTIVE", "DF_cloud_credentials_status");
+            entity.Property(item => item.Priority)
+                .HasDefaultValue(100, "DF_cloud_credentials_priority");
+            entity.Property(item => item.CreatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_credentials_created");
+            entity.Property(item => item.UpdatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_credentials_updated");
+            entity.Property(item => item.RowVersion).IsRowVersion().IsConcurrencyToken();
+            entity.HasOne(item => item.AssignedUser)
+                .WithMany()
+                .HasForeignKey(item => item.AssignedUserId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("FK_cloud_credentials_assigned_user");
+        });
+
+        modelBuilder.Entity<CloudQuotaLimit>(entity =>
+        {
+            entity.HasKey(item => new { item.UserId, item.UnitCode });
+            entity.Property(item => item.UpdatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_quota_limits_updated");
+            entity.Property(item => item.RowVersion).IsRowVersion().IsConcurrencyToken();
+            entity.HasOne(item => item.User)
+                .WithMany()
+                .HasForeignKey(item => item.UserId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("FK_cloud_quota_limits_user");
+        });
+
+        modelBuilder.Entity<CloudUsageReservation>(entity =>
+        {
+            entity.Property(item => item.ReservationId)
+                .HasDefaultValueSql("(newsequentialid())", "DF_cloud_reservations_id");
+            entity.Property(item => item.StatusCode)
+                .HasDefaultValue("HELD", "DF_cloud_reservations_status");
+            entity.Property(item => item.CreatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_reservations_created");
+            entity.Property(item => item.UpdatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_reservations_updated");
+            entity.Property(item => item.RowVersion).IsRowVersion().IsConcurrencyToken();
+            entity.HasOne(item => item.User)
+                .WithMany()
+                .HasForeignKey(item => item.UserId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_cloud_reservations_user");
+            entity.HasOne(item => item.Credential)
+                .WithMany()
+                .HasForeignKey(item => item.CredentialId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_cloud_reservations_credential");
+        });
+
+        modelBuilder.Entity<CloudUsageLedger>(entity =>
+        {
+            entity.Property(item => item.LedgerId)
+                .HasDefaultValueSql("(newsequentialid())", "DF_cloud_usage_ledger_id");
+            entity.Property(item => item.CreatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_usage_ledger_created");
+            entity.HasOne(item => item.Reservation)
+                .WithOne()
+                .HasForeignKey<CloudUsageLedger>(item => item.ReservationId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_cloud_usage_ledger_reservation");
         });
 
         modelBuilder.Entity<AuthSession>(entity =>

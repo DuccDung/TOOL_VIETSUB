@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b1220" />
+    <title>@ViewData["Title"] · SubVid Admin</title>
+    <link rel="icon" type="image/png" href="~/images/favicon.png" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body class="admin-light-body">
+    <div class="admin-light-shell">
+        <aside class="admin-light-sidebar">
+            <a class="admin-light-brand" asp-page="/Admin/Cloud">
+                <img src="~/images/subvid-icon.png" alt="" />
+                <span><strong>SubVid</strong><small>CONTROL CENTER</small></span>
+            </a>
+            <nav class="admin-light-nav" aria-label="Điều hướng quản trị">
+                <a asp-page="/Admin/Cloud" class="@(Context.Request.Path.StartsWithSegments("/Admin/Cloud") ? "is-active" : null)">
+                    <span>◫</span><span><strong>Cloud API</strong><small>Key, token và ledger</small></span>
+                </a>
+                <a asp-page="/Admin/Subscriptions" class="@(Context.Request.Path.StartsWithSegments("/Admin/Subscriptions") ? "is-active" : null)">
+                    <span>◇</span><span><strong>Gói thuê</strong><small>Tài khoản và thời hạn</small></span>
+                </a>
+            </nav>
+            <div class="admin-light-sidebar-note">
+                <span>LOCAL-FIRST</span>
+                <p>Server chỉ cấp quyền và đo hạn mức. Nội dung Cloud không đi qua máy chủ.</p>
+            </div>
+        </aside>
+        <div class="admin-light-main">
+            <header class="admin-light-topbar">
+                <div><span class="admin-live-dot"></span><span>Server đang hoạt động</span></div>
+                <div class="admin-light-user">
+                    <span>@((User.Identity?.Name ?? "A")[..1].ToUpperInvariant())</span>
+                    <div><strong>@User.Identity?.Name</strong><small>Quản trị viên</small></div>
+                    <form method="post" asp-page="/Admin/Logout"><button type="submit">Đăng xuất</button></form>
+                </div>
+            </header>
+            <main class="admin-light-content">@RenderBody()</main>
+        </div>
+    </div>
+    <script src="~/js/site.js" asp-append-version="true"></script>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

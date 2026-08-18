@@ -23,7 +23,8 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
     private LocalAiRuntimeProvisioner _runtimeProvisioner;
     private VieNeuRuntimeProvisioner _vieNeuRuntimeProvisioner;
     private readonly AiStorageService _aiStorage;
-    private readonly ProtectedTranslationCredentialStore _translationCredentials;
+    private readonly IDesktopCloudAccessGateway _cloudAccess;
+    private readonly CloudUsageSettlementReconciler _cloudSettlementReconciler;
     private readonly ProtectedVoiceCredentialStore _voiceCredentials;
     private readonly HttpClient _translationHttpClient;
     private readonly HttpClient _voiceHttpClient;
@@ -44,7 +45,8 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         _runtimeProvisioner = new LocalAiRuntimeProvisioner(_paths);
         _vieNeuRuntimeProvisioner = new VieNeuRuntimeProvisioner(_paths);
         _aiStorage = new AiStorageService(_paths);
-        _translationCredentials = new ProtectedTranslationCredentialStore(_paths);
+        _cloudAccess = new DesktopCloudAccessGateway(auth);
+        _cloudSettlementReconciler = new CloudUsageSettlementReconciler(_cloudAccess, _projects);
         _voiceCredentials = new ProtectedVoiceCredentialStore(_paths);
         _translationHttpClient = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         _translationHttpClient.DefaultRequestHeaders.UserAgent.TryParseAdd("SubVid-App/1.0");
@@ -95,6 +97,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         _session = new ProjectSession(_projects, manifest);
         await _session.StartAsync(cancellationToken);
         await _quotaJobs.ReconcilePendingSettlementsAsync(manifest, cancellationToken);
+        await _cloudSettlementReconciler.ReconcileAsync(manifest, cancellationToken);
         return Map(manifest);
     }
 
@@ -123,6 +126,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         _session = new ProjectSession(_projects, manifest);
         await _session.StartAsync(cancellationToken);
         await _quotaJobs.ReconcilePendingSettlementsAsync(manifest, cancellationToken);
+        await _cloudSettlementReconciler.ReconcileAsync(manifest, cancellationToken);
         return Map(manifest);
     }
 
@@ -241,16 +245,6 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         }
 
         var glossary = ParseGlossary(glossaryText, manifest.TranslationGlossary);
-        if (clearApiKey)
-        {
-            _translationCredentials.DeleteKey(normalizedProvider);
-        }
-
-        if (!string.IsNullOrWhiteSpace(apiKey))
-        {
-            _translationCredentials.SaveKey(normalizedProvider, apiKey);
-        }
-
         manifest.Settings.TranslationProvider = normalizedProvider;
         manifest.Settings.TranslationModelId = resolvedModel;
         manifest.Settings.TranslationQualityMode = normalizedQuality;
@@ -937,14 +931,6 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         manifest.Settings.TranslationProvider = providerId;
         manifest.Settings.TranslationModelId = modelId;
 
-        if (TranslationProviders.IsCloud(providerId)
-            && !_translationCredentials.HasKey(providerId))
-        {
-            throw new LocalModelException(
-                "TRANSLATION_API_KEY_REQUIRED",
-                $"Hãy lưu API key {providerId} trong phần Dịch sang tiếng Việt trước khi chạy.");
-        }
-
         await EnsureTranslationDependenciesAsync(
             providerId,
             sourceLanguage,
@@ -1409,30 +1395,13 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             return local;
         }
 
-        var apiKey = _translationCredentials.GetKey(normalizedProvider)
-            ?? throw new LocalModelException(
-                "TRANSLATION_API_KEY_REQUIRED",
-                $"Hãy lưu API key {normalizedProvider} trong phần Dịch sang tiếng Việt trước khi chạy.");
-        ITranslationProvider cloud = normalizedProvider switch
-        {
-            TranslationProviders.OpenAi => new OpenAiTranslationProvider(
-                _translationHttpClient,
-                apiKey,
-                modelId),
-            TranslationProviders.Gemini => new GeminiTranslationProvider(
-                _translationHttpClient,
-                apiKey,
-                modelId),
-            TranslationProviders.DeepSeek => new DeepSeekTranslationProvider(
-                _translationHttpClient,
-                apiKey,
-                modelId),
-            TranslationProviders.Groq => new GroqTranslationProvider(
-                _translationHttpClient,
-                apiKey,
-                modelId),
-            _ => throw new InvalidOperationException("Nhà cung cấp dịch chưa được hỗ trợ."),
-        };
+        ITranslationProvider cloud = new ServerManagedTranslationProvider(
+            _cloudAccess,
+            _translationHttpClient,
+            _projects,
+            RequireProject(),
+            normalizedProvider,
+            modelId);
         return fallbackToLocal ? new FallbackTranslationProvider(cloud, local) : cloud;
     }
 
@@ -1777,7 +1746,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     TranslationQualityModes.Normalize(manifest.Settings.TranslationQualityMode),
                     manifest.Settings.TranslationReviewEnabled,
                     manifest.Settings.TranslationFallbackToLocal,
-                    _translationCredentials.HasKey(providerId),
+                    TranslationProviders.IsCloud(providerId),
                     translationContext.Summary,
                     translationContext.CharacterInstructions,
                     translationContext.StyleInstructions,

@@ -8,8 +8,7 @@ namespace SubVid.App.Tests;
 [Collection("SQL Server integration")]
 public sealed class AdminSubscriptionServiceTests
 {
-    private const string ConnectionString =
-        "Data Source=DUNGDEV;Initial Catalog=TOOL_VIETSUB;Integrated Security=True;Trust Server Certificate=True";
+    private static string ConnectionString => TestDatabase.ConnectionString;
 
     [Fact]
     public async Task ChangePlanAsync_ActivatesSelectedPlanAndWritesAudit()

@@ -52,6 +52,11 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
         Func<JobProgressUpdate, ValueTask> reportProgress,
         CancellationToken cancellationToken)
     {
+        if (_provider is ILocalJobAwareTranslationProvider jobAwareProvider)
+        {
+            jobAwareProvider.BindJob(job);
+        }
+
         var track = _project.SubtitleTracks.LastOrDefault(item => item.Cues.Count > 0)
             ?? throw new LocalJobException(
                 "SUBTITLE_TRACK_MISSING",
