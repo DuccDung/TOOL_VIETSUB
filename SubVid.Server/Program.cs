@@ -274,6 +274,7 @@ builder.Services.AddScoped<EntitlementService>();
 builder.Services.AddScoped<AdminWebAuthService>();
 builder.Services.AddScoped<WebAccountAuthService>();
 builder.Services.AddScoped<AdminSubscriptionService>();
+builder.Services.AddScoped<AdminUserService>();
 builder.Services.AddScoped<UsageService>();
 builder.Services.AddScoped<QuotaService>();
 builder.Services.AddScoped<CloudCredentialProtector>();

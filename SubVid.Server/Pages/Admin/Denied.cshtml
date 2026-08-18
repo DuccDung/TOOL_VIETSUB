@@ -1,11 +1,13 @@
 @page
 @{
+    Layout = "/Pages/Shared/_AccountAuthLayout.cshtml";
     ViewData["Title"] = "Không có quyền truy cập";
 }
 
 <section class="admin-denied">
-    <span>!</span>
+    <span aria-hidden="true">!</span>
+    <small>ACCESS DENIED</small>
     <h1>Không có quyền truy cập</h1>
-    <p>Chức năng này chỉ dành cho tài khoản quản trị đang hoạt động.</p>
-    <a class="primary-link" asp-page="/Admin/Login">Đăng nhập quản trị <span>→</span></a>
+    <p>Trang này chỉ dành cho tài khoản quản trị đang hoạt động. Hãy đăng nhập lại bằng tài khoản có quyền ADMIN.</p>
+    <div><a class="primary-link" asp-page="/Admin/Login">Đăng nhập quản trị <span>→</span></a><a asp-page="/Index">Về trang chủ</a></div>
 </section>

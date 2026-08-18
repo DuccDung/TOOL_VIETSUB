@@ -11,6 +11,7 @@ document.querySelectorAll('[data-password-toggle]').forEach((button) => {
     input.type = passwordIsVisible ? 'password' : 'text';
     button.setAttribute('aria-pressed', String(!passwordIsVisible));
     button.setAttribute('aria-label', passwordIsVisible ? 'Hiện mật khẩu' : 'Ẩn mật khẩu');
+    button.setAttribute('title', passwordIsVisible ? 'Hiện mật khẩu' : 'Ẩn mật khẩu');
     wrapper.classList.toggle('is-password-visible', !passwordIsVisible);
     input.focus({ preventScroll: true });
   });

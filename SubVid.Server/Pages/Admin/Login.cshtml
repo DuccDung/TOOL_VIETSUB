@@ -1,40 +1,43 @@
 @page
 @model SubVid.Server.Pages.Admin.LoginModel
 @{
+    Layout = "/Pages/Shared/_AccountAuthLayout.cshtml";
     ViewData["Title"] = "Đăng nhập quản trị";
+    ViewData["HideAccountNav"] = true;
 }
 
-<section class="admin-login-layout">
-    <div class="admin-login-intro">
-        <span class="server-eyebrow">QUẢN TRỊ GÓI DỊCH VỤ</span>
-        <h1>Nâng cấp đúng tài khoản, có kiểm soát.</h1>
-        <p>Đăng nhập bằng tài khoản ADMIN để tìm người dùng theo email, thay đổi gói và theo dõi lịch sử thao tác.</p>
+<section class="admin-auth-layout">
+    <div class="admin-auth-intro">
+        <span class="admin-auth-kicker"><i></i> SUBVID ADMIN STUDIO</span>
+        <h1>Vận hành hệ thống.<br /><em>Rõ ràng và an toàn.</em></h1>
+        <p>Không gian dành riêng cho quản trị viên kiểm soát Cloud API, hạn mức và gói dịch vụ.</p>
         <ul>
-            <li><span>01</span><div><strong>Phân quyền quản trị</strong><small>Người dùng thường không thể truy cập chức năng nâng cấp.</small></div></li>
-            <li><span>02</span><div><strong>Thao tác nguyên tử</strong><small>Gói cũ được đóng và gói mới được kích hoạt trong cùng transaction.</small></div></li>
-            <li><span>03</span><div><strong>Audit đầy đủ</strong><small>Lưu người thao tác, thời gian và thay đổi subscription.</small></div></li>
+            <li><span>01</span><div><strong>Phân quyền riêng biệt</strong><small>Chỉ tài khoản ADMIN đang hoạt động mới có thể truy cập.</small></div></li>
+            <li><span>02</span><div><strong>Secret được bảo vệ</strong><small>API key được mã hóa và không hiển thị lại sau khi lưu.</small></div></li>
+            <li><span>03</span><div><strong>Audit đầy đủ</strong><small>Các thay đổi quan trọng đều được ghi vào nhật ký bảo mật.</small></div></li>
         </ul>
     </div>
 
-    <form method="post" class="admin-login-card">
+    <form method="post" class="admin-auth-card">
         <input asp-for="ReturnUrl" type="hidden" />
-        <div class="admin-card-heading">
-            <span class="admin-card-icon">◆</span>
-            <div><small>SECURE ADMIN</small><h2>Đăng nhập quản trị</h2></div>
+        <div class="admin-auth-heading">
+            <span>S</span>
+            <div><small>SECURE ADMIN</small><h2>Đăng nhập quản trị</h2><p>Sử dụng tài khoản có vai trò ADMIN.</p></div>
         </div>
-        <div asp-validation-summary="ModelOnly" class="validation-summary"></div>
-        <label class="server-field">
+        <div asp-validation-summary="ModelOnly" class="admin-auth-validation"></div>
+        <label class="admin-auth-field">
             <span>Email quản trị</span>
             <input asp-for="Input.Email" type="email" autocomplete="username" placeholder="admin@example.com" autofocus />
             <small><span asp-validation-for="Input.Email"></span></small>
         </label>
-        <label class="server-field">
+        <label class="admin-auth-field">
             <span>Mật khẩu</span>
-            <input asp-for="Input.Password" type="password" autocomplete="current-password" placeholder="••••••••••••" />
+            <span class="admin-auth-password account-password-wrap"><input asp-for="Input.Password" type="password" autocomplete="current-password" placeholder="Nhập mật khẩu" /><button class="admin-auth-password-toggle" type="button" data-password-toggle aria-label="Hiện mật khẩu" title="Hiện mật khẩu" aria-pressed="false"><svg class="admin-eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></svg><svg class="admin-eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18M10.6 6.2A10.8 10.8 0 0 1 12 6c6.1 0 9.5 6 9.5 6a17 17 0 0 1-3.1 3.7M6.2 8.1A17.3 17.3 0 0 0 2.5 12S5.9 18 12 18c1.3 0 2.5-.3 3.5-.8M9.8 9.8a3.1 3.1 0 0 0 4.4 4.4" /></svg><span class="admin-sr-only">Hiện mật khẩu</span></button></span>
             <small><span asp-validation-for="Input.Password"></span></small>
         </label>
-        <div class="admin-security-note"><span>✓</span> Phiên quản trị tự hết hạn sau 8 giờ và chỉ hoạt động qua HTTPS.</div>
-        <button class="setup-submit" type="submit"><span>Đăng nhập an toàn</span><span>→</span></button>
-        <a class="setup-back" asp-page="/Index">← Quay lại tổng quan Server</a>
+        <button class="admin-auth-submit" type="submit"><span>Đăng nhập an toàn</span><span>→</span></button>
+        <a class="admin-auth-back" asp-page="/Index">← Quay lại SubVid Server</a>
     </form>
 </section>
+
+@section Scripts { <partial name="_ValidationScriptsPartial" /> }

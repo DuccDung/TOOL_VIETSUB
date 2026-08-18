@@ -1,2 +1,51 @@
 @page
 @model SubVid.Server.Pages.Admin.IndexModel
+@{
+    Layout = "_AdminLayout";
+    ViewData["Title"] = "Tổng quan";
+    var cloudReady = Model.Overview.ActiveCredentials > 0 && Model.Overview.ConfiguredUsers > 0;
+}
+
+<section class="admin-hero admin-dashboard-hero">
+    <div>
+        <span class="admin-kicker">CONTROL CENTER</span>
+        <h1>Chào mừng trở lại, <em>@User.Identity?.Name</em></h1>
+        <p>Theo dõi Cloud API, hạn mức và hoạt động gần đây của SubVid tại một nơi.</p>
+    </div>
+    <div class="admin-cycle-chip"><small>CHU KỲ HIỆN TẠI</small><strong>@Model.Overview.PeriodStartsAtUtc.ToString("dd/MM") — @Model.Overview.PeriodEndsAtUtc.AddDays(-1).ToString("dd/MM/yyyy")</strong></div>
+</section>
+
+<section class="admin-kpi-grid" aria-label="Chỉ số hệ thống">
+    <article class="admin-kpi is-pink"><div class="admin-kpi-icon"><svg class="admin-icon"><use href="#admin-icon-key"></use></svg></div><div><small>KEY HOẠT ĐỘNG</small><strong>@Model.Overview.ActiveCredentials</strong><span>API key sẵn sàng cấp phát</span></div></article>
+    <article class="admin-kpi is-violet"><div class="admin-kpi-icon"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg></div><div><small>USER CÓ QUOTA</small><strong>@Model.Overview.ConfiguredUsers</strong><span>tài khoản dùng Cloud</span></div></article>
+    <article class="admin-kpi is-gold"><div class="admin-kpi-icon"><svg class="admin-icon"><use href="#admin-icon-tokens"></use></svg></div><div><small>TOKEN ĐÃ DÙNG</small><strong>@Model.Overview.UsedTokens.ToString("N0")</strong><span>trong chu kỳ hiện tại</span></div></article>
+    <article class="admin-kpi is-cyan"><div class="admin-kpi-icon"><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg></div><div><small>REQUEST HÔM NAY</small><strong>@Model.Overview.RequestsToday.ToString("N0")</strong><span>@Model.Overview.HeldTokens.ToString("N0") token đang giữ</span></div></article>
+</section>
+
+<section class="admin-dashboard-grid">
+    <article class="admin-glass-card admin-readiness-card">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-cloud"></use></svg></span><div><h2>Cloud readiness</h2><p>Trạng thái sẵn sàng của dịch vụ Cloud</p></div></div><span class="admin-status-pill @(cloudReady ? "is-online" : "is-warning")">@(cloudReady ? "Sẵn sàng" : "Cần thiết lập")</span></header>
+        <div class="admin-readiness-list">
+            <div class="@(Model.Overview.ActiveCredentials > 0 ? "is-complete" : null)"><span>1</span><div><strong>Kho API key</strong><small>@(Model.Overview.ActiveCredentials > 0 ? $"{Model.Overview.ActiveCredentials} key đang hoạt động" : "Chưa có key hoạt động")</small></div><a asp-page="/Admin/Cloud">Quản lý</a></div>
+            <div class="@(Model.Overview.ConfiguredUsers > 0 ? "is-complete" : null)"><span>2</span><div><strong>Quota người dùng</strong><small>@(Model.Overview.ConfiguredUsers > 0 ? $"{Model.Overview.ConfiguredUsers} user đã được cấp" : "Chưa có user được cấp quota")</small></div><a asp-page="/Admin/Cloud">Cấp quota</a></div>
+            <div class="is-complete"><span>3</span><div><strong>Usage ledger</strong><small>Đang ghi nhận request và token sử dụng</small></div><a asp-page="/Admin/Cloud">Xem ledger</a></div>
+        </div>
+    </article>
+
+    <article class="admin-glass-card admin-quick-card">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-plus"></use></svg></span><div><h2>Thao tác nhanh</h2><p>Đi đến công việc thường dùng</p></div></div></header>
+        <div class="admin-quick-actions">
+            <a asp-page="/Admin/Cloud"><span><svg class="admin-icon"><use href="#admin-icon-key"></use></svg></span><div><strong>Thêm API key</strong><small>Kết nối provider mới</small></div><i><svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></i></a>
+            <a asp-page="/Admin/Cloud"><span><svg class="admin-icon"><use href="#admin-icon-tokens"></use></svg></span><div><strong>Cấp token</strong><small>Điều chỉnh quota user</small></div><i><svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></i></a>
+            <a asp-page="/Admin/Subscriptions"><span><svg class="admin-icon"><use href="#admin-icon-plans"></use></svg></span><div><strong>Nâng cấp gói</strong><small>Quản lý subscription</small></div><i><svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></i></a>
+        </div>
+    </article>
+</section>
+
+<section class="admin-glass-card admin-activity-card">
+    <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg></span><div><h2>Hoạt động Cloud gần đây</h2><p>Ledger không lưu prompt hoặc nội dung dịch</p></div></div><a asp-page="/Admin/Cloud">Xem tất cả <svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></a></header>
+    <div class="admin-table-wrap"><table class="admin-modern-table"><thead><tr><th>Thời gian</th><th>Người dùng</th><th>Provider</th><th>Model</th><th>Tổng token</th><th>Request</th></tr></thead><tbody>
+    @if (Model.RecentLedger.Count == 0) { <tr><td colspan="6"><div class="admin-table-empty">Chưa có hoạt động Cloud trong chu kỳ này.</div></td></tr> }
+    @foreach (var item in Model.RecentLedger) { <tr><td>@item.OccurredAtUtc.ToLocalTime().ToString("dd/MM HH:mm")</td><td><strong>@item.UserEmail</strong></td><td><span class="admin-provider-pill">@item.ProviderCode</span></td><td>@item.ModelId</td><td><strong class="admin-gold-text">@item.TotalUnits.ToString("N0")</strong></td><td>@item.ApiRequests API</td></tr> }
+    </tbody></table></div>
+</section>

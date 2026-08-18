@@ -343,12 +343,22 @@ public sealed class AdminCloudService(
         limit.MonthlyLimit = monthlyLlmTokens;
         limit.UpdatedAtUtc = nowUtc;
         limit.UpdatedByUserId = actorAdminId;
-        AddAudit(actorAdminId, "ADMIN_CLOUD_QUOTA_CHANGE", ipAddress, new
+        database.SecurityAuditLogs.Add(new SecurityAuditLog
         {
-            targetUserId = user.UserId,
-            unitCode = CloudUsageUnits.LlmToken,
-            previousLimit,
-            monthlyLlmTokens,
+            UserId = user.UserId,
+            EventCode = "ADMIN_CLOUD_QUOTA_CHANGE",
+            OutcomeCode = "SUCCESS",
+            IpAddress = ipAddress,
+            DeviceId = "WEB_ADMIN",
+            DetailsJson = JsonSerializer.Serialize(new
+            {
+                actorAdminId,
+                targetUserId = user.UserId,
+                unitCode = CloudUsageUnits.LlmToken,
+                previousLimit,
+                monthlyLlmTokens,
+            }),
+            CreatedAtUtc = DateTime.UtcNow,
         });
         await database.SaveChangesAsync(cancellationToken);
         return await FindAccountAsync(user.Email, cancellationToken)

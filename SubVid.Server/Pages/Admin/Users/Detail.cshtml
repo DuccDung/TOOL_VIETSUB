@@ -1,0 +1,321 @@
+@page "/Admin/Users/{id:guid}"
+@model SubVid.Server.Pages.Admin.Users.DetailModel
+@{
+    Layout = "_AdminLayout";
+    ViewData["Title"] = DisplayTitle(Model.Detail);
+    var minutePercent = Model.Detail.MinuteUsage.EffectiveLimit is > 0
+        ? Math.Min(100, (Model.Detail.MinuteUsage.Used + Model.Detail.MinuteUsage.Held) * 100 / Model.Detail.MinuteUsage.EffectiveLimit.Value)
+        : 0;
+    var tokenPercent = Model.Detail.CloudUsage.Limit > 0
+        ? Math.Min(100, (Model.Detail.CloudUsage.Used + Model.Detail.CloudUsage.Held) * 100m / Model.Detail.CloudUsage.Limit)
+        : 0;
+    var activeSessions = Model.Detail.Sessions.Count(item => item.RevokedAtUtc is null && item.ExpiresAtUtc > DateTime.UtcNow);
+    var lastCloudRequest = Model.Detail.CloudLedger.FirstOrDefault();
+    var lastAssignedCredential = lastCloudRequest is null
+        ? null
+        : Model.Detail.AssignedCredentials.FirstOrDefault(item => item.CredentialId == lastCloudRequest.CredentialId);
+}
+
+<nav class="admin-user-breadcrumb" aria-label="Đường dẫn">
+    <a asp-page="/Admin/Users/Index"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg> Người dùng</a><span>/</span><strong>@Model.Detail.User.Email</strong>
+</nav>
+
+@if (!string.IsNullOrWhiteSpace(Model.SuccessMessage))
+{
+    <div class="admin-light-alert is-success" role="status"><span><svg class="admin-icon"><use href="#admin-icon-check"></use></svg></span><div><strong>Đã hoàn tất</strong><p>@Model.SuccessMessage</p></div></div>
+}
+<div asp-validation-summary="ModelOnly" class="admin-light-alert is-error"></div>
+
+<section class="admin-user-profile-hero">
+    <div class="admin-user-profile-main">
+        <span class="admin-user-avatar">@Model.Detail.User.DisplayName[..1].ToUpperInvariant()</span>
+        <div><span class="admin-user-status is-@Model.Detail.User.Status.ToLowerInvariant()">@(Model.Detail.User.Status == "ACTIVE" ? "Đang hoạt động" : Model.Detail.User.Status == "SUSPENDED" ? "Đang tạm khóa" : "Đã vô hiệu hóa")</span><h1>@Model.Detail.User.DisplayName</h1><p>@Model.Detail.User.Email</p></div>
+    </div>
+    <dl class="admin-user-profile-meta">
+        <div><dt>USER ID</dt><dd title="@Model.Detail.User.UserId">@Model.Detail.User.UserId.ToString()[..8]…</dd></div>
+        <div><dt>VAI TRÒ</dt><dd>@Model.Detail.User.Role</dd></div>
+        <div><dt>EMAIL</dt><dd>@(Model.Detail.User.EmailConfirmed ? "Đã xác minh" : "Chưa xác minh")</dd></div>
+        <div><dt>THAM GIA</dt><dd>@Model.Detail.User.CreatedAtUtc.ToLocalTime().ToString("dd/MM/yyyy")</dd></div>
+        <div><dt>ĐĂNG NHẬP CUỐI</dt><dd>@(Model.Detail.User.LastLoginAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "Chưa có")</dd></div>
+    </dl>
+    <div class="admin-user-hero-actions">
+        <a asp-page="/Admin/Subscriptions" asp-route-email="@Model.Detail.User.Email"><svg class="admin-icon"><use href="#admin-icon-plans"></use></svg> Đổi gói</a>
+        <a asp-page="/Admin/Cloud" asp-route-email="@Model.Detail.User.Email"><svg class="admin-icon"><use href="#admin-icon-cloud"></use></svg> Cloud API</a>
+    </div>
+</section>
+
+<nav class="admin-user-tabs" aria-label="Các phần hồ sơ">
+    <a href="#overview">Tổng quan</a><a href="#api-access">API sử dụng</a><a href="#subscriptions">Gói dịch vụ</a><a href="#usage">Mức sử dụng</a><a href="#sessions">Bảo mật</a><a href="#controls">Quản trị</a>
+</nav>
+
+<section id="overview" class="admin-user-metrics">
+    <article class="is-plan"><div><span><svg class="admin-icon"><use href="#admin-icon-plans"></use></svg></span><small>GÓI HIỆN TẠI</small></div><strong>@Model.Detail.CurrentPlan.PlanDisplayName</strong><p>@(Model.Detail.CurrentPlan.EndsAtUtc?.ToLocalTime().ToString("'Hết hạn' dd/MM/yyyy") ?? "Không giới hạn thời hạn")</p></article>
+    <article class="is-minute"><div><span><svg class="admin-icon"><use href="#admin-icon-clock"></use></svg></span><small>QUOTA PHÚT</small></div><strong>@Model.Detail.MinuteUsage.Used.ToString("0.##") <em>/ @(Model.Detail.MinuteUsage.EffectiveLimit?.ToString("0.##") ?? "∞")</em></strong><i><b style="width:@minutePercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></b></i><p>@(Model.Detail.MinuteUsage.Remaining?.ToString("0.##") ?? "Không giới hạn") phút còn lại</p></article>
+    <article class="is-token"><div><span><svg class="admin-icon"><use href="#admin-icon-tokens"></use></svg></span><small>CLOUD TOKEN</small></div><strong>@Model.Detail.CloudUsage.Used.ToString("N0") <em>/ @Model.Detail.CloudUsage.Limit.ToString("N0")</em></strong><i><b style="width:@tokenPercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></b></i><p>@Model.Detail.CloudUsage.Remaining.ToString("N0") token còn lại</p></article>
+    <article class="is-session"><div><span><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg></span><small>PHIÊN HOẠT ĐỘNG</small></div><strong>@activeSessions</strong><p>@Model.Detail.CloudUsage.Requests.ToString("N0") Cloud request tháng này</p></article>
+</section>
+
+<section id="api-access" class="admin-glass-card admin-user-api-card">
+    <header>
+        <div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-key"></use></svg></span><div><h2>API người dùng đang sử dụng</h2><p>Credential thực tế được ghi nhận từ Cloud ledger và các key riêng đang được gán</p></div></div>
+        <button class="admin-api-assign-button" type="button" data-api-modal-open data-provider="openai"><svg class="admin-icon"><use href="#admin-icon-plus"></use></svg>Gán API riêng</button>
+    </header>
+    <div class="admin-user-api-overview">
+        <article class="admin-current-api">
+            <span class="admin-api-label">REQUEST GẦN NHẤT</span>
+            @if (lastCloudRequest is null)
+            {
+                <div class="admin-api-empty"><span><svg class="admin-icon"><use href="#admin-icon-cloud"></use></svg></span><div><strong>Chưa phát sinh request Cloud</strong><p>Chưa thể xác định API đã dùng thực tế cho đến khi người dùng thực hiện một request.</p></div></div>
+            }
+            else
+            {
+                <div class="admin-api-primary">
+                    <span class="provider-mark provider-@lastCloudRequest.ProviderCode">@lastCloudRequest.ProviderCode[..1].ToUpperInvariant()</span>
+                    <div><strong>@lastCloudRequest.CredentialName</strong><small>@lastCloudRequest.ProviderCode · ••••••@lastCloudRequest.KeySuffix</small></div>
+                    <span class="admin-user-status is-@lastCloudRequest.CredentialStatus.ToLowerInvariant()">@(lastCloudRequest.CredentialStatus == "ACTIVE" ? "Đang bật" : "Đã tắt")</span>
+                </div>
+                <dl class="admin-api-facts">
+                    <div><dt>MODEL</dt><dd>@lastCloudRequest.ModelId</dd></div>
+                    <div><dt>LOẠI KEY</dt><dd>@(lastCloudRequest.IsDedicatedCredential ? "Key riêng" : "Key pool")</dd></div>
+                    <div><dt>DÙNG LÚC</dt><dd>@lastCloudRequest.OccurredAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</dd></div>
+                    <div><dt>TOKEN</dt><dd>@lastCloudRequest.TotalUnits.ToString("N0")</dd></div>
+                </dl>
+                @if (lastAssignedCredential is not null)
+                {
+                    <button class="admin-api-edit-link" type="button" data-api-modal-open data-credential-id="@lastAssignedCredential.CredentialId" data-provider="@lastAssignedCredential.ProviderCode" data-name="@lastAssignedCredential.DisplayName" data-priority="@lastAssignedCredential.Priority"><svg class="admin-icon"><use href="#admin-icon-edit"></use></svg>Sửa API này</button>
+                }
+                else
+                {
+                    <button class="admin-api-edit-link" type="button" data-api-modal-open data-provider="@lastCloudRequest.ProviderCode"><svg class="admin-icon"><use href="#admin-icon-plus"></use></svg>Gán key riêng cho @lastCloudRequest.ProviderCode</button>
+                }
+            }
+        </article>
+        <article class="admin-assigned-api-list">
+            <div class="admin-assigned-api-heading"><div><span class="admin-api-label">KEY RIÊNG ĐÃ GÁN</span><strong>@Model.Detail.AssignedCredentials.Count credential</strong></div><p>Key riêng luôn được ưu tiên trước key pool của cùng provider.</p></div>
+            @if (Model.Detail.AssignedCredentials.Count == 0)
+            {
+                <div class="admin-api-empty is-compact"><span><svg class="admin-icon"><use href="#admin-icon-info"></use></svg></span><div><strong>Đang sử dụng cơ chế key pool</strong><p>Khi gửi request, server chọn key pool theo provider, độ ưu tiên và lần cấp gần nhất.</p></div></div>
+            }
+            else
+            {
+                <div class="admin-assigned-api-rows">
+                @foreach (var credential in Model.Detail.AssignedCredentials)
+                {
+                    <div class="admin-assigned-api-row">
+                        <span class="provider-mark provider-@credential.ProviderCode">@credential.ProviderCode[..1].ToUpperInvariant()</span>
+                        <div><strong>@credential.DisplayName</strong><small>@credential.ProviderCode · ••••••@credential.KeySuffix · ưu tiên @credential.Priority</small></div>
+                        <span class="admin-user-status is-@credential.Status.ToLowerInvariant()">@(credential.Status == "ACTIVE" ? "Đang bật" : "Đã tắt")</span>
+                        <button type="button" data-api-modal-open data-credential-id="@credential.CredentialId" data-provider="@credential.ProviderCode" data-name="@credential.DisplayName" data-priority="@credential.Priority" aria-label="Sửa @credential.DisplayName"><svg class="admin-icon"><use href="#admin-icon-edit"></use></svg><span>Sửa</span></button>
+                    </div>
+                }
+                </div>
+            }
+        </article>
+    </div>
+</section>
+
+<section id="subscriptions" class="admin-user-detail-grid">
+    <article class="admin-glass-card admin-user-current-plan">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-plans"></use></svg></span><div><h2>Quyền lợi gói hiện tại</h2><p>Gói có hiệu lực tại thời điểm truy cập</p></div></div><span class="admin-status-pill is-online">@Model.Detail.CurrentPlan.PlanCode</span></header>
+        <div class="admin-user-plan-summary">
+            <div><small>TÊN GÓI</small><strong>@Model.Detail.CurrentPlan.PlanDisplayName</strong></div>
+            <div><small>QUOTA THEO GÓI</small><strong>@(Model.Detail.CurrentPlan.MonthlyQuotaMinutes?.ToString("0.##") ?? "∞") phút/tháng</strong></div>
+            <div><small>VIDEO TỐI ĐA</small><strong>@(Model.Detail.CurrentPlan.MaxVideoMinutes?.ToString("0.##") ?? "Không giới hạn")</strong></div>
+            <div><small>THỜI HẠN</small><strong>@(Model.Detail.CurrentPlan.EndsAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "Không giới hạn")</strong></div>
+        </div>
+        <div class="admin-feature-list">
+            @if (Model.Detail.Features.Count == 0) { <span>Chưa cấu hình danh sách tính năng</span> }
+            @foreach (var feature in Model.Detail.Features) { <span><svg class="admin-icon"><use href="#admin-icon-check"></use></svg>@feature</span> }
+        </div>
+    </article>
+    <article class="admin-glass-card admin-purchase-state">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-info"></use></svg></span><div><h2>Dữ liệu mua hàng</h2><p>Phân biệt quyền sử dụng và giao dịch tài chính</p></div></div></header>
+        <div><strong>Chưa tích hợp đơn hàng/thanh toán</strong><p>Hệ thống hiện chỉ xác nhận lịch sử được cấp hoặc đổi gói. Chưa thể kết luận gói nào đã thanh toán, số tiền hoặc phương thức thanh toán.</p><span>Lịch sử bên dưới là subscription, không phải hóa đơn.</span></div>
+    </article>
+</section>
+
+<section class="admin-glass-card admin-user-history-card">
+    <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-clock"></use></svg></span><div><h2>Lịch sử gói dịch vụ</h2><p>Tối đa 100 thay đổi gần nhất</p></div></div><a asp-page="/Admin/Subscriptions" asp-route-email="@Model.Detail.User.Email">Quản lý gói <svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></a></header>
+    <div class="admin-table-wrap"><table class="admin-modern-table admin-subscription-history"><thead><tr><th>Gói</th><th>Trạng thái</th><th>Bắt đầu</th><th>Kết thúc</th><th>Cập nhật</th></tr></thead><tbody>
+    @if (Model.Detail.Subscriptions.Count == 0) { <tr><td colspan="5"><div class="admin-table-empty">Chưa có lịch sử cấp gói. Tài khoản đang sử dụng gói FREE mặc định.</div></td></tr> }
+    @foreach (var item in Model.Detail.Subscriptions) { <tr><td><strong>@item.PlanDisplayName</strong><small>@item.PlanCode</small></td><td><span class="admin-user-status is-@item.Status.ToLowerInvariant()">@item.Status</span></td><td>@item.StartsAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</td><td>@(item.EndsAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "Không giới hạn")</td><td>@item.UpdatedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</td></tr> }
+    </tbody></table></div>
+</section>
+
+<section id="usage" class="admin-user-usage-grid">
+    <article class="admin-glass-card">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-clock"></use></svg></span><div><h2>Hoạt động quota phút</h2><p>Reservation xử lý video gần đây</p></div></div><span class="admin-count-pill">@Model.Detail.MinuteReservations.Count bản ghi</span></header>
+        <div class="admin-compact-list">
+            @if (Model.Detail.MinuteReservations.Count == 0) { <div class="admin-compact-empty">Chưa có hoạt động quota phút.</div> }
+            @foreach (var item in Model.Detail.MinuteReservations) { <div><span class="admin-list-mark is-minute"><svg class="admin-icon"><use href="#admin-icon-clock"></use></svg></span><div><strong>@item.FeatureCode</strong><small>@item.CreatedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm") · @item.Status</small></div><em>@((item.CommittedMinutes ?? item.EstimatedMinutes).ToString("0.##")) phút</em></div> }
+        </div>
+    </article>
+    <article class="admin-glass-card">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-tokens"></use></svg></span><div><h2>Phân bổ Cloud token</h2><p>Chi tiết token trong chu kỳ hiện tại</p></div></div></header>
+        <dl class="admin-token-breakdown">
+            <div><dt>Input token</dt><dd>@Model.Detail.CloudUsage.Input.ToString("N0")</dd></div><div><dt>Output token</dt><dd>@Model.Detail.CloudUsage.Output.ToString("N0")</dd></div><div><dt>Cached input</dt><dd>@Model.Detail.CloudUsage.CachedInput.ToString("N0")</dd></div><div><dt>Đang giữ</dt><dd>@Model.Detail.CloudUsage.Held.ToString("N0")</dd></div><div><dt>API request</dt><dd>@Model.Detail.CloudUsage.Requests.ToString("N0")</dd></div><div><dt>Retry</dt><dd>@Model.Detail.CloudUsage.Retries.ToString("N0")</dd></div>
+        </dl>
+    </article>
+</section>
+
+<section class="admin-glass-card admin-cloud-history-card">
+    <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-cloud"></use></svg></span><div><h2>Cloud ledger gần đây</h2><p>Không lưu prompt, phụ đề hoặc nội dung dịch</p></div></div><span class="admin-count-pill">@Model.Detail.CloudLedger.Count request</span></header>
+    <div class="admin-table-wrap"><table class="admin-modern-table admin-cloud-history"><thead><tr><th>Thời gian</th><th>Provider / Model</th><th>Thao tác</th><th>Input</th><th>Output</th><th>Tổng token</th><th>Request</th></tr></thead><tbody>
+    @if (Model.Detail.CloudLedger.Count == 0) { <tr><td colspan="7"><div class="admin-table-empty">Người dùng chưa phát sinh Cloud token.</div></td></tr> }
+    @foreach (var item in Model.Detail.CloudLedger) { <tr><td>@item.OccurredAtUtc.ToLocalTime().ToString("dd/MM HH:mm")</td><td><strong>@item.ProviderCode · @item.CredentialName</strong><small>••••••@item.KeySuffix · @item.ModelId</small></td><td>@item.OperationCode</td><td>@item.InputUnits.ToString("N0")</td><td>@item.OutputUnits.ToString("N0")</td><td><strong class="admin-gold-text">@item.TotalUnits.ToString("N0")</strong></td><td>@item.ApiRequests API@(item.RetryRequests > 0 ? $" · {item.RetryRequests} retry" : "")</td></tr> }
+    </tbody></table></div>
+</section>
+
+<section id="sessions" class="admin-user-detail-grid">
+    <article class="admin-glass-card">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg></span><div><h2>Phiên đăng nhập</h2><p>Thiết bị và phiên ứng dụng gần nhất</p></div></div><span class="admin-status-pill @(activeSessions > 0 ? "is-online" : null)">@activeSessions đang hoạt động</span></header>
+        <div class="admin-compact-list admin-session-list">
+            @if (Model.Detail.Sessions.Count == 0) { <div class="admin-compact-empty">Chưa có phiên đăng nhập.</div> }
+            @foreach (var item in Model.Detail.Sessions) { var isActive = item.RevokedAtUtc is null && item.ExpiresAtUtc > DateTime.UtcNow; <div><span class="admin-list-mark @(isActive ? "is-online" : null)"><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg></span><div><strong>@(item.DeviceName ?? "Thiết bị không đặt tên")</strong><small>@(item.IpAddress ?? "Không có IP") · @(item.AppVersion ?? "Không rõ phiên bản") · @item.LastSeenAtUtc.ToLocalTime().ToString("dd/MM HH:mm")</small></div><em class="@(isActive ? "is-active" : null)">@(isActive ? "Hoạt động" : item.RevokedAtUtc is not null ? "Đã thu hồi" : "Hết hạn")</em></div> }
+        </div>
+    </article>
+    <article class="admin-glass-card">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-clock"></use></svg></span><div><h2>Nhật ký bảo mật</h2><p>Sự kiện tài khoản và thao tác quản trị</p></div></div></header>
+        <div class="admin-compact-list admin-audit-list">
+            @if (Model.Detail.Audits.Count == 0) { <div class="admin-compact-empty">Chưa có nhật ký bảo mật.</div> }
+            @foreach (var item in Model.Detail.Audits) { <div><span class="admin-list-mark"><svg class="admin-icon"><use href="#admin-icon-info"></use></svg></span><div><strong>@item.EventCode</strong><small>@item.CreatedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm") · @(item.IpAddress ?? "Không có IP")</small></div><em class="@(item.OutcomeCode == "SUCCESS" ? "is-active" : null)">@item.OutcomeCode</em></div> }
+        </div>
+    </article>
+</section>
+
+<section id="controls" class="admin-user-control-grid">
+    <article class="admin-glass-card">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-clock"></use></svg></span><div><h2>Hạn mức xử lý video</h2><p>Dùng theo gói hoặc cấp quota tùy chỉnh</p></div></div></header>
+        <form method="post" asp-page-handler="SaveMinuteQuota" class="admin-control-form">
+            <input asp-for="Id" type="hidden" />
+            <label><span>Phút mỗi tháng</span><input asp-for="MonthlyQuotaMinutes" type="number" min="0" max="1000000" step="0.01" /><small><span asp-validation-for="MonthlyQuotaMinutes"></span></small></label>
+            <label class="admin-switch-row"><input asp-for="UsePlanMinuteQuota" /><span><i></i></span><div><strong>Dùng hạn mức của gói</strong><small>Xóa quota tùy chỉnh hiện tại.</small></div></label>
+            <button type="submit">Lưu quota phút</button>
+        </form>
+    </article>
+    <article class="admin-glass-card">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-tokens"></use></svg></span><div><h2>Hạn mức Cloud token</h2><p>Đặt 0 để chặn request Cloud mới</p></div></div></header>
+        <form method="post" asp-page-handler="SaveCloudQuota" class="admin-control-form">
+            <input asp-for="Id" type="hidden" />
+            <label><span>LLM token mỗi tháng</span><input asp-for="MonthlyLlmTokens" type="number" min="0" max="1000000000000" step="1000" /><small><span asp-validation-for="MonthlyLlmTokens"></span></small></label>
+            <div class="admin-token-presets"><button type="button" data-token-value="1000000">1M</button><button type="button" data-token-value="5000000">5M</button><button type="button" data-token-value="10000000">10M</button><button type="button" data-token-value="0">Chặn</button></div>
+            <button type="submit">Lưu Cloud token</button>
+        </form>
+    </article>
+    <article class="admin-glass-card admin-danger-card">
+        <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-alert"></use></svg></span><div><h2>Truy cập tài khoản</h2><p>Thao tác bảo mật được ghi audit log</p></div></div></header>
+        <div class="admin-danger-actions">
+            <form id="admin-status-form" method="post" asp-page-handler="SetStatus"><input asp-for="Id" type="hidden" /><input name="statusCode" type="hidden" value="@(Model.Detail.User.Status == "ACTIVE" ? "SUSPENDED" : "ACTIVE")" /><label><span>Lý do thao tác <em>Tùy chọn</em></span><input asp-for="ActionReason" placeholder="Ghi chú nội bộ, tối đa 180 ký tự" /></label><button type="submit" class="@(Model.Detail.User.Status == "ACTIVE" ? "is-danger" : "is-enable")" disabled="@(Model.Detail.User.Role == "ADMIN" ? "disabled" : null)" data-confirm="@(Model.Detail.User.Status == "ACTIVE" ? "Tạm khóa tài khoản và thu hồi toàn bộ phiên đang hoạt động?" : "Mở lại quyền truy cập cho tài khoản này?")"><svg class="admin-icon"><use href="@(Model.Detail.User.Status == "ACTIVE" ? "#admin-icon-alert" : "#admin-icon-check")"></use></svg>@(Model.Detail.User.Status == "ACTIVE" ? "Tạm khóa tài khoản" : "Mở lại tài khoản")</button></form>
+            <form method="post" asp-page-handler="RevokeSessions"><input asp-for="Id" type="hidden" /><button type="submit" class="is-secondary" data-confirm="Thu hồi tất cả phiên đăng nhập của người dùng này?"><svg class="admin-icon"><use href="#admin-icon-logout"></use></svg>Thu hồi mọi phiên</button></form>
+            @if (Model.Detail.User.Role == "ADMIN") { <p>Không thể khóa tài khoản quản trị tại màn hình người dùng.</p> }
+        </div>
+    </article>
+</section>
+
+<dialog class="admin-api-modal" data-api-modal data-modal-auto="@Model.OpenDedicatedApiModal.ToString().ToLowerInvariant()">
+    <div class="admin-api-modal-shell">
+        <header>
+            <div><span><svg class="admin-icon"><use href="#admin-icon-key"></use></svg></span><div><small>PRIVATE API CREDENTIAL</small><h2 data-api-modal-title>Gán API riêng</h2><p>Credential chỉ được cấp cho @Model.Detail.User.Email.</p></div></div>
+            <button type="button" data-api-modal-close aria-label="Đóng modal"><svg class="admin-icon"><use href="#admin-icon-close"></use></svg></button>
+        </header>
+        <form method="post" asp-page-handler="SaveDedicatedApi" class="admin-api-modal-form" autocomplete="off">
+            <input asp-for="Id" type="hidden" />
+            <input asp-for="DedicatedCredentialId" type="hidden" data-api-credential-id />
+            <div asp-validation-summary="ModelOnly" class="admin-modal-validation"></div>
+            <label class="is-wide">
+                <span>Người dùng được gán</span>
+                <span class="admin-api-user-lock"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg><strong>@Model.Detail.User.DisplayName</strong><small>@Model.Detail.User.Email</small><em>Đã khóa</em></span>
+            </label>
+            <label>
+                <span>Nhà cung cấp</span>
+                <select asp-for="DedicatedProviderCode" data-api-provider>
+                    <option value="openai">OpenAI</option>
+                    <option value="groq">Groq</option>
+                    <option value="deepseek">DeepSeek</option>
+                    <option value="gemini">Gemini</option>
+                </select>
+                <small><span asp-validation-for="DedicatedProviderCode"></span></small>
+            </label>
+            <label>
+                <span>Độ ưu tiên</span>
+                <input asp-for="DedicatedPriority" type="number" min="0" max="10000" data-api-priority />
+                <small><span asp-validation-for="DedicatedPriority"></span></small>
+            </label>
+            <label class="is-wide">
+                <span>Tên nhận diện</span>
+                <input asp-for="DedicatedCredentialName" placeholder="Ví dụ: OpenAI riêng của người dùng" data-api-name />
+                <small><span asp-validation-for="DedicatedCredentialName"></span></small>
+            </label>
+            <label class="is-wide">
+                <span>API key <em data-api-key-mode>Bắt buộc khi tạo mới</em></span>
+                <span class="admin-modal-secret">
+                    <input asp-for="DedicatedApiKey" type="password" placeholder="Dán API key tại đây" autocomplete="new-password" data-api-secret />
+                    <button type="button" data-api-secret-toggle aria-label="Hiện API key" aria-pressed="false"><svg class="admin-icon"><use href="#admin-icon-eye"></use></svg></button>
+                </span>
+                <small class="admin-api-secret-note">Key được mã hóa trước khi lưu. Khi sửa, để trống nếu không muốn thay key hiện tại.</small>
+                <small><span asp-validation-for="DedicatedApiKey"></span></small>
+            </label>
+            <div class="admin-api-modal-note is-wide"><svg class="admin-icon"><use href="#admin-icon-info"></use></svg><p>Key riêng được ưu tiên trước key pool của cùng provider. Giá trị bí mật sẽ không hiển thị lại sau khi lưu.</p></div>
+            <footer class="is-wide"><button type="button" data-api-modal-close>Hủy</button><button type="submit"><svg class="admin-icon"><use href="#admin-icon-check"></use></svg><span data-api-submit-text>Gán API cho người dùng</span></button></footer>
+        </form>
+    </div>
+</dialog>
+
+@functions {
+    private static string DisplayTitle(SubVid.Server.Auth.AdminUserDetail detail) => $"{detail.User.DisplayName} · Người dùng";
+}
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+    <script>
+        (() => {
+            const quotaInput = document.querySelector('[name="MonthlyLlmTokens"]');
+            document.querySelectorAll('[data-token-value]').forEach(button => button.addEventListener('click', () => {
+                if (quotaInput) quotaInput.value = button.dataset.tokenValue || '0';
+            }));
+            const usePlan = document.querySelector('[name="UsePlanMinuteQuota"]');
+            const minuteInput = document.querySelector('[name="MonthlyQuotaMinutes"]');
+            const syncMinuteQuota = () => { if (minuteInput && usePlan) minuteInput.disabled = usePlan.checked; };
+            usePlan?.addEventListener('change', syncMinuteQuota); syncMinuteQuota();
+
+            const apiModal = document.querySelector('[data-api-modal]');
+            const credentialId = apiModal?.querySelector('[data-api-credential-id]');
+            const provider = apiModal?.querySelector('[data-api-provider]');
+            const credentialName = apiModal?.querySelector('[data-api-name]');
+            const priority = apiModal?.querySelector('[data-api-priority]');
+            const secret = apiModal?.querySelector('[data-api-secret]');
+            const title = apiModal?.querySelector('[data-api-modal-title]');
+            const submitText = apiModal?.querySelector('[data-api-submit-text]');
+            const keyMode = apiModal?.querySelector('[data-api-key-mode]');
+            const apiUserDisplayName = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.Detail.User.DisplayName));
+            const openApiModal = button => {
+                if (!(apiModal instanceof HTMLDialogElement)) return;
+                const isEditing = Boolean(button?.dataset.credentialId);
+                if (credentialId) credentialId.value = button?.dataset.credentialId || '';
+                if (provider) provider.value = button?.dataset.provider || 'openai';
+                if (credentialName) credentialName.value = button?.dataset.name || `${(button?.dataset.provider || 'OpenAI').toUpperCase()} · ${apiUserDisplayName}`;
+                if (priority) priority.value = button?.dataset.priority || '100';
+                if (secret) { secret.value = ''; secret.type = 'password'; }
+                if (title) title.textContent = isEditing ? 'Chỉnh sửa API riêng' : 'Gán API riêng';
+                if (submitText) submitText.textContent = isEditing ? 'Lưu thay đổi' : 'Gán API cho người dùng';
+                if (keyMode) keyMode.textContent = isEditing ? 'Để trống để giữ key hiện tại' : 'Bắt buộc khi tạo mới';
+                apiModal.showModal();
+            };
+            document.querySelectorAll('[data-api-modal-open]').forEach(button => button.addEventListener('click', () => openApiModal(button)));
+            apiModal?.querySelectorAll('[data-api-modal-close]').forEach(button => button.addEventListener('click', () => apiModal.close()));
+            apiModal?.addEventListener('click', event => {
+                if (event.target !== apiModal) return;
+                const bounds = apiModal.getBoundingClientRect();
+                if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) apiModal.close();
+            });
+            apiModal?.querySelector('[data-api-secret-toggle]')?.addEventListener('click', event => {
+                if (!secret) return;
+                const visible = secret.type === 'text';
+                secret.type = visible ? 'password' : 'text';
+                event.currentTarget.setAttribute('aria-pressed', String(!visible));
+                event.currentTarget.setAttribute('aria-label', visible ? 'Hiện API key' : 'Ẩn API key');
+            });
+            if (apiModal?.dataset.modalAuto === 'true' && apiModal instanceof HTMLDialogElement) apiModal.showModal();
+        })();
+    </script>
+}

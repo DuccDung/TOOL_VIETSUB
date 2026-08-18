@@ -19,18 +19,18 @@
 
 @if (!string.IsNullOrWhiteSpace(Model.SuccessMessage))
 {
-    <div class="admin-light-alert is-success" role="status"><span>✓</span><div><strong>Đã hoàn tất</strong><p>@Model.SuccessMessage</p></div></div>
+    <div class="admin-light-alert is-success" role="status"><span><svg class="admin-icon"><use href="#admin-icon-check"></use></svg></span><div><strong>Đã hoàn tất</strong><p>@Model.SuccessMessage</p></div></div>
 }
 @if (!string.IsNullOrWhiteSpace(Model.ProbeMessage))
 {
-    <div class="admin-light-alert @(Model.ProbeMessageKind == "success" ? "is-success" : "is-error")" role="status"><span>@(Model.ProbeMessageKind == "success" ? "✓" : "!")</span><div><strong>Kiểm tra kết nối</strong><p>@Model.ProbeMessage</p></div></div>
+    <div class="admin-light-alert @(Model.ProbeMessageKind == "success" ? "is-success" : "is-error")" role="status"><span><svg class="admin-icon"><use href="@(Model.ProbeMessageKind == "success" ? "#admin-icon-check" : "#admin-icon-alert")"></use></svg></span><div><strong>Kiểm tra kết nối</strong><p>@Model.ProbeMessage</p></div></div>
 }
 <div asp-validation-summary="ModelOnly" class="admin-light-alert is-error"></div>
 
 @if (Model.Overview.ActiveCredentials == 0 || Model.Overview.ConfiguredUsers == 0)
 {
     <section class="admin-setup-banner" aria-label="Các bước cần hoàn tất">
-        <div><span>!</span><div><strong>Cloud API chưa sẵn sàng</strong><p>Hoàn thành hai bước dưới đây trước khi chạy dịch thật trên App.</p></div></div>
+        <div><span><svg class="admin-icon"><use href="#admin-icon-alert"></use></svg></span><div><strong>Cloud API chưa sẵn sàng</strong><p>Hoàn thành hai bước dưới đây trước khi chạy dịch thật trên App.</p></div></div>
         <ol>
             <li class="@(Model.Overview.ActiveCredentials > 0 ? "is-done" : null)"><span>1</span><div><strong>Thêm API key</strong><small>@(Model.Overview.ActiveCredentials > 0 ? "Đã có key hoạt động" : "Kiểm tra rồi lưu key mới")</small></div></li>
             <li class="@(Model.Overview.ConfiguredUsers > 0 ? "is-done" : null)"><span>2</span><div><strong>Cấp token cho user</strong><small>@(Model.Overview.ConfiguredUsers > 0 ? "Đã có user được cấp" : "Quota mặc định đang bằng 0")</small></div></li>
@@ -39,16 +39,16 @@
 }
 
 <section class="admin-light-stats" aria-label="Tổng quan Cloud API">
-    <article><span class="is-blue">⌁</span><div><small>KEY ĐANG BẬT</small><strong>@Model.Overview.ActiveCredentials</strong><em>key riêng và key pool</em></div></article>
-    <article><span class="is-violet">◎</span><div><small>USER CÓ QUOTA</small><strong>@Model.Overview.ConfiguredUsers</strong><em>hạn mức lớn hơn 0</em></div></article>
-    <article><span class="is-emerald">↗</span><div><small>TOKEN ĐÃ DÙNG</small><strong>@Model.Overview.UsedTokens.ToString("N0")</strong><em>trong chu kỳ hiện tại</em></div></article>
-    <article><span class="is-amber">◷</span><div><small>ĐANG GIỮ CHỖ</small><strong>@Model.Overview.HeldTokens.ToString("N0")</strong><em>@Model.Overview.RequestsToday request hôm nay</em></div></article>
+    <article><span class="is-blue"><svg class="admin-icon"><use href="#admin-icon-key"></use></svg></span><div><small>KEY ĐANG BẬT</small><strong>@Model.Overview.ActiveCredentials</strong><em>key riêng và key pool</em></div></article>
+    <article><span class="is-violet"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg></span><div><small>USER CÓ QUOTA</small><strong>@Model.Overview.ConfiguredUsers</strong><em>hạn mức lớn hơn 0</em></div></article>
+    <article><span class="is-emerald"><svg class="admin-icon"><use href="#admin-icon-tokens"></use></svg></span><div><small>TOKEN ĐÃ DÙNG</small><strong>@Model.Overview.UsedTokens.ToString("N0")</strong><em>trong chu kỳ hiện tại</em></div></article>
+    <article><span class="is-amber"><svg class="admin-icon"><use href="#admin-icon-clock"></use></svg></span><div><small>ĐANG GIỮ CHỖ</small><strong>@Model.Overview.HeldTokens.ToString("N0")</strong><em>@Model.Overview.RequestsToday request hôm nay</em></div></article>
 </section>
 
 <section class="admin-light-grid">
     <article class="admin-light-card admin-key-card">
         <header>
-            <div><span class="admin-card-icon is-blue">⌘</span><div><h2>Kho API key</h2><p>Key riêng được ưu tiên trước key pool; giá trị bí mật không hiển thị lại sau khi lưu.</p></div></div>
+            <div><span class="admin-card-icon is-blue"><svg class="admin-icon"><use href="#admin-icon-key"></use></svg></span><div><h2>Kho API key</h2><p>Key riêng được ưu tiên trước key pool; giá trị bí mật không hiển thị lại sau khi lưu.</p></div></div>
             <span class="admin-count-pill">@Model.Credentials.Count key</span>
         </header>
         <form method="post" asp-page-handler="SaveCredential" class="admin-light-form admin-credential-form" autocomplete="off" data-credential-form>
@@ -91,21 +91,21 @@
                 <small class="admin-field-error"><span asp-validation-for="Priority"></span></small>
             </label>
             <output class="admin-probe-result is-idle is-wide" data-probe-result aria-live="polite">
-                <span>i</span><div><strong>Chưa kiểm tra kết nối</strong><small>Kiểm tra chỉ xác thực key, không tạo nội dung và không dùng token model.</small></div>
+                <span><svg class="admin-icon"><use href="#admin-icon-info"></use></svg></span><div><strong>Chưa kiểm tra kết nối</strong><small>Kiểm tra chỉ xác thực key, không tạo nội dung và không dùng token model.</small></div>
             </output>
             <div class="admin-form-actions is-wide">
                 @if (Model.CredentialId is not null)
                 {
                     <a asp-page="/Admin/Cloud" asp-route-email="@Model.Email">Hủy chỉnh sửa</a>
                 }
-                <button class="admin-secondary-button" type="button" data-credential-probe data-testid="probe-key-button"><span>⌁</span> Kiểm tra key</button>
-                <button type="submit" data-testid="save-key-button">@(Model.CredentialId is null ? "Lưu API key" : "Lưu thay đổi") <span>→</span></button>
+                <button class="admin-secondary-button" type="button" data-credential-probe data-testid="probe-key-button"><svg class="admin-icon"><use href="#admin-icon-refresh"></use></svg><span>Kiểm tra key</span></button>
+                <button type="submit" data-testid="save-key-button"><span>@(Model.CredentialId is null ? "Lưu API key" : "Lưu thay đổi")</span><svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></button>
             </div>
         </form>
         <div class="admin-key-list">
             @if (Model.Credentials.Count == 0)
             {
-                <div class="admin-empty-state"><span>⌘</span><strong>Kho key đang trống</strong><p>Thêm key đầu tiên để App có thể xin quyền dịch Cloud.</p></div>
+                <div class="admin-empty-state"><span><svg class="admin-icon"><use href="#admin-icon-key"></use></svg></span><strong>Kho key đang trống</strong><p>Thêm key đầu tiên để App có thể xin quyền dịch Cloud.</p></div>
             }
             @foreach (var credential in Model.Credentials)
             {
@@ -135,17 +135,17 @@
     </article>
 
     <article class="admin-light-card admin-quota-card">
-        <header><div><span class="admin-card-icon is-violet">◎</span><div><h2>Cấp token theo user</h2><p>Không có cấu hình nghĩa là hạn mức Cloud bằng 0.</p></div></div></header>
+        <header><div><span class="admin-card-icon is-violet"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg></span><div><h2>Cấp token theo user</h2><p>Không có cấu hình nghĩa là hạn mức Cloud bằng 0.</p></div></div></header>
         <form method="post" asp-page-handler="Search" class="admin-user-search" novalidate>
             <label>
                 <span>Email người dùng</span>
-                <span><input asp-for="Email" type="email" placeholder="user@example.com" aria-label="Email người dùng" /><button type="submit">Tìm tài khoản</button></span>
+                <span class="admin-search-combo"><input asp-for="Email" type="email" placeholder="user@example.com" aria-label="Email người dùng" /><button type="submit">Tìm tài khoản</button></span>
                 <small class="admin-field-error"><span asp-validation-for="Email"></span></small>
             </label>
         </form>
         @if (Model.Account is null)
         {
-            <div class="admin-empty-state admin-user-empty"><span>⌕</span><strong>Chưa chọn tài khoản</strong><p>Tìm theo email để xem mức sử dụng và điều chỉnh token.</p></div>
+            <div class="admin-empty-state admin-user-empty"><span><svg class="admin-icon"><use href="#admin-icon-search"></use></svg></span><strong>Chưa chọn tài khoản</strong><p>Tìm theo email để xem mức sử dụng và điều chỉnh token.</p></div>
         }
         else
         {
@@ -154,6 +154,7 @@
                 <div><strong>@Model.Account.DisplayName</strong><small>@Model.Account.Email</small></div>
                 <em>@(Model.Account.Status == "ACTIVE" ? "Đang hoạt động" : Model.Account.Status)</em>
             </div>
+            <a class="admin-account-detail-link" asp-page="/Admin/Users/Detail" asp-route-id="@Model.Account.UserId">Mở hồ sơ người dùng <svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></a>
             <div class="admin-quota-progress">
                 @{ var percent = Model.Account.MonthlyLimit <= 0 ? 0 : Math.Min(100, (Model.Account.UsedUnits + Model.Account.HeldUnits) * 100d / Model.Account.MonthlyLimit); }
                 <div><span>Đã dùng + đang giữ</span><strong>@((Model.Account.UsedUnits + Model.Account.HeldUnits).ToString("N0")) / @Model.Account.MonthlyLimit.ToString("N0")</strong></div>
@@ -164,14 +165,14 @@
                 <input asp-for="Email" type="hidden" />
                 <label><span>Token dịch mỗi tháng</span><input asp-for="MonthlyLlmTokens" type="number" min="0" max="1000000000000" step="1000" /><small class="admin-field-error"><span asp-validation-for="MonthlyLlmTokens"></span></small></label>
                 <div class="admin-quota-presets" aria-label="Mức token gợi ý"><button type="button" data-quota="100000">100K</button><button type="button" data-quota="500000">500K</button><button type="button" data-quota="2000000">2M</button><button type="button" data-quota="10000000">10M</button></div>
-                <button class="admin-primary-button" type="submit">Lưu hạn mức token <span>→</span></button>
+                <button class="admin-primary-button" type="submit"><span>Lưu hạn mức token</span><svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></button>
             </form>
         }
     </article>
 </section>
 
 <section class="admin-light-card admin-ledger-card">
-    <header><div><span class="admin-card-icon is-emerald">≋</span><div><h2>Usage ledger gần đây</h2><p>Mỗi reservation chỉ được chốt một lần; không lưu prompt hoặc kết quả dịch.</p></div></div><span class="admin-count-pill">30 bản ghi gần nhất</span></header>
+    <header><div><span class="admin-card-icon is-emerald"><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg></span><div><h2>Usage ledger gần đây</h2><p>Mỗi reservation chỉ được chốt một lần; không lưu prompt hoặc kết quả dịch.</p></div></div><span class="admin-count-pill">30 bản ghi gần nhất</span></header>
     <div class="admin-table-wrap">
         <table class="admin-ledger-table">
             <thead><tr><th>Thời gian</th><th>Người dùng</th><th>Provider / model</th><th>Credential</th><th>Input</th><th>Output</th><th>Tổng token</th><th>Request</th></tr></thead>
@@ -228,7 +229,7 @@
             provider?.addEventListener('change', () => {
                 if (nameInput && !nameInput.value) nameInput.placeholder = placeholders[provider.value] || 'Key pool chính';
                 probeResult.className = 'admin-probe-result is-idle is-wide';
-                probeResult.innerHTML = '<span>i</span><div><strong>Chưa kiểm tra kết nối</strong><small>Provider đã thay đổi; hãy kiểm tra lại trước khi lưu.</small></div>';
+                probeResult.innerHTML = '<span><svg class="admin-icon"><use href="#admin-icon-info"></use></svg></span><div><strong>Chưa kiểm tra kết nối</strong><small>Provider đã thay đổi; hãy kiểm tra lại trước khi lưu.</small></div>';
             });
 
             toggle?.addEventListener('click', () => {
@@ -242,7 +243,8 @@
 
             const showProbe = (kind, title, detail) => {
                 probeResult.className = `admin-probe-result is-${kind} is-wide`;
-                probeResult.innerHTML = `<span>${kind === 'success' ? '✓' : kind === 'loading' ? '…' : '!'}</span><div><strong></strong><small></small></div>`;
+                const icon = kind === 'success' ? 'admin-icon-check' : kind === 'loading' ? 'admin-icon-refresh' : 'admin-icon-alert';
+                probeResult.innerHTML = `<span><svg class="admin-icon"><use href="#${icon}"></use></svg></span><div><strong></strong><small></small></div>`;
                 probeResult.querySelector('strong').textContent = title;
                 probeResult.querySelector('small').textContent = detail;
             };

@@ -4,44 +4,103 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0b1220" />
+    <meta name="theme-color" content="#260724" />
     <title>@ViewData["Title"] · SubVid Admin</title>
     <link rel="icon" type="image/png" href="~/images/favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
 </head>
-<body class="admin-light-body">
+<body class="admin-light-body admin-app">
+    <svg class="admin-icon-sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+        <symbol id="admin-icon-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+        <symbol id="admin-icon-cloud" viewBox="0 0 24 24"><path d="M7.5 18.5h10a3.5 3.5 0 0 0 .5-6.96A6 6 0 0 0 6.35 10.1 4.25 4.25 0 0 0 7.5 18.5Z"/></symbol>
+        <symbol id="admin-icon-plans" viewBox="0 0 24 24"><path d="M4 6.5 12 3l8 3.5-8 3.5-8-3.5Z"/><path d="m4 11.5 8 3.5 8-3.5M4 16.5l8 3.5 8-3.5"/></symbol>
+        <symbol id="admin-icon-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8m-3 1 3 3m-5-1 3 3"/></symbol>
+        <symbol id="admin-icon-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3.5 20c.6-3.2 2.4-5 5.5-5s4.9 1.8 5.5 5M16 5.5a3 3 0 0 1 0 5.8m2.5 8.7c-.3-1.9-1.2-3.4-2.7-4.3"/></symbol>
+        <symbol id="admin-icon-tokens" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M9 9h5a2 2 0 0 1 0 4H10a2 2 0 0 0 0 4h5m-3-10v10"/></symbol>
+        <symbol id="admin-icon-activity" viewBox="0 0 24 24"><path d="M3 12h4l2-6 4 12 2-6h6"/></symbol>
+        <symbol id="admin-icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></symbol>
+        <symbol id="admin-icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+        <symbol id="admin-icon-arrow-right" viewBox="0 0 24 24"><path d="M5 12h13m-5-5 5 5-5 5"/></symbol>
+        <symbol id="admin-icon-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+        <symbol id="admin-icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+        <symbol id="admin-icon-logout" viewBox="0 0 24 24"><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"/></symbol>
+        <symbol id="admin-icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5"/><path d="m15 15 4.5 4.5"/></symbol>
+        <symbol id="admin-icon-check" viewBox="0 0 24 24"><path d="m5 12 4 4 10-10"/></symbol>
+        <symbol id="admin-icon-alert" viewBox="0 0 24 24"><path d="M12 4 3.8 19h16.4L12 4Z"/><path d="M12 9v4m0 3h.01"/></symbol>
+        <symbol id="admin-icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 11v5m0-8h.01"/></symbol>
+        <symbol id="admin-icon-refresh" viewBox="0 0 24 24"><path d="M19 8V4m0 0h-4m4 0-3 3a7 7 0 1 0 2 8"/></symbol>
+        <symbol id="admin-icon-edit" viewBox="0 0 24 24"><path d="m4 16.5-.8 4.3 4.3-.8L18 9.5 14.5 6 4 16.5Z"/><path d="m13 7.5 3.5 3.5"/></symbol>
+        <symbol id="admin-icon-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+    </svg>
+    <div class="admin-ambient" aria-hidden="true"><i></i><i></i><i></i></div>
     <div class="admin-light-shell">
-        <aside class="admin-light-sidebar">
-            <a class="admin-light-brand" asp-page="/Admin/Cloud">
+        <aside id="admin-sidebar" class="admin-light-sidebar">
+            <div class="admin-sidebar-head">
+            <a class="admin-light-brand" asp-page="/Admin/Index">
                 <img src="~/images/subvid-icon.png" alt="" />
-                <span><strong>SubVid</strong><small>CONTROL CENTER</small></span>
+                <span><strong>SubVid</strong><small>ADMIN STUDIO</small></span>
             </a>
+            <button class="admin-menu-close" type="button" data-admin-menu-close aria-label="Đóng menu"><svg class="admin-icon"><use href="#admin-icon-close"></use></svg></button>
+            </div>
             <nav class="admin-light-nav" aria-label="Điều hướng quản trị">
+                <a asp-page="/Admin/Index" class="@(Context.Request.Path.Equals("/Admin", StringComparison.OrdinalIgnoreCase) || Context.Request.Path.Equals("/Admin/Index", StringComparison.OrdinalIgnoreCase) ? "is-active" : null)">
+                    <span class="admin-nav-icon"><svg class="admin-icon"><use href="#admin-icon-dashboard"></use></svg></span><span><strong>Tổng quan</strong><small>Hiệu suất hệ thống</small></span>
+                </a>
+                <a asp-page="/Admin/Users/Index" class="@(Context.Request.Path.StartsWithSegments("/Admin/Users") ? "is-active" : null)">
+                    <span class="admin-nav-icon"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg></span><span><strong>Người dùng</strong><small>Tài khoản, gói và mức dùng</small></span>
+                </a>
                 <a asp-page="/Admin/Cloud" class="@(Context.Request.Path.StartsWithSegments("/Admin/Cloud") ? "is-active" : null)">
-                    <span>◫</span><span><strong>Cloud API</strong><small>Key, token và ledger</small></span>
+                    <span class="admin-nav-icon"><svg class="admin-icon"><use href="#admin-icon-cloud"></use></svg></span><span><strong>Cloud API</strong><small>Key, token và ledger</small></span>
                 </a>
                 <a asp-page="/Admin/Subscriptions" class="@(Context.Request.Path.StartsWithSegments("/Admin/Subscriptions") ? "is-active" : null)">
-                    <span>◇</span><span><strong>Gói thuê</strong><small>Tài khoản và thời hạn</small></span>
+                    <span class="admin-nav-icon"><svg class="admin-icon"><use href="#admin-icon-plans"></use></svg></span><span><strong>Gói thuê</strong><small>Tài khoản và thời hạn</small></span>
                 </a>
             </nav>
             <div class="admin-light-sidebar-note">
                 <span>LOCAL-FIRST</span>
-                <p>Server chỉ cấp quyền và đo hạn mức. Nội dung Cloud không đi qua máy chủ.</p>
+                <p>Nội dung video được xử lý tại máy người dùng. Server chỉ quản lý quyền và hạn mức.</p>
             </div>
         </aside>
         <div class="admin-light-main">
             <header class="admin-light-topbar">
-                <div><span class="admin-live-dot"></span><span>Server đang hoạt động</span></div>
+                <div class="admin-topbar-start">
+                    <button class="admin-menu-open" type="button" data-admin-menu-open aria-label="Mở menu" aria-expanded="false" aria-controls="admin-sidebar"><svg class="admin-icon"><use href="#admin-icon-menu"></use></svg></button>
+                    <span class="admin-live-dot"></span><span>Hệ thống trực tuyến</span>
+                </div>
                 <div class="admin-light-user">
                     <span>@((User.Identity?.Name ?? "A")[..1].ToUpperInvariant())</span>
                     <div><strong>@User.Identity?.Name</strong><small>Quản trị viên</small></div>
-                    <form method="post" asp-page="/Admin/Logout"><button type="submit">Đăng xuất</button></form>
+                    <form method="post" asp-page="/Admin/Logout"><button type="submit"><svg class="admin-icon" aria-hidden="true"><use href="#admin-icon-logout"></use></svg><span>Đăng xuất</span></button></form>
                 </div>
             </header>
             <main class="admin-light-content">@RenderBody()</main>
         </div>
     </div>
+    <button class="admin-menu-backdrop" type="button" data-admin-menu-close aria-label="Đóng menu"></button>
     <script src="~/js/site.js" asp-append-version="true"></script>
+    <script>
+        (() => {
+            const body = document.body;
+            const menuOpen = document.querySelector('[data-admin-menu-open]');
+            const setMenuVisible = (visible) => {
+                body.classList.toggle('admin-menu-visible', visible);
+                menuOpen?.setAttribute('aria-expanded', String(visible));
+                if (!visible) menuOpen?.focus({ preventScroll: true });
+            };
+            menuOpen?.addEventListener('click', () => setMenuVisible(true));
+            document.querySelectorAll('[data-admin-menu-close]').forEach(button => button.addEventListener('click', () => setMenuVisible(false)));
+            document.querySelectorAll('.admin-light-nav a').forEach(link => link.addEventListener('click', () => setMenuVisible(false)));
+            document.addEventListener('keydown', event => { if (event.key === 'Escape') setMenuVisible(false); });
+            window.addEventListener('resize', () => { if (window.innerWidth > 1023) setMenuVisible(false); });
+            document.querySelectorAll('.admin-app form').forEach(form => form.addEventListener('submit', () => {
+                const submit = form.querySelector('button[type="submit"]');
+                if (submit) { submit.classList.add('is-loading'); submit.setAttribute('aria-busy', 'true'); }
+            }));
+        })();
+    </script>
     @await RenderSectionAsync("Scripts", required: false)
 </body>
 </html>

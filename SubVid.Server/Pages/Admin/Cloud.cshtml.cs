@@ -292,6 +292,10 @@ public sealed class CloudModel(AdminCloudService cloudService) : PageModel
             else
             {
                 MonthlyLlmTokens = Account.MonthlyLimit;
+                if (loadEditCredential && EditCredentialId is null && string.IsNullOrWhiteSpace(AssignedEmail))
+                {
+                    AssignedEmail = Account.Email;
+                }
             }
         }
 

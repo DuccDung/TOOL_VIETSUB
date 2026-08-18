@@ -11,22 +11,22 @@
         <h1>Nâng cấp tài khoản người dùng</h1>
         <p>Tìm đúng người dùng bằng email, kiểm tra gói hiện tại rồi kích hoạt quyền mới.</p>
     </div>
-    <div class="admin-session-chip"><span>●</span><div><small>ĐANG ĐĂNG NHẬP</small><strong>@User.Identity?.Name</strong></div></div>
+    <div class="admin-session-chip"><span class="admin-status-dot" aria-hidden="true"></span><div><small>ĐANG ĐĂNG NHẬP</small><strong>@User.Identity?.Name</strong></div></div>
 </section>
 
 @if (!string.IsNullOrWhiteSpace(Model.SuccessMessage))
 {
-    <div class="server-notice success-notice">✓ @Model.SuccessMessage</div>
+    <div class="server-notice success-notice"><svg class="admin-icon" aria-hidden="true"><use href="#admin-icon-check"></use></svg><span>@Model.SuccessMessage</span></div>
 }
 
 <section class="admin-subscription-grid">
     <div class="admin-search-column">
         <form method="post" asp-page-handler="Search" class="admin-panel admin-search-card">
-            <header><div><span>⌕</span><strong>Tìm tài khoản</strong></div><small>BƯỚC 1</small></header>
+            <header><div><span><svg class="admin-icon"><use href="#admin-icon-search"></use></svg></span><strong>Tìm tài khoản</strong></div><small>BƯỚC 1</small></header>
             <div class="admin-panel-body">
                 <label class="server-field">
                     <span>Email người dùng</span>
-                    <span class="admin-input-action">
+                    <span class="admin-input-action admin-search-combo">
                         <input asp-for="Email" type="email" autocomplete="off" placeholder="user@example.com" autofocus />
                         <button type="submit">Kiểm tra</button>
                     </span>
@@ -39,12 +39,13 @@
         @if (Model.Account is not null)
         {
             <article class="admin-panel account-result-card">
-                <header><div><span>◎</span><strong>Tài khoản đã tìm thấy</strong></div><small>@Model.Account.Status</small></header>
+                <header><div><span><svg class="admin-icon"><use href="#admin-icon-users"></use></svg></span><strong>Tài khoản đã tìm thấy</strong></div><small>@Model.Account.Status</small></header>
                 <div class="account-result-profile">
                     <span>@Model.Account.DisplayName.Substring(0, 1).ToUpperInvariant()</span>
                     <div><strong>@Model.Account.DisplayName</strong><small>@Model.Account.Email</small></div>
                     <em>@Model.Account.Role</em>
                 </div>
+                <a class="admin-account-detail-link" asp-page="/Admin/Users/Detail" asp-route-id="@Model.Account.UserId">Mở hồ sơ người dùng <svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></a>
                 <dl class="account-result-details">
                     <div><dt>Gói hiện tại</dt><dd class="is-plan">@Model.Account.PlanDisplayName</dd></div>
                     <div><dt>Hạn mức tháng</dt><dd>@(Model.Account.EffectiveMonthlyQuotaMinutes?.ToString("0.##") ?? "Không giới hạn") phút</dd></div>
@@ -59,9 +60,9 @@
         }
     </div>
 
-    <form method="post" asp-page-handler="Upgrade" class="admin-panel upgrade-card @(Model.Account is null ? "is-disabled" : "")">
+    <form method="post" asp-page-handler="Upgrade" class="admin-panel upgrade-card @(Model.Account is null ? "is-disabled" : "")" data-upgrade-form>
         <input asp-for="Email" type="hidden" />
-        <header><div><span>◇</span><strong>Kích hoạt gói mới</strong></div><small>BƯỚC 2</small></header>
+        <header><div><span><svg class="admin-icon"><use href="#admin-icon-plans"></use></svg></span><strong>Kích hoạt gói mới</strong></div><small>BƯỚC 2</small></header>
         <div asp-validation-summary="ModelOnly" class="validation-summary admin-validation"></div>
         <fieldset disabled="@(Model.Account is null ? "disabled" : null)">
             <div class="plan-choice-grid">
@@ -69,7 +70,7 @@
                 {
                     <label class="plan-choice @(Model.PlanCode == plan.Code ? "is-current" : "")">
                         <input asp-for="PlanCode" type="radio" value="@plan.Code" />
-                        <span class="plan-choice-check">✓</span>
+                        <span class="plan-choice-check"><svg class="admin-icon"><use href="#admin-icon-check"></use></svg></span>
                         <span class="plan-choice-code">@plan.Code</span>
                         <strong>@plan.DisplayName</strong>
                         <small>@plan.Description</small>
@@ -80,25 +81,42 @@
             <span asp-validation-for="PlanCode" class="field-validation-error"></span>
 
             <div class="duration-settings">
-                <label class="server-field">
+                <label class="server-field" data-duration-field>
                     <span>Thời hạn sử dụng</span>
                     <span class="duration-input"><input asp-for="DurationDays" type="number" min="1" max="3650" /><em>ngày</em></span>
                     <small><span asp-validation-for="DurationDays"></span></small>
                 </label>
                 <label class="admin-checkbox">
-                    <input asp-for="NoExpiry" />
+                    <input asp-for="NoExpiry" data-no-expiry />
                     <span><i></i></span>
                     <div><strong>Không giới hạn thời hạn</strong><small>Subscription tiếp tục hoạt động cho đến khi quản trị viên thay đổi.</small></div>
                 </label>
             </div>
 
             <div class="upgrade-confirmation">
-                <span>!</span>
+                <span><svg class="admin-icon"><use href="#admin-icon-alert"></use></svg></span>
                 <p>Gói đang hoạt động sẽ được đóng và gói mới có hiệu lực ngay. Thao tác được lưu vào nhật ký bảo mật.</p>
             </div>
-            <button class="admin-upgrade-submit" type="submit" disabled="@(Model.Account is null ? "disabled" : null)">
-                <span>◆</span><strong>Xác nhận nâng cấp</strong><span>→</span>
+            <button class="admin-upgrade-submit" type="submit" disabled="@(Model.Account is null ? "disabled" : null)" data-confirm="Xác nhận đóng gói hiện tại và kích hoạt gói mới ngay bây giờ?">
+                <span><svg class="admin-icon"><use href="#admin-icon-plans"></use></svg></span><strong>Xác nhận nâng cấp</strong><span><svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></span>
             </button>
         </fieldset>
     </form>
 </section>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+    <script>
+        (() => {
+            const noExpiry = document.querySelector('[data-no-expiry]');
+            const duration = document.querySelector('[data-duration-field] input');
+            const syncDuration = () => { if (duration && noExpiry) { duration.disabled = noExpiry.checked; duration.closest('[data-duration-field]')?.classList.toggle('is-muted', noExpiry.checked); } };
+            noExpiry?.addEventListener('change', syncDuration); syncDuration();
+            document.querySelector('[data-upgrade-form]')?.addEventListener('submit', event => {
+                const button = event.submitter;
+                const message = button?.getAttribute('data-confirm');
+                if (message && !window.confirm(message)) event.preventDefault();
+            });
+        })();
+    </script>
+}

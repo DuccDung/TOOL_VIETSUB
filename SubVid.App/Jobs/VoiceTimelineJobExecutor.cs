@@ -12,14 +12,14 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
     private readonly ProjectWorkspaceService _workspace;
     private readonly ProjectManifest _project;
     private readonly string _ffmpegPath;
-    private readonly FfmpegProgressRunner _runner;
+    private readonly IFfmpegProgressRunner _runner;
 
     public VoiceTimelineJobExecutor(
         AppPaths paths,
         ProjectWorkspaceService workspace,
         ProjectManifest project,
         string? ffmpegPath = null,
-        FfmpegProgressRunner? runner = null)
+        IFfmpegProgressRunner? runner = null)
     {
         _paths = paths;
         _workspace = workspace;
@@ -58,6 +58,7 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
                 retryable: false);
         }
 
+        var projectDirectory = _paths.GetProjectDirectory(_project.ProjectId);
         var arguments = new List<string> { "-y", "-v", "error" };
         var filters = new List<string>(inputs.Length + 1);
         for (var index = 0; index < inputs.Length; index++)
@@ -84,7 +85,10 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
                     "Ná»™i dung file giá»ng Viá»‡t Ä‘Ã£ bá»‹ thay Ä‘á»•i.");
             }
 
-            arguments.AddRange(["-i", path]);
+            // ProcessStartInfo.ArgumentList is flattened into one command line on Windows.
+            // Keeping every generated input relative prevents large projects from exceeding
+            // the 32,767-character CreateProcess limit.
+            arguments.AddRange(["-i", Path.GetRelativePath(projectDirectory, path)]);
             var targetDuration = Math.Max(0.1, (input.Cue.EndMilliseconds - input.Cue.StartMilliseconds) / 1000d);
             var sourceDuration = Math.Max(0.01, input.Media.Metadata.DurationSeconds);
             var tempo = BuildAtempo(sourceDuration / targetDuration);
@@ -98,20 +102,22 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
         var projectDuration = Math.Max(0.1, source.Metadata.DurationSeconds);
         filters.Add(FormattableString.Invariant(
             $"{labels}amix=inputs={inputs.Length}:duration=longest:normalize=0,alimiter=limit=0.95,apad,atrim=0:{projectDuration:0.######}[voice]") );
-        var filterScript = _paths.GetProjectPath(_project.ProjectId, "temp", $"voice-filter-{job.JobId:N}.txt");
-        var partialPath = _paths.GetProjectPath(_project.ProjectId, "temp", $"voice-timeline-{job.JobId:N}.partial.wav");
+        var relativeFilterScript = Path.Combine("temp", $"voice-filter-{job.JobId:N}.txt");
+        var relativePartialPath = Path.Combine("temp", $"voice-timeline-{job.JobId:N}.partial.wav");
+        var filterScript = _paths.GetProjectPath(_project.ProjectId, relativeFilterScript);
+        var partialPath = _paths.GetProjectPath(_project.ProjectId, relativePartialPath);
         var relativeOutput = Path.Combine("voice", "voice-timeline.wav");
         var outputPath = _paths.GetProjectPath(_project.ProjectId, relativeOutput);
         try
         {
             await File.WriteAllTextAsync(filterScript, string.Join(";", filters), cancellationToken);
             arguments.AddRange([
-                "-/filter_complex", filterScript,
+                "-/filter_complex", relativeFilterScript,
                 "-map", "[voice]",
                 "-ar", "48000",
                 "-ac", "2",
                 "-c:a", "pcm_s16le",
-                partialPath,
+                relativePartialPath,
             ]);
             await reportProgress(new JobProgressUpdate("SYNC_VOICE", 0, 0, "Đang khớp giọng Việt với timeline."));
             await _runner.RunAsync(
@@ -119,7 +125,8 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
                 arguments,
                 projectDuration,
                 progress => reportProgress(new JobProgressUpdate("SYNC_VOICE", progress, progress)),
-                cancellationToken);
+                cancellationToken,
+                workingDirectory: projectDirectory);
             _ = WaveFileMetadata.Read(partialPath);
             File.Move(partialPath, outputPath, overwrite: true);
             var file = new FileInfo(outputPath);

@@ -1,0 +1,111 @@
+@page
+@model SubVid.Server.Pages.Admin.Users.IndexModel
+@{
+    Layout = "_AdminLayout";
+    ViewData["Title"] = "Quản lý người dùng";
+    var firstResult = Model.Result.TotalCount == 0 ? 0 : (Model.Result.Page - 1) * Model.Result.PageSize + 1;
+    var lastResult = Math.Min(Model.Result.TotalCount, Model.Result.Page * Model.Result.PageSize);
+}
+
+<section class="admin-light-heading admin-users-heading">
+    <div>
+        <span>USER CONTROL CENTER</span>
+        <h1>Hiểu rõ từng người dùng.</h1>
+        <p>Theo dõi tài khoản, gói đang dùng, hạn mức phút, Cloud token và phiên đăng nhập trong một luồng quản trị thống nhất.</p>
+    </div>
+    <div class="admin-light-period">
+        <small>CHU KỲ SỬ DỤNG</small>
+        <strong>@Model.Result.PeriodStartsAtUtc.ToString("dd/MM") — @Model.Result.PeriodEndsAtUtc.AddDays(-1).ToString("dd/MM/yyyy")</strong>
+    </div>
+</section>
+
+<section class="admin-light-stats" aria-label="Tổng quan người dùng">
+    <article><span class="is-violet"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg></span><div><small>TỔNG TÀI KHOẢN</small><strong>@Model.Result.Overview.Total.ToString("N0")</strong><em>không tính tài khoản đã xóa</em></div></article>
+    <article><span class="is-emerald"><svg class="admin-icon"><use href="#admin-icon-check"></use></svg></span><div><small>ĐANG HOẠT ĐỘNG</small><strong>@Model.Result.Overview.Active.ToString("N0")</strong><em>có thể đăng nhập và sử dụng</em></div></article>
+    <article><span class="is-amber"><svg class="admin-icon"><use href="#admin-icon-alert"></use></svg></span><div><small>TẠM KHÓA</small><strong>@Model.Result.Overview.Suspended.ToString("N0")</strong><em>đã chặn truy cập hệ thống</em></div></article>
+    <article><span class="is-blue"><svg class="admin-icon"><use href="#admin-icon-plus"></use></svg></span><div><small>MỚI TRONG THÁNG</small><strong>@Model.Result.Overview.NewThisMonth.ToString("N0")</strong><em>tài khoản vừa đăng ký</em></div></article>
+</section>
+
+<section class="admin-glass-card admin-user-directory">
+    <header>
+        <div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg></span><div><h2>Danh sách người dùng</h2><p>Tìm kiếm và lọc trực tiếp trên dữ liệu server</p></div></div>
+        <span class="admin-count-pill">@Model.Result.TotalCount.ToString("N0") tài khoản</span>
+    </header>
+
+    <form method="get" class="admin-user-filters">
+        <label class="is-search">
+            <span>Tìm người dùng</span>
+            <span class="admin-filter-search"><svg class="admin-icon"><use href="#admin-icon-search"></use></svg><input asp-for="Search" placeholder="Email hoặc tên hiển thị" /></span>
+        </label>
+        <label>
+            <span>Trạng thái</span>
+            <select asp-for="Status">
+                <option value="">Tất cả trạng thái</option>
+                <option value="ACTIVE">Đang hoạt động</option>
+                <option value="SUSPENDED">Tạm khóa</option>
+                <option value="DISABLED">Đã vô hiệu hóa</option>
+            </select>
+        </label>
+        <label>
+            <span>Gói hiện tại</span>
+            <select asp-for="PlanCode">
+                <option value="">Tất cả gói</option>
+                @foreach (var plan in Model.Result.Plans)
+                {
+                    <option value="@plan.Code">@plan.DisplayName</option>
+                }
+            </select>
+        </label>
+        <label>
+            <span>Sắp xếp</span>
+            <select asp-for="Sort">
+                <option value="newest">Mới đăng ký</option>
+                <option value="oldest">Cũ nhất</option>
+                <option value="last-login">Đăng nhập gần nhất</option>
+                <option value="token">Token dùng nhiều nhất</option>
+                <option value="minutes">Phút dùng nhiều nhất</option>
+                <option value="name">Tên A–Z</option>
+            </select>
+        </label>
+        <input asp-for="PageSize" type="hidden" />
+        <div class="admin-filter-actions">
+            <a asp-page="/Admin/Users/Index">Đặt lại</a>
+            <button type="submit"><svg class="admin-icon"><use href="#admin-icon-search"></use></svg><span>Áp dụng</span></button>
+        </div>
+    </form>
+
+    <div class="admin-user-table-wrap">
+        <table class="admin-user-table">
+            <thead><tr><th>Người dùng</th><th>Trạng thái</th><th>Gói hiện tại</th><th>Quota phút</th><th>Cloud token</th><th>Đăng nhập</th><th></th></tr></thead>
+            <tbody>
+            @if (Model.Result.Items.Count == 0)
+            {
+                <tr><td colspan="7"><div class="admin-users-empty"><svg class="admin-icon"><use href="#admin-icon-search"></use></svg><strong>Không tìm thấy người dùng</strong><span>Thử thay đổi từ khóa hoặc bộ lọc.</span></div></td></tr>
+            }
+            @foreach (var item in Model.Result.Items)
+            {
+                var minutePercent = item.MinuteLimit is > 0 ? Math.Min(100, (item.UsedMinutes + item.HeldMinutes) / item.MinuteLimit.Value * 100) : 0;
+                var tokenPercent = item.TokenLimit > 0 ? Math.Min(100, (item.UsedTokens + item.HeldTokens) * 100m / item.TokenLimit) : 0;
+                <tr>
+                    <td><a class="admin-user-identity" asp-page="/Admin/Users/Detail" asp-route-id="@item.User.UserId"><span>@item.User.DisplayName[..1].ToUpperInvariant()</span><div><strong>@item.User.DisplayName</strong><small>@item.User.Email</small></div></a></td>
+                    <td><div class="admin-user-state"><span class="admin-user-status is-@item.User.Status.ToLowerInvariant()">@(item.User.Status == "ACTIVE" ? "Hoạt động" : item.User.Status == "SUSPENDED" ? "Tạm khóa" : "Vô hiệu")</span><small>@(item.User.EmailConfirmed ? "Đã xác minh email" : "Chưa xác minh email")</small></div></td>
+                    <td><div class="admin-user-plan"><strong>@item.PlanDisplayName</strong><small>@(item.PlanEndsAtUtc?.ToLocalTime().ToString("dd/MM/yyyy") ?? "Không hết hạn")</small></div></td>
+                    <td><div class="admin-usage-cell"><span><strong>@item.UsedMinutes.ToString("0.##")</strong> / @(item.MinuteLimit?.ToString("0.##") ?? "∞") phút</span><i><b style="width:@minutePercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></b></i><small>@item.HeldMinutes.ToString("0.##") phút đang giữ</small></div></td>
+                    <td><div class="admin-usage-cell"><span><strong>@item.UsedTokens.ToString("N0")</strong> / @item.TokenLimit.ToString("N0")</span><i><b style="width:@tokenPercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)%"></b></i><small>@item.RemainingTokens.ToString("N0") token còn lại</small></div></td>
+                    <td><div class="admin-user-login"><strong>@(item.User.LastLoginAtUtc?.ToLocalTime().ToString("dd/MM HH:mm") ?? "Chưa đăng nhập")</strong><small>@item.ActiveSessions phiên hoạt động</small></div></td>
+                    <td><a class="admin-user-open" asp-page="/Admin/Users/Detail" asp-route-id="@item.User.UserId" aria-label="Mở hồ sơ @item.User.DisplayName"><svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></a></td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+
+    <footer class="admin-user-pagination">
+        <span>Hiển thị @firstResult–@lastResult trong @Model.Result.TotalCount.ToString("N0") tài khoản</span>
+        <div>
+            <a class="@(Model.Result.Page <= 1 ? "is-disabled" : null)" asp-page="/Admin/Users/Index" asp-route-search="@Model.Search" asp-route-status="@Model.Status" asp-route-planCode="@Model.PlanCode" asp-route-sort="@Model.Sort" asp-route-pageSize="@Model.PageSize" asp-route-pageNumber="@(Model.Result.Page - 1)">Trước</a>
+            <strong>Trang @Model.Result.Page / @Model.Result.TotalPages</strong>
+            <a class="@(Model.Result.Page >= Model.Result.TotalPages ? "is-disabled" : null)" asp-page="/Admin/Users/Index" asp-route-search="@Model.Search" asp-route-status="@Model.Status" asp-route-planCode="@Model.PlanCode" asp-route-sort="@Model.Sort" asp-route-pageSize="@Model.PageSize" asp-route-pageNumber="@(Model.Result.Page + 1)">Sau</a>
+        </div>
+    </footer>
+</section>
