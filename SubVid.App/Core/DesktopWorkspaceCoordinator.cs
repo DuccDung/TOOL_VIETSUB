@@ -283,7 +283,8 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             throw new InvalidOperationException("Vùng xóa phụ đề phải nằm hoàn toàn bên trong khung hình.");
         }
 
-        if (regions.Count is < 1 or > MaxSubtitleRemovalRegions
+        if (regions.Count > MaxSubtitleRemovalRegions
+            || (enabled && regions.Count == 0)
             || regions.Any(region => !IsValidSubtitleRegion(
                 region.X,
                 region.Y,
@@ -319,13 +320,16 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             });
         }
 
-        var primaryRegion = normalizedRegions[0];
         manifest.Settings.RemoveOriginalSubtitles = enabled;
         manifest.Settings.OriginalSubtitleRemovalMode = normalizedMode;
-        manifest.Settings.OriginalSubtitleRegionX = primaryRegion.X;
-        manifest.Settings.OriginalSubtitleRegionY = primaryRegion.Y;
-        manifest.Settings.OriginalSubtitleRegionWidth = primaryRegion.Width;
-        manifest.Settings.OriginalSubtitleRegionHeight = primaryRegion.Height;
+        if (normalizedRegions.Count > 0)
+        {
+            var primaryRegion = normalizedRegions[0];
+            manifest.Settings.OriginalSubtitleRegionX = primaryRegion.X;
+            manifest.Settings.OriginalSubtitleRegionY = primaryRegion.Y;
+            manifest.Settings.OriginalSubtitleRegionWidth = primaryRegion.Width;
+            manifest.Settings.OriginalSubtitleRegionHeight = primaryRegion.Height;
+        }
         manifest.Settings.OriginalSubtitleRemovalRegions = normalizedRegions;
         await _session!.FlushAsync(cancellationToken);
         return Map(manifest);
@@ -345,7 +349,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         }
 
         settings.OriginalSubtitleRemovalRegions ??= [];
-        if (settings.OriginalSubtitleRemovalRegions.Count == 0)
+        if (settings.RemoveOriginalSubtitles && settings.OriginalSubtitleRemovalRegions.Count == 0)
         {
             settings.OriginalSubtitleRemovalRegions.Add(new SubtitleRemovalRegionSettings
             {
@@ -373,11 +377,14 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             }
         }
 
-        var primaryRegion = settings.OriginalSubtitleRemovalRegions[0];
-        settings.OriginalSubtitleRegionX = primaryRegion.X;
-        settings.OriginalSubtitleRegionY = primaryRegion.Y;
-        settings.OriginalSubtitleRegionWidth = primaryRegion.Width;
-        settings.OriginalSubtitleRegionHeight = primaryRegion.Height;
+        if (settings.OriginalSubtitleRemovalRegions.Count > 0)
+        {
+            var primaryRegion = settings.OriginalSubtitleRemovalRegions[0];
+            settings.OriginalSubtitleRegionX = primaryRegion.X;
+            settings.OriginalSubtitleRegionY = primaryRegion.Y;
+            settings.OriginalSubtitleRegionWidth = primaryRegion.Width;
+            settings.OriginalSubtitleRegionHeight = primaryRegion.Height;
+        }
 
         settings.FlipHorizontal = flipHorizontal;
         settings.FlipVertical = flipVertical;
@@ -671,6 +678,11 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         if (settings.OriginalSubtitleRemovalRegions is { Count: > 0 })
         {
             return settings.OriginalSubtitleRemovalRegions;
+        }
+
+        if (!settings.RemoveOriginalSubtitles)
+        {
+            return [];
         }
 
         return
@@ -2055,7 +2067,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             voicePlaybackUrl,
             voiceTimeline?.IsStale ?? false,
             subtitleCues,
-            manifest.Jobs);
+            DesktopJobHistorySelector.Select(manifest.Jobs));
     }
 
     private static DesktopVoiceBoundary CreateDesktopVoiceBoundary(

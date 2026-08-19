@@ -45,7 +45,19 @@ public sealed class ProjectManifest
 
     public List<LocalMediaReference> AudioTracks { get; set; } = [];
 
+    [JsonIgnore]
     public List<SubtitleDocument> SubtitleTracks { get; set; } = [];
+
+    // Subtitle data is persisted in project.db. This write-only compatibility
+    // bridge lets schema-v1 manifests migrate their embedded subtitleTracks on
+    // first open without continuing to rewrite thousands of cues in project.json.
+    [JsonPropertyName("subtitleTracks")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<SubtitleDocument>? LegacySubtitleTracks
+    {
+        get => null;
+        set => SubtitleTracks = value ?? [];
+    }
 
     public List<VoicePhraseBoundaryOverride> VoicePhraseBoundaries { get; set; } = [];
 

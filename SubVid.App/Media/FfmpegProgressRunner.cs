@@ -79,6 +79,15 @@ public sealed class FfmpegProgressRunner : IFfmpegProgressRunner
             {
                 throw new LocalJobException("FFMPEG_START_FAILED", "Không thể khởi động FFmpeg.");
             }
+            try
+            {
+                process.PriorityClass = ProcessPriorityClass.BelowNormal;
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
+            {
+                // Priority is a responsiveness hint; FFmpeg can continue when the
+                // host policy does not allow changing it.
+            }
         }
         catch (Win32Exception exception) when (exception.NativeErrorCode == 206)
         {

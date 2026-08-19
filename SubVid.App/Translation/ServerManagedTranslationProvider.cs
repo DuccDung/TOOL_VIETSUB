@@ -20,6 +20,7 @@ public sealed class ServerManagedTranslationProvider(
 {
     private const int ProviderMaximumAttempts = 3;
     private readonly string _providerId = TranslationProviders.Normalize(providerId);
+    private readonly SemaphoreSlim _settlementGate = new(1, 1);
     private LocalJob? _job;
 
     public string ProviderId => _providerId;
@@ -46,8 +47,9 @@ public sealed class ServerManagedTranslationProvider(
             EstimatedOutputUnits = estimate.ReservedOutputTokens,
             Status = "AUTHORIZING",
         };
-        job.CloudSettlements.Add(settlement);
-        await workspace.SaveAsync(project, cancellationToken);
+        await MutateSettlementAsync(
+            () => job.CloudSettlements.Add(settlement),
+            cancellationToken);
 
         CloudAuthorizationApiResponse authorization;
         try
@@ -66,10 +68,12 @@ public sealed class ServerManagedTranslationProvider(
         }
         catch (ApiClientException exception)
         {
-            settlement.Status = "AUTHORIZATION_FAILED";
-            settlement.ErrorMessage = exception.Message;
-            settlement.UpdatedAtUtc = DateTime.UtcNow;
-            await workspace.SaveAsync(project, CancellationToken.None);
+            await MutateSettlementAsync(() =>
+            {
+                settlement.Status = "AUTHORIZATION_FAILED";
+                settlement.ErrorMessage = exception.Message;
+                settlement.UpdatedAtUtc = DateTime.UtcNow;
+            }, CancellationToken.None);
             throw new TranslationProviderException(
                 exception.Code,
                 exception.Message,
@@ -78,10 +82,12 @@ public sealed class ServerManagedTranslationProvider(
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
         {
-            settlement.Status = "AUTHORIZATION_FAILED";
-            settlement.ErrorMessage = exception.Message;
-            settlement.UpdatedAtUtc = DateTime.UtcNow;
-            await workspace.SaveAsync(project, CancellationToken.None);
+            await MutateSettlementAsync(() =>
+            {
+                settlement.Status = "AUTHORIZATION_FAILED";
+                settlement.ErrorMessage = exception.Message;
+                settlement.UpdatedAtUtc = DateTime.UtcNow;
+            }, CancellationToken.None);
             throw new TranslationProviderException(
                 "CLOUD_CONTROL_UNAVAILABLE",
                 "Không thể xin quyền sử dụng Cloud từ Server.",
@@ -89,21 +95,23 @@ public sealed class ServerManagedTranslationProvider(
                 exception);
         }
 
-        settlement.ReservationId = authorization.ReservationId;
-        settlement.UnitCode = authorization.UnitCode;
-        settlement.ExpiresAtUtc = authorization.ExpiresAtUtc;
-        settlement.Status = "HELD";
-        settlement.ErrorMessage = null;
-        settlement.UpdatedAtUtc = DateTime.UtcNow;
-        await workspace.SaveAsync(project, cancellationToken);
+        await MutateSettlementAsync(() =>
+        {
+            settlement.ReservationId = authorization.ReservationId;
+            settlement.UnitCode = authorization.UnitCode;
+            settlement.ExpiresAtUtc = authorization.ExpiresAtUtc;
+            settlement.Status = "HELD";
+            settlement.ErrorMessage = null;
+            settlement.UpdatedAtUtc = DateTime.UtcNow;
+        }, cancellationToken);
 
         var provider = CreateProvider(authorization.ApiKey);
         try
         {
             var result = await provider.TranslateAsync(request, cancellationToken);
-            settlement.UsageWasEstimated = TotalTokens(result.Usage) == 0;
+            var usageWasEstimated = TotalTokens(result.Usage) == 0;
             var usage = NormalizeSuccessfulUsage(result.Usage, estimate);
-            await CommitOrPersistAsync(settlement, usage, cancellationToken);
+            await CommitOrPersistAsync(settlement, usage, cancellationToken, usageWasEstimated);
             return result with { Usage = usage };
         }
         catch (TranslationProviderException exception)
@@ -114,10 +122,12 @@ public sealed class ServerManagedTranslationProvider(
             }
             else if (IsUnknownProviderOutcome(exception))
             {
-                settlement.Status = "UNKNOWN";
-                settlement.ErrorMessage = exception.Message;
-                settlement.UpdatedAtUtc = DateTime.UtcNow;
-                await workspace.SaveAsync(project, CancellationToken.None);
+                await MutateSettlementAsync(() =>
+                {
+                    settlement.Status = "UNKNOWN";
+                    settlement.ErrorMessage = exception.Message;
+                    settlement.UpdatedAtUtc = DateTime.UtcNow;
+                }, CancellationToken.None);
             }
             else
             {
@@ -145,42 +155,51 @@ public sealed class ServerManagedTranslationProvider(
     private async Task CommitOrPersistAsync(
         CloudUsageSettlement settlement,
         TranslationUsage usage,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool usageWasEstimated = false)
     {
         if (settlement.ReservationId is not Guid reservationId)
         {
             return;
         }
 
-        settlement.ActualInputUnits = Math.Max(0, usage.InputTokens);
-        settlement.ActualOutputUnits = Math.Max(0, usage.OutputTokens);
-        settlement.CachedInputUnits = Math.Clamp(
-            usage.CachedInputTokens,
-            0,
-            settlement.ActualInputUnits);
-        settlement.ApiRequests = Math.Max(0, usage.ApiRequests);
-        settlement.RetryRequests = Math.Max(0, usage.RetryRequests);
-        settlement.Status = "PENDING_COMMIT";
-        settlement.ErrorMessage = null;
-        settlement.UpdatedAtUtc = DateTime.UtcNow;
-        await workspace.SaveAsync(project, CancellationToken.None);
+        await MutateSettlementAsync(() =>
+        {
+            settlement.UsageWasEstimated = usageWasEstimated;
+            settlement.ActualInputUnits = Math.Max(0, usage.InputTokens);
+            settlement.ActualOutputUnits = Math.Max(0, usage.OutputTokens);
+            settlement.CachedInputUnits = Math.Clamp(
+                usage.CachedInputTokens,
+                0,
+                settlement.ActualInputUnits);
+            settlement.ApiRequests = Math.Max(0, usage.ApiRequests);
+            settlement.RetryRequests = Math.Max(0, usage.RetryRequests);
+            settlement.Status = "PENDING_COMMIT";
+            settlement.ErrorMessage = null;
+            settlement.UpdatedAtUtc = DateTime.UtcNow;
+        }, CancellationToken.None);
         try
         {
             var response = await cloudAccess.CommitAsync(
                 reservationId,
                 ToCommitRequest(settlement),
                 cancellationToken);
-            settlement.Status = response.Status;
-            settlement.ErrorMessage = null;
+            await MutateSettlementAsync(() =>
+            {
+                settlement.Status = response.Status;
+                settlement.ErrorMessage = null;
+                settlement.UpdatedAtUtc = DateTime.UtcNow;
+            }, CancellationToken.None);
         }
         catch (Exception exception) when (exception is ApiClientException or HttpRequestException or TaskCanceledException)
         {
-            settlement.Status = "PENDING_COMMIT";
-            settlement.ErrorMessage = exception.Message;
+            await MutateSettlementAsync(() =>
+            {
+                settlement.Status = "PENDING_COMMIT";
+                settlement.ErrorMessage = exception.Message;
+                settlement.UpdatedAtUtc = DateTime.UtcNow;
+            }, CancellationToken.None);
         }
-
-        settlement.UpdatedAtUtc = DateTime.UtcNow;
-        await workspace.SaveAsync(project, CancellationToken.None);
     }
 
     private async Task ReleaseOrPersistAsync(
@@ -195,17 +214,36 @@ public sealed class ServerManagedTranslationProvider(
         try
         {
             var response = await cloudAccess.ReleaseAsync(reservationId, cancellationToken);
-            settlement.Status = response.Status;
-            settlement.ErrorMessage = null;
+            await MutateSettlementAsync(() =>
+            {
+                settlement.Status = response.Status;
+                settlement.ErrorMessage = null;
+                settlement.UpdatedAtUtc = DateTime.UtcNow;
+            }, CancellationToken.None);
         }
         catch (Exception exception) when (exception is ApiClientException or HttpRequestException or TaskCanceledException)
         {
-            settlement.Status = "PENDING_RELEASE";
-            settlement.ErrorMessage = exception.Message;
+            await MutateSettlementAsync(() =>
+            {
+                settlement.Status = "PENDING_RELEASE";
+                settlement.ErrorMessage = exception.Message;
+                settlement.UpdatedAtUtc = DateTime.UtcNow;
+            }, CancellationToken.None);
         }
+    }
 
-        settlement.UpdatedAtUtc = DateTime.UtcNow;
-        await workspace.SaveAsync(project, CancellationToken.None);
+    private async Task MutateSettlementAsync(Action mutation, CancellationToken cancellationToken)
+    {
+        await _settlementGate.WaitAsync(cancellationToken);
+        try
+        {
+            mutation();
+            await workspace.SaveAsync(project, cancellationToken);
+        }
+        finally
+        {
+            _settlementGate.Release();
+        }
     }
 
     private static TranslationUsage NormalizeSuccessfulUsage(

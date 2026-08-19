@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import {
   AudioLines,
   Captions,
@@ -16,6 +16,7 @@ import {
   WandSparkles,
 } from 'lucide-react'
 import { formatClock } from '../lib/format'
+import { getVirtualRowRange, updateVirtualViewport } from '../lib/longFormVirtualization'
 import type { SubtitleSegment, VoiceInfo } from '../types'
 import { IconButton, SegmentTab } from './Ui'
 
@@ -62,6 +63,7 @@ export function SubtitlePanel({
   const [draftTranslated, setDraftTranslated] = useState('')
   const [draftSpeaker, setDraftSpeaker] = useState('speaker_1')
   const [draftVoiceId, setDraftVoiceId] = useState('')
+  const subtitleBodyRef = useRef<HTMLDivElement>(null)
 
   const visibleSegments = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase('vi')
@@ -80,7 +82,6 @@ export function SubtitlePanel({
       return matchesFilter && matchesQuery
     })
   }, [segments, filter, query])
-
   const selectedSegment = segments.find((segment) => segment.id === selectedId)
   const invalidTranslationCount = segments.filter(
     (segment) => segment.status === 'invalid-translation',
@@ -137,7 +138,7 @@ export function SubtitlePanel({
       </div>
 
       {tab === 'subtitles' ? (
-        <div className="subtitle-panel__body">
+        <div ref={subtitleBodyRef} className="subtitle-panel__body">
           <div className="subtitle-heading">
             <div>
               <span className="eyebrow">DANH SÁCH PHỤ ĐỀ</span>
@@ -258,60 +259,14 @@ export function SubtitlePanel({
             </div>
           ) : null}
 
-          <div className="subtitle-list" aria-live="polite">
-            {segments.length === 0 ? (
-              <div className="empty-subtitles">
-                <span><MessageSquareText size={26} /></span>
-                <strong>Chưa có bản chép lời</strong>
-                <p>Nhập video và chọn “Nhận dạng” để bắt đầu.</p>
-              </div>
-            ) : visibleSegments.length === 0 ? (
-              <div className="empty-subtitles empty-subtitles--compact">
-                <span><Search size={22} /></span>
-                <strong>Không tìm thấy kết quả</strong>
-                <p>Thử thay đổi từ khóa hoặc bộ lọc.</p>
-              </div>
-            ) : (
-              visibleSegments.map((segment) => (
-                <button
-                  type="button"
-                  key={segment.id}
-                  className={`subtitle-card ${selectedId === segment.id ? 'is-selected' : ''}`}
-                  onClick={() => onSelect(segment.id)}
-                >
-                  <span className="subtitle-card__index">{String(segment.id).padStart(2, '0')}</span>
-                  <span className="subtitle-card__content">
-                    <span className="subtitle-card__meta">
-                      <time>{formatClock(segment.start)} — {formatClock(segment.end)}</time>
-                      <span className="subtitle-card__badges">
-                        {segment.voiceTiming && segment.voiceTiming.status !== 'NATURAL' ? (
-                          <span
-                            className={`voice-timing-badge voice-timing-badge--${segment.voiceTiming.status.toLowerCase().replace('_', '-')}`}
-                            title={segment.voiceTiming.message}
-                          >
-                            {segment.voiceTiming.status === 'PADDED' ? <Clock3 size={10} /> : <Gauge size={10} />}
-                            {formatVoiceTimingBadge(segment.voiceTiming)}
-                          </span>
-                        ) : null}
-                        <span
-                          className={`status-badge status-badge--${segment.status}`}
-                          title={segment.translationWarnings?.length
-                            ? segment.translationWarnings.join(', ')
-                            : undefined}
-                        >
-                          {segment.status !== 'translated' ? <CircleAlert size={11} /> : null}
-                          {statusLabels[segment.status]}
-                        </span>
-                      </span>
-                    </span>
-                    <span className="subtitle-original">{segment.original}</span>
-                    <span className="subtitle-translated">{segment.translated}</span>
-                  </span>
-                  <MoreHorizontal size={16} className="subtitle-card__more" />
-                </button>
-              ))
-            )}
-          </div>
+          <VirtualizedSubtitleList
+            segments={visibleSegments}
+            totalSegmentCount={segments.length}
+            selectedId={selectedId}
+            resetKey={`${filter}:${query}`}
+            scrollHostRef={subtitleBodyRef}
+            onSelect={onSelect}
+          />
         </div>
       ) : (
         <div className="properties-panel">
@@ -428,6 +383,184 @@ export function SubtitlePanel({
         </div>
       )}
     </aside>
+  )
+}
+
+const subtitleRowHeight = 76
+
+type VirtualizedSubtitleListProps = {
+  segments: SubtitleSegment[]
+  totalSegmentCount: number
+  selectedId: number | null
+  resetKey: string
+  scrollHostRef: RefObject<HTMLDivElement | null>
+  onSelect: (id: number) => void
+}
+
+function VirtualizedSubtitleList({
+  segments,
+  totalSegmentCount,
+  selectedId,
+  resetKey,
+  scrollHostRef,
+  onSelect,
+}: VirtualizedSubtitleListProps) {
+  const [viewport, setViewport] = useState({ scrollTop: 0, height: 600 })
+  const listRef = useRef<HTMLDivElement>(null)
+  const animationFrameRef = useRef<number | null>(null)
+  const pendingScrollTopRef = useRef(0)
+  const previousSelectedIdRef = useRef<number | null>(selectedId)
+
+  const scheduleMeasurement = useCallback((scrollTop?: number) => {
+    const list = listRef.current
+    const scrollHost = scrollHostRef.current
+    if (!list || !scrollHost) return
+    const hostBounds = scrollHost.getBoundingClientRect()
+    const listTop = list.getBoundingClientRect().top - hostBounds.top + scrollHost.scrollTop
+    pendingScrollTopRef.current = scrollTop ?? Math.max(0, scrollHost.scrollTop - listTop)
+    if (animationFrameRef.current !== null) return
+    animationFrameRef.current = window.requestAnimationFrame(() => {
+      animationFrameRef.current = null
+      const currentScrollHost = scrollHostRef.current
+      if (!currentScrollHost) return
+      setViewport(current => updateVirtualViewport(
+        current,
+        pendingScrollTopRef.current,
+        currentScrollHost.clientHeight,
+        subtitleRowHeight,
+      ))
+    })
+  }, [scrollHostRef])
+
+  useEffect(() => {
+    const list = listRef.current
+    const scrollHost = scrollHostRef.current
+    if (!list || !scrollHost) return
+    const handleScroll = () => scheduleMeasurement()
+    scheduleMeasurement()
+    const observer = new ResizeObserver(() => scheduleMeasurement())
+    observer.observe(scrollHost)
+    observer.observe(list)
+    scrollHost.addEventListener('scroll', handleScroll, { passive: true })
+    return () => {
+      observer.disconnect()
+      scrollHost.removeEventListener('scroll', handleScroll)
+      if (animationFrameRef.current !== null) {
+        window.cancelAnimationFrame(animationFrameRef.current)
+        animationFrameRef.current = null
+      }
+    }
+  }, [scheduleMeasurement])
+
+  useEffect(() => {
+    const scrollHost = scrollHostRef.current
+    if (!scrollHost) return
+    scrollHost.scrollTop = 0
+    scheduleMeasurement(0)
+  }, [resetKey, scheduleMeasurement, scrollHostRef])
+
+  useEffect(() => {
+    const list = listRef.current
+    const scrollHost = scrollHostRef.current
+    const selectionChanged = previousSelectedIdRef.current !== selectedId
+    previousSelectedIdRef.current = selectedId
+
+    // Do not fight a manual scroll just because the panel re-rendered after a
+    // cue update. Bringing a card into view is only appropriate for a newly
+    // selected cue.
+    if (!list || !scrollHost || selectedId === null || !selectionChanged) return
+    const index = segments.findIndex(segment => segment.id === selectedId)
+    if (index < 0) return
+    const hostBounds = scrollHost.getBoundingClientRect()
+    const listTop = list.getBoundingClientRect().top - hostBounds.top + scrollHost.scrollTop
+    const top = listTop + index * subtitleRowHeight
+    const bottom = top + subtitleRowHeight
+    if (top < scrollHost.scrollTop || bottom > scrollHost.scrollTop + scrollHost.clientHeight) {
+      scrollHost.scrollTop = Math.max(
+        0,
+        top - scrollHost.clientHeight / 2 + subtitleRowHeight / 2,
+      )
+      scheduleMeasurement()
+    }
+  }, [selectedId, segments, scheduleMeasurement, scrollHostRef])
+
+  const virtualRange = useMemo(() => getVirtualRowRange(
+    segments.length,
+    viewport.scrollTop,
+    viewport.height,
+    subtitleRowHeight,
+  ), [segments.length, viewport])
+  const virtualSegments = segments.slice(virtualRange.startIndex, virtualRange.endIndex)
+
+  return (
+    <div
+      ref={listRef}
+      className={`subtitle-list ${segments.length > 0 ? 'is-virtualized' : ''}`}
+      aria-live="polite"
+    >
+      {totalSegmentCount === 0 ? (
+        <div className="empty-subtitles">
+          <span><MessageSquareText size={26} /></span>
+          <strong>Chưa có bản chép lời</strong>
+          <p>Nhập video và chọn “Nhận dạng” để bắt đầu.</p>
+        </div>
+      ) : segments.length === 0 ? (
+        <div className="empty-subtitles empty-subtitles--compact">
+          <span><Search size={22} /></span>
+          <strong>Không tìm thấy kết quả</strong>
+          <p>Thử thay đổi từ khóa hoặc bộ lọc.</p>
+        </div>
+      ) : (
+        <div
+          className="subtitle-list__virtual-space"
+          style={{ height: `${virtualRange.totalHeightPixels}px` }}
+        >
+          <div
+            className="subtitle-list__virtual-window"
+            style={{ transform: `translateY(${virtualRange.offsetPixels}px)` }}
+          >
+            {virtualSegments.map((segment) => (
+              <button
+                type="button"
+                key={segment.id}
+                className={`subtitle-card ${selectedId === segment.id ? 'is-selected' : ''}`}
+                onClick={() => onSelect(segment.id)}
+              >
+                <span className="subtitle-card__index">{String(segment.id).padStart(2, '0')}</span>
+                <span className="subtitle-card__content">
+                  <span className="subtitle-card__meta">
+                    <time>{formatClock(segment.start)} — {formatClock(segment.end)}</time>
+                    <span className="subtitle-card__badges">
+                      {segment.voiceTiming && segment.voiceTiming.status !== 'NATURAL' ? (
+                        <span
+                          className={`voice-timing-badge voice-timing-badge--${segment.voiceTiming.status.toLowerCase().replace('_', '-')}`}
+                          title={segment.voiceTiming.message}
+                        >
+                          {segment.voiceTiming.status === 'PADDED' ? <Clock3 size={10} /> : <Gauge size={10} />}
+                          {formatVoiceTimingBadge(segment.voiceTiming)}
+                        </span>
+                      ) : null}
+                      <span
+                        className={`status-badge status-badge--${segment.status}`}
+                        title={segment.translationWarnings?.length
+                          ? segment.translationWarnings.join(', ')
+                          : undefined}
+                      >
+                        {segment.status !== 'translated' ? <CircleAlert size={11} /> : null}
+                        {statusLabels[segment.status]}
+                      </span>
+                    </span>
+                  </span>
+                  <span className="subtitle-original">{segment.original}</span>
+                  <span className="subtitle-translated">{segment.translated}</span>
+                </span>
+                <MoreHorizontal size={16} className="subtitle-card__more" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 

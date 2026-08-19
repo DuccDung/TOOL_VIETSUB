@@ -11,11 +11,13 @@ public sealed class ProjectWorkspaceService
         WriteIndented = true,
     };
     private readonly AppPaths _paths;
+    private readonly ProjectSubtitleStore _subtitleStore;
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _projectLocks = new();
 
     public ProjectWorkspaceService(AppPaths paths)
     {
         _paths = paths;
+        _subtitleStore = new ProjectSubtitleStore(paths);
     }
 
     public async Task<ProjectManifest> CreateAsync(
@@ -139,7 +141,7 @@ public sealed class ProjectWorkspaceService
                 continue;
             }
 
-            var manifest = await LoadBestManifestAsync(projectId, cancellationToken);
+            var manifest = await LoadBestManifestAsync(projectId, cancellationToken, loadSubtitles: false);
             if (manifest is null || manifest.OwnerUserId != ownerUserId)
             {
                 continue;
@@ -181,7 +183,8 @@ public sealed class ProjectWorkspaceService
 
     private async Task<ProjectManifest?> LoadBestManifestAsync(
         Guid projectId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool loadSubtitles = true)
     {
         var manifestPath = _paths.GetProjectPath(projectId, ManifestFileName);
         var candidates = new[] { manifestPath, manifestPath + ".tmp", manifestPath + ".bak" }
@@ -212,8 +215,15 @@ public sealed class ProjectWorkspaceService
                     continue;
                 }
 
+                if (loadSubtitles
+                    && await _subtitleStore.TryLoadAsync(projectId, cancellationToken) is { } storedTracks)
+                {
+                    manifest.SubtitleTracks = storedTracks.ToList();
+                }
+
                 ValidateManifest(manifest);
-                if (!string.Equals(candidate, manifestPath, StringComparison.OrdinalIgnoreCase))
+                if (loadSubtitles
+                    && !string.Equals(candidate, manifestPath, StringComparison.OrdinalIgnoreCase))
                 {
                     await SaveCoreAsync(manifest, cancellationToken);
                 }
@@ -234,6 +244,7 @@ public sealed class ProjectWorkspaceService
         ValidateManifest(manifest);
         CreateWorkspaceDirectories(manifest.ProjectId);
         manifest.UpdatedAtUtc = DateTime.UtcNow;
+        await _subtitleStore.SaveAsync(manifest, cancellationToken);
 
         var manifestPath = _paths.GetProjectPath(manifest.ProjectId, ManifestFileName);
         var temporaryPath = manifestPath + ".tmp";
@@ -424,7 +435,7 @@ public sealed class ProjectWorkspaceService
             .Where(region => IsValidSubtitleRemovalRegion(region))
             .Take(DesktopWorkspaceCoordinator.MaxSubtitleRemovalRegions)
             .ToList();
-        if (validRemovalRegions.Count == 0)
+        if (manifest.Settings.RemoveOriginalSubtitles && validRemovalRegions.Count == 0)
         {
             var legacyRegion = new SubtitleRemovalRegionSettings
             {
@@ -455,11 +466,14 @@ public sealed class ProjectWorkspaceService
         }
 
         manifest.Settings.OriginalSubtitleRemovalRegions = validRemovalRegions;
-        var primaryRemovalRegion = validRemovalRegions[0];
-        manifest.Settings.OriginalSubtitleRegionX = primaryRemovalRegion.X;
-        manifest.Settings.OriginalSubtitleRegionY = primaryRemovalRegion.Y;
-        manifest.Settings.OriginalSubtitleRegionWidth = primaryRemovalRegion.Width;
-        manifest.Settings.OriginalSubtitleRegionHeight = primaryRemovalRegion.Height;
+        if (validRemovalRegions.Count > 0)
+        {
+            var primaryRemovalRegion = validRemovalRegions[0];
+            manifest.Settings.OriginalSubtitleRegionX = primaryRemovalRegion.X;
+            manifest.Settings.OriginalSubtitleRegionY = primaryRemovalRegion.Y;
+            manifest.Settings.OriginalSubtitleRegionWidth = primaryRemovalRegion.Width;
+            manifest.Settings.OriginalSubtitleRegionHeight = primaryRemovalRegion.Height;
+        }
         foreach (var cue in manifest.SubtitleTracks.SelectMany(track => track.Cues))
         {
             if (string.IsNullOrWhiteSpace(cue.Speaker))

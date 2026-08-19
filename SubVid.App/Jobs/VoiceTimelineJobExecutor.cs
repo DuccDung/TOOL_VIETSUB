@@ -7,7 +7,8 @@ namespace SubVid.App.Jobs;
 
 public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
 {
-    private const int MaximumCueInputs = 500;
+    private const int MaximumInputsPerPartition = 500;
+    private const long TargetPartitionDurationMilliseconds = 10 * 60 * 1000;
     private readonly AppPaths _paths;
     private readonly ProjectWorkspaceService _workspace;
     private readonly ProjectManifest _project;
@@ -113,22 +114,13 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
             throw new LocalJobException("VOICE_CUES_MISSING", "Chưa có giọng Việt theo từng phân đoạn.", retryable: false);
         }
 
-        if (inputs.Length > MaximumCueInputs)
-        {
-            throw new LocalJobException(
-                "VOICE_TIMELINE_TOO_MANY_CUES",
-                $"Bản hiện tại hỗ trợ tối đa {MaximumCueInputs} đoạn giọng trong một lần đồng bộ.",
-                retryable: false);
-        }
-
         job.VoiceMetrics ??= new VoiceSynthesisJobMetrics
         {
             TotalCues = inputs.Sum(input => input.Cues.Count),
         };
 
         var projectDirectory = _paths.GetProjectDirectory(_project.ProjectId);
-        var arguments = new List<string> { "-y", "-v", "error" };
-        var filters = new List<string>(inputs.Length + 1);
+        var preparedInputs = new List<PreparedCueInput>(inputs.Length);
         var maximumTempo = VoiceTimelineFitPolicy.NormalizeMaximumTempo(
             _project.Settings.VoiceTimelineMaximumTempo);
         var preferredTempo = VoiceTimelineFitPolicy.NormalizePreferredTempo(
@@ -136,6 +128,12 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
             maximumTempo);
         var projectDuration = Math.Max(0.1, source.Metadata.DurationSeconds);
         var projectDurationMilliseconds = (long)Math.Round(projectDuration * 1_000);
+        var estimatedPcmBytes = (long)Math.Ceiling(projectDuration * 48_000 * 2 * sizeof(short));
+        var estimatedTimelineBytes = checked(estimatedPcmBytes * 2 + 512L * 1024 * 1024);
+        DiskSpaceGuard.EnsureAvailable(
+            _paths.GetProjectDirectory(_project.ProjectId),
+            estimatedTimelineBytes,
+            "dựng timeline giọng Việt");
         var maximumBorrowMilliseconds = Math.Clamp(
             _project.Settings.VoiceTimelineMaximumBorrowMilliseconds,
             0,
@@ -175,10 +173,6 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
                     "Ná»™i dung file giá»ng Viá»‡t Ä‘Ã£ bá»‹ thay Ä‘á»•i.");
             }
 
-            // ProcessStartInfo.ArgumentList is flattened into one command line on Windows.
-            // Keeping every generated input relative prevents large projects from exceeding
-            // the 32,767-character CreateProcess limit.
-            arguments.AddRange(["-i", Path.GetRelativePath(projectDirectory, path)]);
             var inputStartMilliseconds = input.Cues[0].StartMilliseconds;
             var inputEndMilliseconds = input.Cues[^1].EndMilliseconds;
             var targetDuration = (inputEndMilliseconds - inputStartMilliseconds) / 1000d;
@@ -244,10 +238,10 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
             filterChain.Add("apad");
             filterChain.Add(FormattableString.Invariant(
                 $"atrim=0:{Math.Max(0.01, timing.RenderDurationSeconds):0.######}"));
-            var delay = Math.Max(0, inputStartMilliseconds);
-            filterChain.Add($"adelay={delay}:all=1");
-            filters.Add(FormattableString.Invariant(
-                $"[{index}:a]{string.Join(',', filterChain)}[v{index}]"));
+            preparedInputs.Add(new PreparedCueInput(
+                input,
+                Path.GetRelativePath(projectDirectory, path),
+                filterChain));
         }
 
         await _workspace.SaveAsync(_project, cancellationToken);
@@ -264,34 +258,20 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
             job.VoiceMetrics.TimingWarningCues = reviewRequiredCount;
         }
 
-        var labels = string.Concat(Enumerable.Range(0, inputs.Length).Select(index => $"[v{index}]"));
-        filters.Add(FormattableString.Invariant(
-            $"{labels}amix=inputs={inputs.Length}:duration=longest:normalize=0,alimiter=limit=0.95,apad,atrim=0:{projectDuration:0.######}[voice]") );
-        var relativeFilterScript = Path.Combine("temp", $"voice-filter-{job.JobId:N}.txt");
         var relativePartialPath = Path.Combine("temp", $"voice-timeline-{job.JobId:N}.partial.wav");
-        var filterScript = _paths.GetProjectPath(_project.ProjectId, relativeFilterScript);
         var partialPath = _paths.GetProjectPath(_project.ProjectId, relativePartialPath);
         var relativeOutput = Path.Combine("voice", "voice-timeline.wav");
         var outputPath = _paths.GetProjectPath(_project.ProjectId, relativeOutput);
         try
         {
-            await File.WriteAllTextAsync(filterScript, string.Join(";", filters), cancellationToken);
-            arguments.AddRange([
-                "-/filter_complex", relativeFilterScript,
-                "-map", "[voice]",
-                "-ar", "48000",
-                "-ac", "2",
-                "-c:a", "pcm_s16le",
-                relativePartialPath,
-            ]);
             await reportProgress(new JobProgressUpdate("SYNC_VOICE", 0, 0, "Đang khớp giọng Việt với timeline ở tốc độ an toàn."));
-            await _runner.RunAsync(
-                _ffmpegPath,
-                arguments,
-                projectDuration,
-                progress => reportProgress(new JobProgressUpdate("SYNC_VOICE", progress, progress)),
-                cancellationToken,
-                workingDirectory: projectDirectory);
+            await RenderPartitionedTimelineAsync(
+                preparedInputs,
+                projectDurationMilliseconds,
+                job.JobId,
+                relativePartialPath,
+                reportProgress,
+                cancellationToken);
             _ = WaveFileMetadata.Read(partialPath);
             File.Move(partialPath, outputPath, overwrite: true);
             var file = new FileInfo(outputPath);
@@ -323,9 +303,144 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
         }
         finally
         {
-            if (File.Exists(filterScript)) File.Delete(filterScript);
             if (File.Exists(partialPath)) File.Delete(partialPath);
         }
+    }
+
+    private async Task RenderPartitionedTimelineAsync(
+        IReadOnlyList<PreparedCueInput> inputs,
+        long projectDurationMilliseconds,
+        Guid jobId,
+        string relativeFinalPath,
+        Func<JobProgressUpdate, ValueTask> reportProgress,
+        CancellationToken cancellationToken)
+    {
+        var partitions = BuildPartitions(inputs, projectDurationMilliseconds);
+        var stemPaths = new List<string>(partitions.Count);
+        try
+        {
+            for (var partitionIndex = 0; partitionIndex < partitions.Count; partitionIndex++)
+            {
+                var partition = partitions[partitionIndex];
+                var isOnlyPartition = partitions.Count == 1;
+                var relativeFilterScript = Path.Combine(
+                    "temp",
+                    isOnlyPartition
+                        ? $"voice-filter-{jobId:N}.txt"
+                        : $"voice-filter-{jobId:N}-{partitionIndex:D4}.txt");
+                var relativeStemPath = isOnlyPartition
+                    ? relativeFinalPath
+                    : Path.Combine("temp", $"voice-stem-{jobId:N}-{partitionIndex:D4}.wav");
+                var filterScript = _paths.GetProjectPath(_project.ProjectId, relativeFilterScript);
+                var stemPath = _paths.GetProjectPath(_project.ProjectId, relativeStemPath);
+                stemPaths.Add(stemPath);
+                try
+                {
+                    var arguments = new List<string> { "-y", "-v", "error" };
+                    var filters = new List<string>(partition.Inputs.Count + 1);
+                    for (var inputIndex = 0; inputIndex < partition.Inputs.Count; inputIndex++)
+                    {
+                        var input = partition.Inputs[inputIndex];
+                        arguments.AddRange(["-i", input.RelativePath]);
+                        var delay = Math.Max(
+                            0,
+                            input.Input.Cues[0].StartMilliseconds - partition.StartMilliseconds);
+                        filters.Add(FormattableString.Invariant(
+                            $"[{inputIndex}:a]{string.Join(',', input.FilterChain)},adelay={delay}:all=1[v{inputIndex}]"));
+                    }
+
+                    var partitionDuration = Math.Max(
+                        0.01,
+                        (partition.EndMilliseconds - partition.StartMilliseconds) / 1000d);
+                    var labels = string.Concat(Enumerable.Range(0, partition.Inputs.Count).Select(index => $"[v{index}]"));
+                    filters.Add(FormattableString.Invariant(
+                        $"{labels}amix=inputs={partition.Inputs.Count}:duration=longest:normalize=0,alimiter=limit=0.95,apad,atrim=0:{partitionDuration:0.######}[voice]"));
+                    await File.WriteAllTextAsync(filterScript, string.Join(";", filters), cancellationToken);
+                    arguments.AddRange([
+                        "-/filter_complex", relativeFilterScript,
+                        "-map", "[voice]",
+                        "-ar", "48000",
+                        "-ac", "2",
+                        "-c:a", "pcm_s16le",
+                        relativeStemPath,
+                    ]);
+                    await _runner.RunAsync(
+                        _ffmpegPath,
+                        arguments,
+                        partitionDuration,
+                        progress => reportProgress(new JobProgressUpdate(
+                            "SYNC_VOICE",
+                            (partitionIndex + progress / 100d) * 100d / partitions.Count,
+                            (partitionIndex + progress / 100d) * 100d / partitions.Count,
+                            partitions.Count > 1
+                                ? $"Đang dựng phần giọng {partitionIndex + 1}/{partitions.Count}."
+                                : null)),
+                        cancellationToken,
+                        workingDirectory: _paths.GetProjectDirectory(_project.ProjectId));
+                    _ = WaveFileMetadata.Read(stemPath);
+                }
+                finally
+                {
+                    if (File.Exists(filterScript))
+                    {
+                        File.Delete(filterScript);
+                    }
+                }
+            }
+
+            if (partitions.Count > 1)
+            {
+                await WavePcmConcatenator.ConcatenateAsync(
+                    stemPaths,
+                    _paths.GetProjectPath(_project.ProjectId, relativeFinalPath),
+                    cancellationToken);
+            }
+        }
+        finally
+        {
+            if (partitions.Count > 1)
+            {
+                foreach (var stemPath in stemPaths)
+                {
+                    if (File.Exists(stemPath))
+                    {
+                        File.Delete(stemPath);
+                    }
+                }
+            }
+        }
+    }
+
+    private static IReadOnlyList<VoiceTimelinePartition> BuildPartitions(
+        IReadOnlyList<PreparedCueInput> inputs,
+        long projectDurationMilliseconds)
+    {
+        var partitions = new List<VoiceTimelinePartition>();
+        var startIndex = 0;
+        var partitionStart = 0L;
+        for (var index = 1; index < inputs.Count; index++)
+        {
+            var nextStart = inputs[index].Input.Cues[0].StartMilliseconds;
+            var inputLimitReached = index - startIndex >= MaximumInputsPerPartition;
+            var durationLimitReached = nextStart - partitionStart >= TargetPartitionDurationMilliseconds;
+            if (!inputLimitReached && !durationLimitReached)
+            {
+                continue;
+            }
+
+            partitions.Add(new VoiceTimelinePartition(
+                partitionStart,
+                nextStart,
+                inputs.Skip(startIndex).Take(index - startIndex).ToArray()));
+            partitionStart = nextStart;
+            startIndex = index;
+        }
+
+        partitions.Add(new VoiceTimelinePartition(
+            partitionStart,
+            Math.Max(partitionStart + 1, projectDurationMilliseconds),
+            inputs.Skip(startIndex).ToArray()));
+        return partitions;
     }
 
     public static string BuildAtempo(double factor)
@@ -359,4 +474,14 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
         LocalMediaReference Media,
         long? NextStartMilliseconds,
         string? PhraseId);
+
+    private sealed record PreparedCueInput(
+        CueInput Input,
+        string RelativePath,
+        IReadOnlyList<string> FilterChain);
+
+    private sealed record VoiceTimelinePartition(
+        long StartMilliseconds,
+        long EndMilliseconds,
+        IReadOnlyList<PreparedCueInput> Inputs);
 }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using SubVid.App.Core;
 
 namespace SubVid.App.Tests;
@@ -147,6 +148,22 @@ public sealed class ProjectWorkspaceServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAndOpen_PreservesEmptyRemovalRegionsWhenRemovalIsDisabled()
+    {
+        var paths = new AppPaths(_root);
+        var service = new ProjectWorkspaceService(paths);
+        var created = await service.CreateAsync(Guid.NewGuid(), "Không che phụ đề gốc");
+        created.Settings.RemoveOriginalSubtitles = false;
+        created.Settings.OriginalSubtitleRemovalRegions = [];
+        await service.SaveAsync(created);
+
+        var opened = await service.OpenAsync(created.ProjectId);
+
+        Assert.False(opened.Settings.RemoveOriginalSubtitles);
+        Assert.Empty(opened.Settings.OriginalSubtitleRemovalRegions);
+    }
+
+    [Fact]
     public void ProjectSettings_UsesSafeAudioDefaultsForLegacyJson()
     {
         var settings = JsonSerializer.Deserialize<ProjectSettings>("{}", new JsonSerializerOptions(JsonSerializerDefaults.Web));
@@ -193,6 +210,116 @@ public sealed class ProjectWorkspaceServiceTests : IDisposable
         Assert.Equal(first.CueId, boundary.PreviousCueId);
         Assert.Equal(second.CueId, boundary.NextCueId);
         Assert.Equal(VoicePhraseBoundaryModes.Join, boundary.Mode);
+    }
+
+    [Fact]
+    public async Task Save_MovesSubtitlePayloadOutOfManifestAndReopensFromDatabase()
+    {
+        var paths = new AppPaths(_root);
+        var service = new ProjectWorkspaceService(paths);
+        var project = await service.CreateAsync(Guid.NewGuid(), "Long subtitle storage");
+        var cue = new SubtitleCue
+        {
+            StartMilliseconds = 1234,
+            EndMilliseconds = 4567,
+            OriginalText = "A persisted source line",
+            TranslatedText = "Một câu đã lưu",
+            TranslationWarnings = ["CHECK_NAME"],
+        };
+        project.SubtitleTracks.Add(new SubtitleDocument
+        {
+            LanguageCode = "en",
+            Source = "WHISPER_LOCAL",
+            Cues = [cue],
+        });
+
+        await service.SaveAsync(project);
+
+        var manifestJson = await File.ReadAllTextAsync(
+            paths.GetProjectPath(project.ProjectId, "project.json"));
+        Assert.DoesNotContain("subtitleTracks", manifestJson, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(paths.GetProjectPath(project.ProjectId, "project.db")));
+
+        var reopened = await new ProjectWorkspaceService(paths).OpenAsync(project.ProjectId);
+        var reopenedCue = Assert.Single(Assert.Single(reopened.SubtitleTracks).Cues);
+        Assert.Equal(cue.CueId, reopenedCue.CueId);
+        Assert.Equal("Một câu đã lưu", reopenedCue.TranslatedText);
+        Assert.Equal(["CHECK_NAME"], reopenedCue.TranslationWarnings);
+    }
+
+    [Fact]
+    public async Task Open_MigratesLegacyEmbeddedSubtitleTracksToDatabase()
+    {
+        var paths = new AppPaths(_root);
+        var service = new ProjectWorkspaceService(paths);
+        var project = await service.CreateAsync(Guid.NewGuid(), "Legacy subtitle migration");
+        project.SubtitleTracks.Add(new SubtitleDocument
+        {
+            LanguageCode = "zh",
+            Source = "IMPORTED_SRT",
+            Cues =
+            [
+                new SubtitleCue
+                {
+                    StartMilliseconds = 100,
+                    EndMilliseconds = 900,
+                    OriginalText = "旧字幕",
+                    TranslatedText = "Phụ đề cũ",
+                },
+            ],
+        });
+        var manifestPath = paths.GetProjectPath(project.ProjectId, "project.json");
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath))!.AsObject();
+        root["subtitleTracks"] = JsonSerializer.SerializeToNode(
+            project.SubtitleTracks,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        await File.WriteAllTextAsync(manifestPath, root.ToJsonString());
+        foreach (var suffix in new[] { string.Empty, "-wal", "-shm" })
+        {
+            var databasePath = paths.GetProjectPath(project.ProjectId, "project.db") + suffix;
+            if (File.Exists(databasePath)) File.Delete(databasePath);
+        }
+
+        var reopened = await new ProjectWorkspaceService(paths).OpenAsync(project.ProjectId);
+
+        Assert.Equal("旧字幕", Assert.Single(Assert.Single(reopened.SubtitleTracks).Cues).OriginalText);
+        Assert.True(File.Exists(paths.GetProjectPath(project.ProjectId, "project.db")));
+        Assert.DoesNotContain(
+            "subtitleTracks",
+            await File.ReadAllTextAsync(manifestPath),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SaveAndOpen_FiveThousandCues_KeepsManifestBounded()
+    {
+        var paths = new AppPaths(_root);
+        var service = new ProjectWorkspaceService(paths);
+        var project = await service.CreateAsync(Guid.NewGuid(), "Five thousand cues");
+        var cues = Enumerable.Range(0, 5_000).Select(index => new SubtitleCue
+        {
+            StartMilliseconds = index * 2_000L,
+            EndMilliseconds = index * 2_000L + 1_800,
+            OriginalText = $"Source subtitle {index}",
+            TranslatedText = $"Phụ đề {index}",
+        }).ToList();
+        project.SubtitleTracks.Add(new SubtitleDocument
+        {
+            LanguageCode = "en",
+            Source = "WHISPER_LOCAL",
+            Cues = cues,
+        });
+
+        await service.SaveAsync(project);
+        cues[2_500].TranslatedText = "Chỉ cập nhật một cue";
+        await service.SaveAsync(project);
+
+        var manifest = new FileInfo(paths.GetProjectPath(project.ProjectId, "project.json"));
+        Assert.True(manifest.Length < 100_000, manifest.Length.ToString());
+        var reopened = await new ProjectWorkspaceService(paths).OpenAsync(project.ProjectId);
+        var reopenedCues = Assert.Single(reopened.SubtitleTracks).Cues;
+        Assert.Equal(5_000, reopenedCues.Count);
+        Assert.Equal("Chỉ cập nhật một cue", reopenedCues[2_500].TranslatedText);
     }
 
     [Fact]

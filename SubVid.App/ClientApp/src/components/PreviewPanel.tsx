@@ -26,6 +26,7 @@ import {
   Play,
   Plus,
   ScanLine,
+  Trash2,
   Type,
   UploadCloud,
   ZoomIn,
@@ -85,7 +86,52 @@ type PreviewSize = {
   height: number
 }
 
+type RemovalResizeEdges = {
+  left: boolean
+  right: boolean
+  top: boolean
+  bottom: boolean
+}
+
 const previewInset = 32
+const minimumRemovalRegionWidth = 0.05
+const minimumRemovalRegionHeight = 0.04
+
+function getRemovalResizeEdges(
+  clientX: number,
+  clientY: number,
+  element: HTMLElement,
+): RemovalResizeEdges {
+  const bounds = element.getBoundingClientRect()
+  const hitArea = Math.min(14, Math.max(8, Math.min(bounds.width, bounds.height) / 3))
+  const leftDistance = clientX - bounds.left
+  const rightDistance = bounds.right - clientX
+  const topDistance = clientY - bounds.top
+  const bottomDistance = bounds.bottom - clientY
+  const nearLeft = leftDistance <= hitArea
+  const nearRight = rightDistance <= hitArea
+  const nearTop = topDistance <= hitArea
+  const nearBottom = bottomDistance <= hitArea
+
+  return {
+    left: nearLeft && (!nearRight || leftDistance <= rightDistance),
+    right: nearRight && (!nearLeft || rightDistance < leftDistance),
+    top: nearTop && (!nearBottom || topDistance <= bottomDistance),
+    bottom: nearBottom && (!nearTop || bottomDistance < topDistance),
+  }
+}
+
+function hasRemovalResizeEdge(edges: RemovalResizeEdges) {
+  return edges.left || edges.right || edges.top || edges.bottom
+}
+
+function getRemovalCursor(edges: RemovalResizeEdges) {
+  if ((edges.left && edges.top) || (edges.right && edges.bottom)) return 'nwse-resize'
+  if ((edges.right && edges.top) || (edges.left && edges.bottom)) return 'nesw-resize'
+  if (edges.left || edges.right) return 'ew-resize'
+  if (edges.top || edges.bottom) return 'ns-resize'
+  return 'move'
+}
 
 function hexToRgba(hex: string, alpha: number) {
   const value = hex.replace('#', '')
@@ -138,6 +184,9 @@ export function PreviewPanel({
   const [activeRemovalRegionId, setActiveRemovalRegionId] = useState<string | null>(
     getSubtitleRemovalRegions(subtitleRemoval)[0]?.id ?? null,
   )
+  const [hoveredRemovalRegionId, setHoveredRemovalRegionId] = useState<string | null>(null)
+  const [removalDropTargetActive, setRemovalDropTargetActive] = useState(false)
+  const [pendingRemovalRegionId, setPendingRemovalRegionId] = useState<string | null>(null)
   const [draftSubtitleStyle, setDraftSubtitleStyle] = useState(subtitleStyle)
   const dragDepth = useRef(0)
   const stageRef = useRef<HTMLDivElement>(null)
@@ -147,6 +196,8 @@ export function PreviewPanel({
   const playControlTimerRef = useRef<number | null>(null)
   const compactToolsRef = useRef<HTMLDivElement>(null)
   const draftRemovalRef = useRef(subtitleRemoval)
+  const removalHoverExitTimerRef = useRef<number | null>(null)
+  const removalDropTargetActiveRef = useRef(false)
   const draftSubtitleStyleRef = useRef(subtitleStyle)
   const removalInteraction = useRef<{
     mode: 'move' | 'resize'
@@ -154,6 +205,7 @@ export function PreviewPanel({
     clientY: number
     settings: SubtitleRemovalSettings
     region: SubtitleRemovalRegion
+    resizeEdges: RemovalResizeEdges
   } | null>(null)
   const subtitleInteraction = useRef<{
     clientX: number
@@ -172,6 +224,22 @@ export function PreviewPanel({
         : regions[0]?.id ?? null
     ))
   }, [subtitleRemoval])
+
+  useEffect(() => () => {
+    if (removalHoverExitTimerRef.current !== null) {
+      window.clearTimeout(removalHoverExitTimerRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!pendingRemovalRegionId) return
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPendingRemovalRegionId(null)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [pendingRemovalRegionId])
 
   useEffect(() => {
     if (subtitleInteraction.current) return
@@ -316,7 +384,8 @@ export function PreviewPanel({
   const sourceHeight = Math.max(1, mediaSize?.height ?? video?.height ?? 9)
   const hasMeasuredStage = stageSize.width > 0 && stageSize.height > 0
   const availableWidth = Math.max(1, stageSize.width - previewInset)
-  const availableHeight = Math.max(1, stageSize.height - previewInset)
+  const removalActionSpace = subtitleRemoval.enabled ? 54 : 0
+  const availableHeight = Math.max(1, stageSize.height - previewInset - removalActionSpace)
   const fitScale = Math.min(availableWidth / sourceWidth, availableHeight / sourceHeight)
   const fillScale = Math.max(stageSize.width / sourceWidth, stageSize.height / sourceHeight)
   const baseScale = viewMode === 'fit' ? fitScale : viewMode === 'fill' ? fillScale : 1
@@ -327,7 +396,9 @@ export function PreviewPanel({
   }
   const canvasSize = {
     width: viewMode === 'fill' ? stageSize.width : Math.max(stageSize.width, renderedSize.width + previewInset),
-    height: viewMode === 'fill' ? stageSize.height : Math.max(stageSize.height, renderedSize.height + previewInset),
+    height: viewMode === 'fill'
+      ? stageSize.height
+      : Math.max(stageSize.height, renderedSize.height + previewInset + removalActionSpace),
   }
   const playerStyle = {
     '--video-aspect-ratio': `${sourceWidth} / ${sourceHeight}`,
@@ -364,30 +435,47 @@ export function PreviewPanel({
 
   const beginRemovalInteraction = (
     event: ReactPointerEvent<HTMLElement>,
-    mode: 'move' | 'resize',
     region: SubtitleRemovalRegion,
   ) => {
     if (!subtitleRemoval.enabled) return
     event.preventDefault()
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
+    const resizeEdges = getRemovalResizeEdges(event.clientX, event.clientY, event.currentTarget)
     removalInteraction.current = {
-      mode,
+      mode: hasRemovalResizeEdge(resizeEdges) ? 'resize' : 'move',
       clientX: event.clientX,
       clientY: event.clientY,
       settings: draftRemovalRef.current,
       region,
+      resizeEdges,
     }
+    removalDropTargetActiveRef.current = false
+    setRemovalDropTargetActive(false)
     setActiveRemovalRegionId(region.id)
+    setHoveredRemovalRegionId(region.id)
     setTool('scan')
   }
 
   const moveRemovalInteraction = (event: ReactPointerEvent<HTMLElement>) => {
     const interaction = removalInteraction.current
     const shell = playerShellRef.current
-    if (!interaction || !shell) return
+    if (!interaction) {
+      event.currentTarget.style.cursor = getRemovalCursor(
+        getRemovalResizeEdges(event.clientX, event.clientY, event.currentTarget),
+      )
+      return
+    }
+    if (!shell) return
     event.preventDefault()
     const bounds = shell.getBoundingClientRect()
+    const isOverDropTarget = interaction.mode === 'move'
+      && event.clientX >= bounds.left
+      && event.clientX <= bounds.right
+      && event.clientY >= bounds.bottom + 4
+      && event.clientY <= bounds.bottom + 78
+    removalDropTargetActiveRef.current = isOverDropTarget
+    setRemovalDropTargetActive(isOverDropTarget)
     const deltaX = (event.clientX - interaction.clientX) / Math.max(1, bounds.width)
     const deltaY = (event.clientY - interaction.clientY) / Math.max(1, bounds.height)
     const nextRegion = interaction.mode === 'move'
@@ -396,11 +484,31 @@ export function PreviewPanel({
           x: Math.min(1 - interaction.region.width, Math.max(0, interaction.region.x + deltaX)),
           y: Math.min(1 - interaction.region.height, Math.max(0, interaction.region.y + deltaY)),
         }
-      : {
-          ...interaction.region,
-          width: Math.min(1 - interaction.region.x, Math.max(0.05, interaction.region.width + deltaX)),
-          height: Math.min(1 - interaction.region.y, Math.max(0.04, interaction.region.height + deltaY)),
-        }
+      : (() => {
+          const right = interaction.region.x + interaction.region.width
+          const bottom = interaction.region.y + interaction.region.height
+          const x = interaction.resizeEdges.left
+            ? Math.min(right - minimumRemovalRegionWidth, Math.max(0, interaction.region.x + deltaX))
+            : interaction.region.x
+          const y = interaction.resizeEdges.top
+            ? Math.min(bottom - minimumRemovalRegionHeight, Math.max(0, interaction.region.y + deltaY))
+            : interaction.region.y
+          return {
+            ...interaction.region,
+            x,
+            y,
+            width: interaction.resizeEdges.left
+              ? right - x
+              : interaction.resizeEdges.right
+                ? Math.min(1 - interaction.region.x, Math.max(minimumRemovalRegionWidth, interaction.region.width + deltaX))
+                : interaction.region.width,
+            height: interaction.resizeEdges.top
+              ? bottom - y
+              : interaction.resizeEdges.bottom
+                ? Math.min(1 - interaction.region.y, Math.max(minimumRemovalRegionHeight, interaction.region.height + deltaY))
+                : interaction.region.height,
+          }
+        })()
     const next = withSubtitleRemovalRegions(
       interaction.settings,
       getSubtitleRemovalRegions(interaction.settings).map((region) => (
@@ -412,10 +520,22 @@ export function PreviewPanel({
   }
 
   const finishRemovalInteraction = (event: ReactPointerEvent<HTMLElement>) => {
-    if (!removalInteraction.current) return
+    const interaction = removalInteraction.current
+    if (!interaction) return
     event.preventDefault()
     event.stopPropagation()
     removalInteraction.current = null
+    if (removalDropTargetActiveRef.current && interaction.mode === 'move') {
+      draftRemovalRef.current = interaction.settings
+      setDraftRemoval(interaction.settings)
+      setActiveRemovalRegionId(interaction.region.id)
+      removalDropTargetActiveRef.current = false
+      setRemovalDropTargetActive(false)
+      setPendingRemovalRegionId(interaction.region.id)
+      return
+    }
+    removalDropTargetActiveRef.current = false
+    setRemovalDropTargetActive(false)
     onSubtitleRemovalChange(draftRemovalRef.current)
   }
 
@@ -467,6 +587,44 @@ export function PreviewPanel({
     setActiveRemovalRegionId(region.id)
     setTool('scan')
     onSubtitleRemovalChange(next)
+  }
+
+  const requestRemovalConfirmation = (regionId: string) => {
+    if (busy) return
+    if (!getSubtitleRemovalRegions(draftRemovalRef.current).some((region) => region.id === regionId)) return
+    setPendingRemovalRegionId(regionId)
+  }
+
+  const confirmRemovalRegion = () => {
+    const regionId = pendingRemovalRegionId
+    if (busy || !regionId) return
+    const current = draftRemovalRef.current
+    const nextRegions = getSubtitleRemovalRegions(current).filter((region) => region.id !== regionId)
+    const next = withSubtitleRemovalRegions(
+      { ...current, enabled: nextRegions.length > 0 && current.enabled },
+      nextRegions,
+    )
+    draftRemovalRef.current = next
+    setDraftRemoval(next)
+    setActiveRemovalRegionId(nextRegions[0]?.id ?? null)
+    setHoveredRemovalRegionId(null)
+    setPendingRemovalRegionId(null)
+    onSubtitleRemovalChange(next)
+  }
+
+  const clearRemovalHoverExit = () => {
+    if (removalHoverExitTimerRef.current !== null) {
+      window.clearTimeout(removalHoverExitTimerRef.current)
+      removalHoverExitTimerRef.current = null
+    }
+  }
+
+  const scheduleRemovalHoverExit = () => {
+    clearRemovalHoverExit()
+    removalHoverExitTimerRef.current = window.setTimeout(() => {
+      setHoveredRemovalRegionId(null)
+      removalHoverExitTimerRef.current = null
+    }, 120)
   }
 
   const beginSubtitleInteraction = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -528,6 +686,10 @@ export function PreviewPanel({
   }
 
   const draftRemovalRegions = getSubtitleRemovalRegions(draftRemoval)
+  const hoveredRemovalRegion = draftRemovalRegions.find((region) => region.id === hoveredRemovalRegionId) ?? null
+  const hoveredRemovalRegionIndex = hoveredRemovalRegion
+    ? draftRemovalRegions.findIndex((region) => region.id === hoveredRemovalRegion.id)
+    : -1
 
   const subtitleVerticalAnchor = draftSubtitleStyle.verticalPosition === 'custom'
     ? draftSubtitleStyle.positionYPercent < 34 ? 'top'
@@ -821,14 +983,14 @@ export function PreviewPanel({
         {video ? (
           video.playbackUrl ? (
             <div className="preview-canvas" style={canvasStyle}>
-              <div
-                ref={playerShellRef}
-                className="video-player-shell"
-                style={playerStyle}
-                onPointerEnter={revealPlayControl}
-                onPointerMove={revealPlayControl}
-                onPointerDown={revealPlayControl}
-              >
+              <div className="preview-player-stack" style={playerStyle}>
+                <div
+                  ref={playerShellRef}
+                  className="video-player-shell"
+                  onPointerEnter={revealPlayControl}
+                  onPointerMove={revealPlayControl}
+                  onPointerDown={revealPlayControl}
+                >
                 <video
                   ref={playerRef}
                   className="preview-video"
@@ -891,21 +1053,22 @@ export function PreviewPanel({
                     aria-valuenow={Math.round(region.y * 100)}
                     aria-valuetext={`X ${Math.round(region.x * 100)}%, Y ${Math.round(region.y * 100)}%, rộng ${Math.round(region.width * 100)}%, cao ${Math.round(region.height * 100)}%`}
                     onFocus={() => setActiveRemovalRegionId(region.id)}
+                    onPointerEnter={() => {
+                      clearRemovalHoverExit()
+                      setHoveredRemovalRegionId(region.id)
+                      setActiveRemovalRegionId(region.id)
+                    }}
+                    onPointerLeave={(event) => {
+                      event.currentTarget.style.cursor = 'move'
+                      scheduleRemovalHoverExit()
+                    }}
                     onKeyDown={(event) => handleRemovalKeyDown(event, region.id)}
-                    onPointerDown={(event) => beginRemovalInteraction(event, 'move', region)}
+                    onPointerDown={(event) => beginRemovalInteraction(event, region)}
                     onPointerMove={moveRemovalInteraction}
                     onPointerUp={finishRemovalInteraction}
                     onPointerCancel={finishRemovalInteraction}
                   >
                     <span>Vùng che {index + 1}</span>
-                    <i
-                      className="subtitle-removal-region__handle"
-                      aria-hidden="true"
-                      onPointerDown={(event) => beginRemovalInteraction(event, 'resize', region)}
-                      onPointerMove={moveRemovalInteraction}
-                      onPointerUp={finishRemovalInteraction}
-                      onPointerCancel={finishRemovalInteraction}
-                    />
                   </div>
                 )) : null}
                 {vietnameseSubtitlesEnabled && subtitleText.trim() ? (
@@ -928,7 +1091,6 @@ export function PreviewPanel({
                   </div>
                 ) : null}
                 <div className={`video-player-overlay ${playControlVisible ? 'is-visible' : ''}`}>
-                  <span className="video-chip">{video.extension}</span>
                   <span className="video-player-name">{video.fileName}</span>
                 </div>
                 <button
@@ -942,6 +1104,27 @@ export function PreviewPanel({
                 {playbackFailed ? (
                   <div className="video-playback-error" role="alert">
                     Codec này chưa phát được trong WebView2. FFmpeg vẫn có thể xử lý video.
+                  </div>
+                ) : null}
+                </div>
+                {subtitleRemoval.enabled ? (
+                  <div
+                    className={`subtitle-removal-actions ${hoveredRemovalRegion || removalDropTargetActive ? 'is-visible' : ''} ${removalDropTargetActive ? 'is-drop-target' : ''}`}
+                    onPointerEnter={clearRemovalHoverExit}
+                    onPointerLeave={scheduleRemovalHoverExit}
+                  >
+                    {removalDropTargetActive ? (
+                      <span>Thả để xoá vùng che</span>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busy || !hoveredRemovalRegion}
+                        onClick={() => hoveredRemovalRegion && requestRemovalConfirmation(hoveredRemovalRegion.id)}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                        Xóa vùng che {hoveredRemovalRegionIndex + 1}
+                      </button>
+                    )}
                   </div>
                 ) : null}
               </div>
@@ -979,6 +1162,32 @@ export function PreviewPanel({
         <div className="drop-overlay" aria-hidden="true">
           <UploadCloud size={36} />
           <strong>Thả video để bắt đầu</strong>
+        </div>
+      ) : null}
+      {pendingRemovalRegionId ? (
+        <div
+          className="subtitle-removal-confirm-backdrop"
+          role="presentation"
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) setPendingRemovalRegionId(null)
+          }}
+        >
+          <section
+            className="subtitle-removal-confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="subtitle-removal-confirm-title"
+          >
+            <Trash2 size={20} aria-hidden="true" />
+            <div>
+              <h2 id="subtitle-removal-confirm-title">Xóa vùng che?</h2>
+              <p>Vùng che này sẽ không còn được áp dụng trên preview và khi xuất video.</p>
+            </div>
+            <div className="subtitle-removal-confirm-dialog__actions">
+              <button type="button" autoFocus onClick={() => setPendingRemovalRegionId(null)}>Hủy</button>
+              <button type="button" className="is-danger" disabled={busy} onClick={confirmRemovalRegion}>Xóa vùng che</button>
+            </div>
+          </section>
         </div>
       ) : null}
     </section>

@@ -56,12 +56,16 @@
             <input asp-for="Email" type="hidden" />
             <label>
                 <span>Nhà cung cấp</span>
-                <select asp-for="ProviderCode" data-provider-select data-testid="provider-select">
+                <select asp-for="ProviderCode" class="admin-provider-native" data-provider-select data-testid="provider-select" tabindex="-1" aria-hidden="true">
                     <option value="openai">OpenAI</option>
                     <option value="groq">Groq</option>
                     <option value="deepseek">DeepSeek</option>
                     <option value="gemini">Gemini</option>
                 </select>
+                <button class="admin-provider-trigger" type="button" data-provider-trigger aria-haspopup="dialog" aria-controls="admin-provider-modal">
+                    <span data-provider-label>@Model.ProviderCode</span>
+                    <svg class="admin-icon" aria-hidden="true"><use href="#admin-icon-plans"></use></svg>
+                </button>
                 <small class="admin-field-error"><span asp-validation-for="ProviderCode"></span></small>
             </label>
             <label>
@@ -102,6 +106,20 @@
                 <button type="submit" data-testid="save-key-button"><span>@(Model.CredentialId is null ? "Lưu API key" : "Lưu thay đổi")</span><svg class="admin-icon"><use href="#admin-icon-arrow-right"></use></svg></button>
             </div>
         </form>
+        <dialog id="admin-provider-modal" class="admin-provider-modal" data-provider-modal aria-label="Chọn nhà cung cấp AI">
+            <div class="admin-provider-modal__surface">
+                <header>
+                    <div><small>NHÀ CUNG CẤP AI</small><h2>Chọn nhà cung cấp</h2><p>Chọn dịch vụ sẽ dùng để xác thực API key.</p></div>
+                    <button type="button" data-provider-modal-close aria-label="Đóng"><svg class="admin-icon"><use href="#admin-icon-close"></use></svg></button>
+                </header>
+                <div class="admin-provider-options" role="listbox" aria-label="Danh sách nhà cung cấp">
+                    <button type="button" data-provider-option data-provider-code="openai" role="option"><span>O</span><strong>OpenAI</strong><small>GPT và API tương thích</small></button>
+                    <button type="button" data-provider-option data-provider-code="groq" role="option"><span>G</span><strong>Groq</strong><small>Suy luận tốc độ cao</small></button>
+                    <button type="button" data-provider-option data-provider-code="deepseek" role="option"><span>D</span><strong>DeepSeek</strong><small>Mô hình DeepSeek</small></button>
+                    <button type="button" data-provider-option data-provider-code="gemini" role="option"><span>G</span><strong>Gemini</strong><small>Google AI Studio</small></button>
+                </div>
+            </div>
+        </dialog>
         <div class="admin-key-list">
             @if (Model.Credentials.Count == 0)
             {
@@ -219,6 +237,10 @@
             const form = document.querySelector('[data-credential-form]');
             if (!form) return;
             const provider = form.querySelector('[data-provider-select]');
+            const providerTrigger = form.querySelector('[data-provider-trigger]');
+            const providerLabel = form.querySelector('[data-provider-label]');
+            const providerModal = document.querySelector('[data-provider-modal]');
+            const providerOptions = document.querySelectorAll('[data-provider-option]');
             const nameInput = form.querySelector('[data-credential-name]');
             const keyInput = form.querySelector('[data-api-key]');
             const toggle = form.querySelector('[data-secret-toggle]');
@@ -226,11 +248,43 @@
             const probeResult = form.querySelector('[data-probe-result]');
             const placeholders = { openai: 'OpenAI pool chính', groq: 'Groq pool chính', deepseek: 'DeepSeek pool chính', gemini: 'Gemini pool chính' };
 
+            const syncProviderUi = () => {
+                if (!provider) return;
+                const selected = provider.options[provider.selectedIndex];
+                if (providerLabel && selected) providerLabel.textContent = selected.textContent || provider.value;
+                providerOptions.forEach((option) => {
+                    const isSelected = option.getAttribute('data-provider-code') === provider.value;
+                    option.classList.toggle('is-selected', isSelected);
+                    option.setAttribute('aria-selected', String(isSelected));
+                });
+            };
+
             provider?.addEventListener('change', () => {
                 if (nameInput && !nameInput.value) nameInput.placeholder = placeholders[provider.value] || 'Key pool chính';
                 probeResult.className = 'admin-probe-result is-idle is-wide';
                 probeResult.innerHTML = '<span><svg class="admin-icon"><use href="#admin-icon-info"></use></svg></span><div><strong>Chưa kiểm tra kết nối</strong><small>Provider đã thay đổi; hãy kiểm tra lại trước khi lưu.</small></div>';
             });
+
+            providerTrigger?.addEventListener('click', () => {
+                if (typeof providerModal?.showModal === 'function') providerModal.showModal();
+            });
+            document.querySelectorAll('[data-provider-modal-close]').forEach((button) => {
+                button.addEventListener('click', () => providerModal?.close());
+            });
+            providerModal?.addEventListener('click', (event) => {
+                if (event.target === providerModal) providerModal.close();
+            });
+            providerOptions.forEach((option) => {
+                option.addEventListener('click', () => {
+                    if (!provider) return;
+                    provider.value = option.getAttribute('data-provider-code') || provider.value;
+                    provider.dispatchEvent(new Event('change', { bubbles: true }));
+                    syncProviderUi();
+                    providerModal?.close();
+                    providerTrigger?.focus({ preventScroll: true });
+                });
+            });
+            syncProviderUi();
 
             toggle?.addEventListener('click', () => {
                 const visible = keyInput.type === 'text';

@@ -2,14 +2,6 @@ import type { SubtitleRemovalRegion, SubtitleRemovalSettings } from '../types'
 
 export const maxSubtitleRemovalRegions = 10
 
-export const defaultSubtitleRemovalRegion: SubtitleRemovalRegion = {
-  id: 'primary',
-  x: 0.05,
-  y: 0.70,
-  width: 0.90,
-  height: 0.16,
-}
-
 function createRegionId() {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
     return globalThis.crypto.randomUUID()
@@ -19,32 +11,21 @@ function createRegionId() {
 }
 
 export function getSubtitleRemovalRegions(settings: SubtitleRemovalSettings): SubtitleRemovalRegion[] {
-  if (settings.regions.length > 0) return settings.regions
-
-  return [{
-    id: 'legacy',
-    x: settings.x,
-    y: settings.y,
-    width: settings.width,
-    height: settings.height,
-  }]
+  return settings.regions
 }
 
 export function withSubtitleRemovalRegions(
   settings: SubtitleRemovalSettings,
   regions: SubtitleRemovalRegion[],
 ): SubtitleRemovalSettings {
-  const normalizedRegions = regions.length > 0
-    ? regions
-    : [{ ...defaultSubtitleRemovalRegion, id: createRegionId() }]
-  const primary = normalizedRegions[0]
+  const primary = regions[0]
   return {
     ...settings,
-    x: primary.x,
-    y: primary.y,
-    width: primary.width,
-    height: primary.height,
-    regions: normalizedRegions,
+    x: primary?.x ?? settings.x,
+    y: primary?.y ?? settings.y,
+    width: primary?.width ?? settings.width,
+    height: primary?.height ?? settings.height,
+    regions,
   }
 }
 

@@ -70,4 +70,66 @@ public sealed class TranslationScenePlannerTests
 
         Assert.Equal(5, Assert.Single(plan.Cues).SuggestedMaximumCharacters);
     }
+
+    [Fact]
+    public void Plan_LongTimeline_CreatesBoundedChaptersAndTokenAwareScenes()
+    {
+        var cues = Enumerable.Range(0, 30).Select(index => new SubtitleCue
+        {
+            StartMilliseconds = index * 60_000L,
+            EndMilliseconds = index * 60_000L + 55_000,
+            OriginalText = new string((char)('A' + index % 20), 700),
+        }).ToArray();
+        var targets = cues.Select(cue => cue.CueId).ToHashSet();
+
+        var plans = TranslationScenePlanner.Plan(
+            cues,
+            targets,
+            maximumTargetCues: 12,
+            contextCueCount: 2,
+            sceneGapMilliseconds: 8_000,
+            maximumCharactersPerSecond: 18,
+            maximumChapterDurationMilliseconds: 10 * 60 * 1000,
+            maximumSceneSourceCharacters: 2_000);
+
+        Assert.True(plans.Select(plan => plan.ChapterNumber).Distinct().Count() >= 3);
+        Assert.All(plans, plan => Assert.InRange(
+            plan.Cues.Where(cue => cue.IsTarget).Sum(cue => cue.OriginalText.Length),
+            1,
+            2_000));
+        Assert.Equal(targets, plans.SelectMany(plan => plan.TargetCueIds()).ToHashSet());
+    }
+
+    [Fact]
+    public void BuildChapterContext_IncludesRepresentativeLinesAndPreviousVietnamese()
+    {
+        var cues = Enumerable.Range(0, 6).Select(index => new SubtitleCue
+        {
+            StartMilliseconds = index * 1_000,
+            EndMilliseconds = index * 1_000 + 800,
+            Speaker = index % 2 == 0 ? "alice" : "bob",
+            OriginalText = $"Source {index}",
+            TranslatedText = index < 3 ? $"Vietnamese {index}" : string.Empty,
+        }).ToArray();
+        var target = cues[4];
+        var scene = Assert.Single(TranslationScenePlanner.Plan(
+            cues,
+            new HashSet<Guid> { target.CueId },
+            maximumTargetCues: 3,
+            contextCueCount: 1,
+            sceneGapMilliseconds: 5_000,
+            maximumCharactersPerSecond: 18));
+
+        var context = TranslationScenePlanner.BuildChapterContext(scene, cues);
+
+        Assert.Contains("Representative source dialogue", context);
+        Assert.Contains("Recent Vietnamese continuity", context);
+        Assert.Contains("Vietnamese 2", context);
+    }
+}
+
+internal static class TranslationSceneTestExtensions
+{
+    public static IEnumerable<Guid> TargetCueIds(this PlannedTranslationScene scene) =>
+        scene.Cues.Where(cue => cue.IsTarget).Select(cue => cue.CueId);
 }

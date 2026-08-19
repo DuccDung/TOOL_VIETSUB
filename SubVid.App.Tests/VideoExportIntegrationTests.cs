@@ -31,6 +31,17 @@ public sealed class VideoExportIntegrationTests : IDisposable
         Assert.Throws<ArgumentOutOfRangeException>(() => VoiceTimelineJobExecutor.BuildAtempo(factor));
     }
 
+    [Theory]
+    [InlineData(1_799, "medium")]
+    [InlineData(1_800, "veryfast")]
+    [InlineData(14_400, "veryfast")]
+    public void ResolveEncoderPreset_ReducesCpuPressureForLongVideos(
+        double durationSeconds,
+        string expected)
+    {
+        Assert.Equal(expected, VideoExportJobExecutor.ResolveEncoderPreset(durationSeconds));
+    }
+
     [Fact]
     public void BuildVideoFilter_BlursNormalizedRegionBeforeBurningVietnameseSubtitle()
     {

@@ -144,6 +144,84 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_WithMoreThanFiveHundredInputs_RendersPartitionedTimeline()
+    {
+        const int cueCount = 501;
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Partitioned voice timeline");
+        project.Settings.VoicePhraseSynthesisEnabled = false;
+        project.SourceVideo = new LocalMediaReference
+        {
+            FileName = "source.mp4",
+            Metadata = new MediaMetadata { DurationSeconds = cueCount + 1 },
+        };
+        var waveBytes = CreateWave(sampleRate: 16_000, durationMilliseconds: 100);
+        var waveHash = Convert.ToHexString(SHA256.HashData(waveBytes)).ToLowerInvariant();
+        var relativePath = Path.Combine("voice", "shared-cue.wav");
+        await File.WriteAllBytesAsync(paths.GetProjectPath(project.ProjectId, relativePath), waveBytes);
+        var track = new SubtitleDocument { LanguageCode = "vi" };
+        for (var index = 0; index < cueCount; index++)
+        {
+            var cue = new SubtitleCue
+            {
+                StartMilliseconds = index * 1_000L,
+                EndMilliseconds = index * 1_000L + 900,
+                TranslatedText = $"Câu {index + 1}",
+            };
+            track.Cues.Add(cue);
+            project.AudioTracks.Add(new LocalMediaReference
+            {
+                CueId = cue.CueId,
+                Role = "VOICE_CUE",
+                WorkspaceRelativePath = relativePath,
+                SizeBytes = waveBytes.Length,
+                Sha256 = waveHash,
+                Metadata = new MediaMetadata { DurationSeconds = 0.1, HasAudio = true },
+            });
+        }
+
+        project.SubtitleTracks.Add(track);
+        await workspace.SaveAsync(project);
+        var runner = new RecordingFfmpegRunner();
+        var job = new LocalJob
+        {
+            JobType = "SYNTHESIZE_VOICE_LOCAL",
+            Steps = [new LocalJobStep { Code = "SYNC_VOICE" }],
+        };
+
+        await new VoiceTimelineJobExecutor(paths, workspace, project, "ffmpeg-test.exe", runner)
+            .ExecuteAsync(job, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(2, runner.CallCount);
+        Assert.True(File.Exists(paths.GetProjectPath(project.ProjectId, "voice", "voice-timeline.wav")));
+        Assert.Empty(Directory.EnumerateFiles(
+            paths.GetProjectPath(project.ProjectId, "temp"),
+            $"voice-stem-{job.JobId:N}-*.wav"));
+        Assert.Empty(Directory.EnumerateFiles(
+            paths.GetProjectPath(project.ProjectId, "temp"),
+            $"voice-filter-{job.JobId:N}-*.txt"));
+    }
+
+    [Fact]
+    public async Task WavePcmConcatenator_JoinsStereoStemsWithoutASecondFfmpegPass()
+    {
+        Directory.CreateDirectory(_root);
+        var first = Path.Combine(_root, "stem-1.wav");
+        var second = Path.Combine(_root, "stem-2.wav");
+        var output = Path.Combine(_root, "joined.wav");
+        await File.WriteAllBytesAsync(first, CreateWave(48_000, 100, channels: 2));
+        await File.WriteAllBytesAsync(second, CreateWave(48_000, 200, channels: 2));
+
+        await WavePcmConcatenator.ConcatenateAsync([first, second], output, CancellationToken.None);
+
+        var metadata = WaveFileMetadata.Read(output);
+        Assert.Equal(0.3, metadata.DurationSeconds, 3);
+        Assert.Equal(48_000, metadata.SampleRate);
+        Assert.Equal(2, metadata.Channels);
+    }
+
+    [Fact]
     public async Task RunAsync_WhenExecutableIsMissing_ReturnsSpecificError()
     {
         var runner = new FfmpegProgressRunner();
@@ -429,10 +507,10 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
         Assert.False(exception.Retryable);
     }
 
-    private static byte[] CreateWave(int sampleRate, int durationMilliseconds)
+    private static byte[] CreateWave(int sampleRate, int durationMilliseconds, short channels = 1)
     {
         var sampleCount = sampleRate * durationMilliseconds / 1_000;
-        var dataSize = sampleCount * sizeof(short);
+        var dataSize = sampleCount * sizeof(short) * channels;
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream, Encoding.ASCII, leaveOpen: true);
         writer.Write("RIFF"u8);
@@ -440,14 +518,14 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
         writer.Write("WAVEfmt "u8);
         writer.Write(16);
         writer.Write((short)1);
-        writer.Write((short)1);
+        writer.Write(channels);
         writer.Write(sampleRate);
-        writer.Write(sampleRate * sizeof(short));
-        writer.Write((short)sizeof(short));
+        writer.Write(sampleRate * sizeof(short) * channels);
+        writer.Write((short)(sizeof(short) * channels));
         writer.Write((short)16);
         writer.Write("data"u8);
         writer.Write(dataSize);
-        for (var index = 0; index < sampleCount; index++) writer.Write((short)0);
+        for (var index = 0; index < sampleCount * channels; index++) writer.Write((short)0);
         writer.Flush();
         return stream.ToArray();
     }
@@ -459,6 +537,8 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
 
     private sealed class RecordingFfmpegRunner : IFfmpegProgressRunner
     {
+        public int CallCount { get; private set; }
+
         public IReadOnlyList<string> Arguments { get; private set; } = [];
 
         public string? WorkingDirectory { get; private set; }
@@ -475,6 +555,7 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
             CancellationToken cancellationToken,
             string? workingDirectory = null)
         {
+            CallCount++;
             WasCalled = true;
             Arguments = arguments.ToArray();
             WorkingDirectory = workingDirectory;
@@ -489,7 +570,7 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
             var outputPath = Path.IsPathRooted(arguments[^1])
                 ? arguments[^1]
                 : Path.Combine(workingDirectory!, arguments[^1]);
-            await File.WriteAllBytesAsync(outputPath, CreateWave(48_000, 100), cancellationToken);
+            await File.WriteAllBytesAsync(outputPath, CreateWave(48_000, 100, channels: 2), cancellationToken);
             await reportProgress(100);
         }
     }

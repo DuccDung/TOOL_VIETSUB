@@ -16,6 +16,7 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
     private readonly ProjectWorkspaceService _workspace;
     private readonly ProjectManifest _project;
     private readonly ITranslationProvider _provider;
+    private readonly object _metricsGate = new();
     private TranslationJobMetrics? _activeMetrics;
 
     public TranslationJobExecutor(
@@ -82,8 +83,9 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
             await _workspace.SaveAsync(_project, cancellationToken);
         }
 
+        var configurationFingerprint = BuildTranslationConfigurationFingerprint(sourceLanguage, targetLanguage);
         var fingerprints = track.Cues
-            .Select((cue, index) => BuildCueFingerprint(cue, index, track, sourceLanguage, targetLanguage))
+            .Select((cue, index) => BuildCueFingerprint(cue, index, track, configurationFingerprint))
             .ToDictionary(item => item.CueId, item => item.Fingerprint);
         var pending = track.Cues
             .Where(cue => !cue.TranslationLocked
@@ -127,46 +129,57 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
         var cache = new TranslationResultCache(_paths, _project.ProjectId);
         var bypassExistingCache = runMode == TranslationRunModes.Restart;
         var completed = 0;
-        foreach (var scene in scenes)
+        var maximumConcurrency = TranslationProviders.IsCloud(_provider.ProviderId) ? 2 : 1;
+        var chapterQueue = new Queue<Queue<PlannedTranslationScene>>(
+            scenes.GroupBy(scene => scene.ChapterNumber)
+                .OrderBy(group => group.Key)
+                .Select(group => new Queue<PlannedTranslationScene>(group.OrderBy(scene => scene.SceneNumber))));
+        while (chapterQueue.Count > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var request = BuildRequest(
-                scene,
-                sourceLanguage,
-                targetLanguage,
-                TranslationPass.Translate);
-            var reviewEnabled = settings.TranslationReviewEnabled && _provider.SupportsContextualReview;
-            var cacheKey = cache.BuildKey(request, _provider.ProviderId, _provider.ModelId, reviewEnabled);
-            var result = bypassExistingCache
-                ? null
-                : await cache.TryReadAsync(cacheKey, cancellationToken);
-            if (IsResultSafe(result, request))
+            var activeChapters = new List<Queue<PlannedTranslationScene>>(maximumConcurrency);
+            var activeScenes = new List<PlannedTranslationScene>(maximumConcurrency);
+            while (activeScenes.Count < maximumConcurrency && chapterQueue.Count > 0)
             {
-                metrics.CacheHitScenes++;
-            }
-            else
-            {
-                result = await TranslateSceneAsync(request, reviewEnabled, cancellationToken);
-                EnsureResultValid(result, request.TargetCueIds);
-                if (FindUnsafeTranslations(result, request).Count == 0)
-                {
-                    await cache.WriteAsync(cacheKey, result, cancellationToken);
-                }
-                metrics.TranslatedScenes++;
+                var chapter = chapterQueue.Dequeue();
+                activeChapters.Add(chapter);
+                activeScenes.Add(chapter.Dequeue());
             }
 
-            var applyOutcome = ApplySceneResult(
+            var processedScenes = await Task.WhenAll(activeScenes.Select(scene => ProcessSceneAsync(
+                scene,
                 track,
-                result!,
-                fingerprints,
-                settings.TranslationMaxCharactersPerSecond);
-            completed += request.TargetCueIds.Count;
-            metrics.CompletedCues = Math.Min(
-                metrics.TotalPendingCues,
-                metrics.CompletedCues + applyOutcome.AppliedCues);
-            metrics.SkippedCues += applyOutcome.SkippedCues;
-            metrics.ReviewedCues += result!.Items.Count(item => item.WasReviewed);
-            metrics.AutoRepairedCues += result.Items.Count(item => item.WasAutoRepaired);
+                sourceLanguage,
+                targetLanguage,
+                settings.TranslationReviewEnabled && _provider.SupportsContextualReview,
+                cache,
+                bypassExistingCache,
+                cancellationToken)));
+            foreach (var processed in processedScenes.OrderBy(item => item.Scene.SceneNumber))
+            {
+                if (processed.CacheHit)
+                {
+                    metrics.CacheHitScenes++;
+                }
+                else
+                {
+                    metrics.TranslatedScenes++;
+                }
+
+                var applyOutcome = ApplySceneResult(
+                    track,
+                    processed.Result,
+                    fingerprints,
+                    settings.TranslationMaxCharactersPerSecond);
+                completed += processed.Request.TargetCueIds.Count;
+                metrics.CompletedCues = Math.Min(
+                    metrics.TotalPendingCues,
+                    metrics.CompletedCues + applyOutcome.AppliedCues);
+                metrics.SkippedCues += applyOutcome.SkippedCues;
+                metrics.ReviewedCues += processed.Result.Items.Count(item => item.WasReviewed);
+                metrics.AutoRepairedCues += processed.Result.Items.Count(item => item.WasAutoRepaired);
+            }
+
             await _workspace.SaveAsync(_project, cancellationToken);
             var percent = completed * 100d / pending.Count;
             var skippedMessage = metrics.SkippedCues > 0
@@ -177,6 +190,11 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
                 percent,
                 percent,
                 $"Đã xử lý {completed}/{pending.Count} phân đoạn{skippedMessage}."));
+
+            foreach (var chapter in activeChapters.Where(chapter => chapter.Count > 0))
+            {
+                chapterQueue.Enqueue(chapter);
+            }
         }
 
         await WriteTranslatedSubtitleAsync(track, job, cancellationToken);
@@ -220,6 +238,17 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
             .OrderByDescending(entry => entry.UpdatedAtUtc)
             .Take(500)
             .ToArray();
+        var latestCues = _project.SubtitleTracks
+            .SelectMany(track => track.Cues)
+            .ToDictionary(cue => cue.CueId);
+        var sceneCues = scene.Cues.Select(input => latestCues.TryGetValue(input.CueId, out var latest)
+            ? input with
+            {
+                CandidateTranslation = !input.IsTarget && !string.IsNullOrWhiteSpace(latest.TranslatedText)
+                    ? latest.TranslatedText.Trim()
+                    : input.CandidateTranslation,
+            }
+            : input).ToArray();
         return new TranslationSceneRequest(
             _project.Name,
             sourceLanguage,
@@ -229,8 +258,41 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
             context.StyleInstructions,
             relevantGlossary,
             memory,
-            scene.Cues,
-            pass);
+            sceneCues,
+            pass,
+            TranslationScenePlanner.BuildChapterContext(scene, _project.SubtitleTracks
+                .SelectMany(track => track.Cues)
+                .OrderBy(cue => cue.StartMilliseconds)
+                .ToArray()));
+    }
+
+    private async Task<ProcessedTranslationScene> ProcessSceneAsync(
+        PlannedTranslationScene scene,
+        SubtitleDocument track,
+        string sourceLanguage,
+        string targetLanguage,
+        bool reviewEnabled,
+        TranslationResultCache cache,
+        bool bypassExistingCache,
+        CancellationToken cancellationToken)
+    {
+        var request = BuildRequest(scene, sourceLanguage, targetLanguage, TranslationPass.Translate);
+        var cacheKey = cache.BuildKey(request, _provider.ProviderId, _provider.ModelId, reviewEnabled);
+        var result = bypassExistingCache
+            ? null
+            : await cache.TryReadAsync(cacheKey, cancellationToken);
+        var cacheHit = IsResultSafe(result, request);
+        if (!cacheHit)
+        {
+            result = await TranslateSceneAsync(request, reviewEnabled, cancellationToken);
+            EnsureResultValid(result, request.TargetCueIds);
+            if (FindUnsafeTranslations(result, request).Count == 0)
+            {
+                await cache.WriteAsync(cacheKey, result, cancellationToken);
+            }
+        }
+
+        return new ProcessedTranslationScene(scene, request, result!, cacheHit);
     }
 
     private async Task<TranslationSceneResult> TranslateSceneAsync(
@@ -535,11 +597,14 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
             return;
         }
 
-        _activeMetrics.InputTokens += Math.Max(0, usage.InputTokens);
-        _activeMetrics.OutputTokens += Math.Max(0, usage.OutputTokens);
-        _activeMetrics.CachedInputTokens += Math.Max(0, usage.CachedInputTokens);
-        _activeMetrics.ApiRequests += Math.Max(0, usage.ApiRequests);
-        _activeMetrics.RetryRequests += Math.Max(0, usage.RetryRequests);
+        lock (_metricsGate)
+        {
+            _activeMetrics.InputTokens += Math.Max(0, usage.InputTokens);
+            _activeMetrics.OutputTokens += Math.Max(0, usage.OutputTokens);
+            _activeMetrics.CachedInputTokens += Math.Max(0, usage.CachedInputTokens);
+            _activeMetrics.ApiRequests += Math.Max(0, usage.ApiRequests);
+            _activeMetrics.RetryRequests += Math.Max(0, usage.RetryRequests);
+        }
     }
 
     private static void EnsureResultValid(
@@ -558,8 +623,7 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
         SubtitleCue cue,
         int cueIndex,
         SubtitleDocument track,
-        string sourceLanguage,
-        string targetLanguage)
+        string configurationFingerprint)
     {
         var settings = _project.Settings;
         var contextCount = Math.Clamp(settings.TranslationContextCueCount, 0, 10);
@@ -567,7 +631,31 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
         var last = Math.Min(track.Cues.Count - 1, cueIndex + contextCount);
         var payload = JsonSerializer.Serialize(new
         {
-            version = 2,
+            version = 3,
+            configurationFingerprint,
+            cues = track.Cues.Skip(first).Take(last - first + 1).Select(item => new
+            {
+                item.CueId,
+                item.StartMilliseconds,
+                item.EndMilliseconds,
+                item.Speaker,
+                item.OriginalText,
+                approvedTranslation = item.TranslationLocked ? item.TranslatedText : null,
+                item.TranslationLocked,
+            }),
+        }, FingerprintJsonOptions);
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
+        return (cue.CueId, Convert.ToHexString(bytes).ToLowerInvariant());
+    }
+
+    private string BuildTranslationConfigurationFingerprint(
+        string sourceLanguage,
+        string targetLanguage)
+    {
+        var settings = _project.Settings;
+        var payload = JsonSerializer.Serialize(new
+        {
+            version = 1,
             sourceLanguage,
             targetLanguage,
             provider = _provider.ProviderId,
@@ -589,20 +677,15 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
                 entry.SourceText,
                 entry.TranslatedText,
             }),
-            cues = track.Cues.Skip(first).Take(last - first + 1).Select(item => new
-            {
-                item.CueId,
-                item.StartMilliseconds,
-                item.EndMilliseconds,
-                item.Speaker,
-                item.OriginalText,
-                approvedTranslation = item.TranslationLocked ? item.TranslatedText : null,
-                item.TranslationLocked,
-            }),
         }, FingerprintJsonOptions);
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
-        return (cue.CueId, Convert.ToHexString(bytes).ToLowerInvariant());
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
     }
 
     private sealed record SceneApplyOutcome(int AppliedCues, int SkippedCues);
+
+    private sealed record ProcessedTranslationScene(
+        PlannedTranslationScene Scene,
+        TranslationSceneRequest Request,
+        TranslationSceneResult Result,
+        bool CacheHit);
 }

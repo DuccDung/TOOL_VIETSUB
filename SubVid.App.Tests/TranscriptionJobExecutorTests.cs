@@ -129,6 +129,77 @@ public sealed class TranscriptionJobExecutorTests : IDisposable
         Assert.Equal("zh", Assert.Single(project.SubtitleTracks).LanguageCode);
     }
 
+    [Fact]
+    public async Task Execute_LongVideo_ProcessesIndependentChunksAndUsesGlobalTimestamps()
+    {
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Long transcription");
+        project.SourceVideo = CreateSourceVideo(durationSeconds: 35 * 60);
+        var extractor = new FakeChunkExtractor(paths, project.ProjectId);
+        var recognizer = new FakeRecognizer(
+        [
+            new(4_000, 5_000, "Chunk sentence", "en", 0.9f),
+        ]);
+        var executor = new TranscriptionJobExecutor(
+            paths,
+            workspace,
+            project,
+            recognizer,
+            languageCode: "en",
+            longFormChunkExtractor: extractor);
+
+        await executor.ExecuteAsync(
+            CreateJob(attemptCount: 1),
+            _ => ValueTask.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(4, extractor.ExtractedChunks.Count);
+        var cues = Assert.Single(project.SubtitleTracks).Cues;
+        Assert.Equal(4, cues.Count);
+        Assert.Equal([4_000L, 601_500L, 1_201_500L, 1_801_500L], cues.Select(cue => cue.StartMilliseconds));
+        Assert.Empty(Directory.EnumerateFiles(
+            paths.GetProjectPath(project.ProjectId, "temp"),
+            "fake-chunk-*.wav"));
+    }
+
+    [Fact]
+    public void LongFormChunkPlanner_OwnsEveryTimelinePositionOnce()
+    {
+        var chunks = LongFormAudioChunkPlanner.Plan(25 * 60 * 1000);
+
+        Assert.Equal(3, chunks.Count);
+        Assert.Equal(0, chunks[0].OwnershipStartMilliseconds);
+        Assert.Equal(600_000, chunks[0].OwnershipEndMilliseconds);
+        Assert.Equal(597_500, chunks[1].ExtractionStartMilliseconds);
+        Assert.Equal(1_500_000, chunks[^1].OwnershipEndMilliseconds);
+        Assert.Single(chunks, chunk => chunk.Owns(600_000, 600_001));
+        Assert.Single(chunks, chunk => chunk.Owns(1_200_000, 1_200_001));
+    }
+
+    [Fact]
+    public void LongFormChunkPlanner_FourHoursHasBoundedCompleteCoverage()
+    {
+        const long durationMilliseconds = 4 * 60 * 60 * 1000;
+        var chunks = LongFormAudioChunkPlanner.Plan(durationMilliseconds);
+
+        Assert.Equal(24, chunks.Count);
+        Assert.Equal(0, chunks[0].ExtractionStartMilliseconds);
+        Assert.Equal(durationMilliseconds, chunks[^1].ExtractionEndMilliseconds);
+        Assert.All(chunks, chunk =>
+            Assert.InRange(
+                chunk.ExtractionDurationMilliseconds,
+                1,
+                LongFormAudioChunkPlanner.DefaultChunkDurationMilliseconds
+                    + 2 * LongFormAudioChunkPlanner.DefaultOverlapMilliseconds));
+        for (var index = 1; index < chunks.Count; index++)
+        {
+            Assert.Equal(
+                chunks[index - 1].OwnershipEndMilliseconds,
+                chunks[index].OwnershipStartMilliseconds);
+        }
+    }
+
     private static LocalJob CreateJob(int attemptCount) => new()
     {
         JobType = "TRANSCRIBE_LOCAL",
@@ -140,14 +211,14 @@ public sealed class TranscriptionJobExecutorTests : IDisposable
         ],
     };
 
-    private static LocalMediaReference CreateSourceVideo() => new()
+    private static LocalMediaReference CreateSourceVideo(double durationSeconds = 10) => new()
     {
         FileName = "source.mp4",
         SizeBytes = 100,
         Sha256 = new string('0', 64),
         Metadata = new MediaMetadata
         {
-            DurationSeconds = 10,
+            DurationSeconds = durationSeconds,
             HasVideo = true,
             HasAudio = true,
         },
@@ -179,6 +250,23 @@ public sealed class TranscriptionJobExecutorTests : IDisposable
                 await Task.Yield();
                 yield return segment;
             }
+        }
+    }
+
+    private sealed class FakeChunkExtractor(AppPaths paths, Guid projectId) : ILongFormAudioChunkExtractor
+    {
+        public List<LongFormAudioChunk> ExtractedChunks { get; } = [];
+
+        public async Task<string> ExtractAsync(
+            LongFormAudioChunk chunk,
+            Func<double, ValueTask> reportProgress,
+            CancellationToken cancellationToken)
+        {
+            ExtractedChunks.Add(chunk);
+            var path = paths.GetProjectPath(projectId, "temp", $"fake-chunk-{chunk.Index:D4}.wav");
+            await File.WriteAllBytesAsync(path, new byte[128], cancellationToken);
+            await reportProgress(100);
+            return path;
         }
     }
 

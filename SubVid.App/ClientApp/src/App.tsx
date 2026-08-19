@@ -9,6 +9,7 @@ import { AccountView } from './components/AccountView'
 import { AiStorageDialog, type AiStorageSelection } from './components/AiStorageDialog'
 import { ApiErrorDialog } from './components/ApiErrorDialog'
 import { AuthScreen } from './components/AuthScreen'
+import { EditorErrorBoundary } from './components/EditorErrorBoundary'
 import { FfmpegSetupDialog } from './components/FfmpegSetupDialog'
 import { Header } from './components/Header'
 import { ImportProgress } from './components/ImportProgress'
@@ -22,6 +23,7 @@ import { TranslationRetryDialog } from './components/TranslationRetryDialog'
 import { VoiceSelectionDialog } from './components/VoiceSelectionDialog'
 import { VoiceWorkspace } from './components/VoiceWorkspace'
 import { demoSegments } from './data/mock'
+import { fitVerticalEditorLayout } from './lib/editorLayout'
 import { hasNativeHost, postToHost, subscribeToHost } from './lib/host'
 import { defaultSubtitleStyle } from './lib/subtitleStyle'
 import type {
@@ -92,6 +94,8 @@ const minSubtitleWidth = 280
 const maxSubtitleWidth = 560
 const minWorkspaceHeight = 290
 const minTimelineHeight = 240
+const minimumUsableWorkspaceHeight = 120
+const minimumUsableTimelineHeight = 120
 
 function mirrorRegionCoordinate(position: number, size: number) {
   return Math.min(Math.max(1 - position - size, 0), Math.max(0, 1 - size))
@@ -506,24 +510,22 @@ function App() {
       }
     }
 
-    const editorHeight = editorLayoutRef.current?.clientHeight ?? Math.max(window.innerHeight - 96, 624)
-    const usableEditorHeight = Math.max(
-      minWorkspaceHeight + minTimelineHeight,
-      editorHeight - editorVerticalPadding - resizerSize,
-    )
-    const maxTimelineHeight = Math.max(
-      minTimelineHeight,
-      usableEditorHeight - minWorkspaceHeight,
-    )
+    const editorHeight = editorLayoutRef.current?.clientHeight ?? Math.max(window.innerHeight - 96, 0)
+    const verticalLayout = fitVerticalEditorLayout({
+      editorHeight,
+      requestedTimelineHeight: candidate.timelineHeight,
+      verticalPadding: editorVerticalPadding,
+      resizerSize,
+      preferredWorkspaceHeight: minWorkspaceHeight,
+      preferredTimelineHeight: minTimelineHeight,
+      minimumUsableWorkspaceHeight,
+      minimumUsableTimelineHeight,
+    })
 
     return {
       settingsWidth,
       subtitleWidth,
-      timelineHeight: clamp(
-        Math.round(candidate.timelineHeight),
-        minTimelineHeight,
-        maxTimelineHeight,
-      ),
+      timelineHeight: verticalLayout.timelineHeight,
     }
   }, [])
 
@@ -1232,13 +1234,13 @@ function App() {
     height: currentProject?.settings.originalSubtitleRegionHeight ?? 0.16,
     regions: projectRemovalRegions?.length
       ? projectRemovalRegions
-      : [{
+      : currentProject?.settings.removeOriginalSubtitles ? [{
           id: 'legacy',
           x: currentProject?.settings.originalSubtitleRegionX ?? 0.05,
           y: currentProject?.settings.originalSubtitleRegionY ?? 0.70,
           width: currentProject?.settings.originalSubtitleRegionWidth ?? 0.90,
           height: currentProject?.settings.originalSubtitleRegionHeight ?? 0.16,
-        }],
+        }] : [],
   }
 
   const videoTransform: VideoTransformSettings = {
@@ -1721,6 +1723,13 @@ function App() {
           }}
         />
       ) : (
+        <EditorErrorBoundary
+          resetKey={currentProject?.projectId ?? 'empty-project'}
+          onOpenProjects={() => {
+            setProjectBusy(false)
+            setProjectDialogOpen(true)
+          }}
+        >
         <main
           ref={editorLayoutRef}
           id="editor-workspace"
@@ -1862,6 +1871,7 @@ function App() {
             onKeyDown={(event) => resizeWithKeyboard('subtitles', event)}
           />
           <SubtitlePanel
+            key={currentProject?.projectId ?? 'empty-project'}
             segments={segments}
             selectedId={selectedSegmentId}
             onSelect={(id) => {
@@ -1983,6 +1993,7 @@ function App() {
           onNotify={notify}
         />
         </main>
+        </EditorErrorBoundary>
       )}
 
       <input

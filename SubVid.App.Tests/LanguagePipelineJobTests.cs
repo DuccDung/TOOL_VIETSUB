@@ -322,6 +322,37 @@ public sealed class LanguagePipelineJobTests : IDisposable
     }
 
     [Fact]
+    public async Task Translation_LongTimeline_ProcessesDifferentChaptersConcurrently()
+    {
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Concurrent chapters");
+        project.SourceLanguageCode = "en";
+        project.Settings.TranslationProvider = TranslationProviders.OpenAi;
+        project.Settings.TranslationModelId = "gpt-test";
+        project.Settings.TranslationReviewEnabled = false;
+        project.Settings.TranslationSceneMaxCues = 1;
+        project.Settings.TranslationContextCueCount = 0;
+        var cues = new[]
+        {
+            new SubtitleCue { StartMilliseconds = 0, EndMilliseconds = 2_000, OriginalText = "Chapter one" },
+            new SubtitleCue { StartMilliseconds = 11 * 60 * 1000, EndMilliseconds = 11 * 60 * 1000 + 2_000, OriginalText = "Chapter two" },
+        };
+        project.SubtitleTracks.Add(new SubtitleDocument { LanguageCode = "en", Cues = cues.ToList() });
+        var provider = new ConcurrentChapterProvider();
+        var executor = new TranslationJobExecutor(paths, workspace, project, provider);
+
+        await executor.ExecuteAsync(
+            new LocalJob { Steps = [new LocalJobStep { Code = "TRANSLATE" }] },
+            _ => ValueTask.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(2, provider.MaximumConcurrency);
+        Assert.All(cues, cue => Assert.StartsWith("VI:", cue.TranslatedText));
+        Assert.All(provider.ChapterContexts, context => Assert.Contains("Chapter", context));
+    }
+
+    [Fact]
     public async Task VoiceSynthesis_WritesAtomicCueFilesAndMetadata()
     {
         var paths = new AppPaths(_root);
@@ -695,6 +726,60 @@ public sealed class LanguagePipelineJobTests : IDisposable
                     $"Lượt {RequestCount}: {cue.OriginalText}",
                     0.95,
                     [])).ToArray()));
+        }
+    }
+
+    private sealed class ConcurrentChapterProvider : ITranslationProvider
+    {
+        private int _active;
+        private int _maximumConcurrency;
+
+        public string ProviderId => TranslationProviders.OpenAi;
+
+        public string ModelId => "gpt-test";
+
+        public bool SupportsContextualReview => false;
+
+        public int MaximumConcurrency => _maximumConcurrency;
+
+        public System.Collections.Concurrent.ConcurrentBag<string> ChapterContexts { get; } = [];
+
+        public async Task<TranslationSceneResult> TranslateAsync(
+            TranslationSceneRequest request,
+            CancellationToken cancellationToken)
+        {
+            var active = Interlocked.Increment(ref _active);
+            UpdateMaximum(active);
+            ChapterContexts.Add(request.ChapterContext);
+            try
+            {
+                await Task.Delay(50, cancellationToken);
+                return new TranslationSceneResult(
+                    ProviderId,
+                    ModelId,
+                    ModelId,
+                    request.Cues.Where(cue => cue.IsTarget).Select(cue => new TranslationItemResult(
+                        cue.CueId,
+                        $"VI: {cue.OriginalText}",
+                        0.95,
+                        [])).ToArray());
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _active);
+            }
+        }
+
+        private void UpdateMaximum(int value)
+        {
+            while (true)
+            {
+                var current = _maximumConcurrency;
+                if (value <= current || Interlocked.CompareExchange(ref _maximumConcurrency, value, current) == current)
+                {
+                    return;
+                }
+            }
         }
     }
 

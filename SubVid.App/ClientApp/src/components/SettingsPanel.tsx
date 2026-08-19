@@ -119,10 +119,11 @@ export function SettingsPanel({
   }
 
   const removeRemovalRegion = (regionId: string) => {
-    if (jobBusy || removalRegions.length <= 1) return
+    if (jobBusy) return
+    const nextRegions = removalRegions.filter((region) => region.id !== regionId)
     onSubtitleRemovalChange(withSubtitleRemovalRegions(
-      subtitleRemoval,
-      removalRegions.filter((region) => region.id !== regionId),
+      { ...subtitleRemoval, enabled: nextRegions.length > 0 && subtitleRemoval.enabled },
+      nextRegions,
     ))
   }
 
@@ -280,7 +281,15 @@ export function SettingsPanel({
             label="Che phụ đề Trung đã dính vào video"
             description="Áp dụng trên preview và khi xuất; video nguồn không bị thay đổi"
             icon={<Eraser size={17} />}
-            onChange={(enabled) => onSubtitleRemovalChange({ ...subtitleRemoval, enabled })}
+            onChange={(enabled) => {
+              const regions = getSubtitleRemovalRegions(subtitleRemoval)
+              onSubtitleRemovalChange(withSubtitleRemovalRegions(
+                { ...subtitleRemoval, enabled },
+                enabled && regions.length === 0
+                  ? [createSubtitleRemovalRegion(0)]
+                  : regions,
+              ))
+            }}
           />
 
           <SelectField
@@ -354,8 +363,8 @@ export function SettingsPanel({
                   <button
                     type="button"
                     aria-label={`Xóa vùng che ${index + 1}`}
-                    title={removalRegions.length <= 1 ? 'Cần giữ lại ít nhất một vùng' : `Xóa vùng che ${index + 1}`}
-                    disabled={jobBusy || removalRegions.length <= 1}
+                    title={`Xóa vùng che ${index + 1}`}
+                    disabled={jobBusy}
                     onClick={() => removeRemovalRegion(region.id)}
                   >
                     <Trash2 size={13} />

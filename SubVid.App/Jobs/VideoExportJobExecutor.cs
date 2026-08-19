@@ -116,6 +116,20 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
         var destinationDirectory = Path.GetDirectoryName(destination)
             ?? throw new LocalJobException("EXPORT_DESTINATION_INVALID", "Thư mục xuất video không hợp lệ.", retryable: false);
         Directory.CreateDirectory(destinationDirectory);
+        var estimatedOutputBytes = Math.Max(512L * 1024 * 1024, source.SizeBytes);
+        var projectDirectory = _paths.GetProjectDirectory(_project.ProjectId);
+        var sameVolume = string.Equals(
+            Path.GetPathRoot(projectDirectory),
+            Path.GetPathRoot(destinationDirectory),
+            StringComparison.OrdinalIgnoreCase);
+        DiskSpaceGuard.EnsureAvailable(
+            projectDirectory,
+            sameVolume ? checked(estimatedOutputBytes * 2) : estimatedOutputBytes,
+            "mã hóa video");
+        if (!sameVolume)
+        {
+            DiskSpaceGuard.EnsureAvailable(destinationDirectory, estimatedOutputBytes, "sao chép video xuất");
+        }
 
         SubtitleCue[] translatedCues = [];
         if (includeVietnameseSubtitles)
@@ -170,6 +184,8 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
             var audioFilter = BuildAudioFilter(_project.Settings, source.Metadata.HasAudio);
             var videoFilter = BuildVideoFilter(_project.Settings, subtitlePath);
             var filter = $"{videoFilter};{audioFilter}";
+            var encoderPreset = ResolveEncoderPreset(source.Metadata.DurationSeconds);
+            var encoderThreads = Math.Max(1, Environment.ProcessorCount - 1);
             var arguments = new List<string>
             {
                 "-y", "-v", "error",
@@ -185,7 +201,8 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
                 "-map", "[video]",
                 "-map", "[mixed]",
                 "-c:v", "libx264",
-                "-preset", "medium",
+                "-preset", encoderPreset,
+                "-threads", encoderThreads.ToString(CultureInfo.InvariantCulture),
                 "-crf", "20",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac",
@@ -237,6 +254,11 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
             if (File.Exists(externalPartial)) File.Delete(externalPartial);
         }
     }
+
+    internal static string ResolveEncoderPreset(double durationSeconds) =>
+        double.IsFinite(durationSeconds) && durationSeconds >= 30 * 60
+            ? "veryfast"
+            : "medium";
 
     public static string BuildVideoFilter(ProjectSettings settings, string subtitlePath)
     {

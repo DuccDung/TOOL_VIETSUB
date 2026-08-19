@@ -1,5 +1,6 @@
 <Solution>
-  <Project Path="SubVid.Server/SubVid.Server.csproj" />
-  <Project Path="SubVid.App/SubVid.App.csproj" Id="8e149324-0223-4c1c-946b-3f345257d565" />
   <Project Path="SubVid.App.Tests/SubVid.App.Tests.csproj" />
+  <Project Path="SubVid.App/SubVid.App.csproj" Id="8e149324-0223-4c1c-946b-3f345257d565" />
+  <Project Path="SubVid.Server/SubVid.Server.csproj" />
+  <Project Path="ToolDowloader/ToolDowloader.csproj" Id="5f0af2a0-ab74-46f3-9c4d-a1ab4fb73814" />
 </Solution>

@@ -7,7 +7,7 @@ namespace SubVid.App.Translation;
 
 public static class TranslationPromptBuilder
 {
-    public const int PromptVersion = 4;
+    public const int PromptVersion = 5;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -43,6 +43,7 @@ public static class TranslationPromptBuilder
                 sourceLanguage = request.SourceLanguage,
                 targetLanguage = request.TargetLanguage,
             },
+            chapterContext = NullIfEmpty(Limit(request.ChapterContext, 2400)),
             glossary = request.Glossary.Take(200).Select(entry => new
             {
                 source = Limit(entry.SourceText, 200),

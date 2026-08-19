@@ -25,10 +25,17 @@ public sealed class MainForm : Form
     private const int HtBottomLeft = 16;
     private const int HtBottomRight = 17;
     private const int ResizeGrip = 7;
+    private const int MaximumRenderRecoveriesPerMinute = 3;
     private const string AppHostName = "app.subvid.local";
     private const string MediaHostName = "media.subvid.local";
 
-    private readonly WebView2 _webView;
+    private static readonly object WebViewLogSync = new();
+    private readonly object _webViewRecoverySync = new();
+    private readonly WebViewRenderingConfiguration _webViewRenderingConfiguration =
+        WebViewRenderingPolicy.Resolve(Environment.GetEnvironmentVariable(
+            WebViewRenderingPolicy.EnvironmentVariableName));
+    private WebView2 _webView;
+    private CoreWebView2Environment? _webViewEnvironment;
     private readonly AuthSessionManager _authSessionManager = new();
     private readonly DesktopWorkspaceCoordinator _workspaceCoordinator;
     private readonly FfmpegRuntimeProvisioner _ffmpegProvisioner;
@@ -36,11 +43,14 @@ public sealed class MainForm : Form
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly System.Windows.Forms.Timer _sessionTimer;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly UiModalOperationDispatcher _modalDispatcher;
     private bool _authInitialized;
     private bool _shutdownStarted;
     private bool _shutdownCompleted;
-    private int _aiStoragePickerQueued;
     private int _aiStorageChangeActive;
+    private int _webViewRecoveryQueued;
+    private int _renderRecoveryCount;
+    private DateTimeOffset _renderRecoveryWindowStarted;
     private CancellationTokenSource? _ffmpegInstallCancellation;
     private Task? _ffmpegInstallTask;
     private PendingVideoImport? _pendingVideoImport;
@@ -101,20 +111,25 @@ public sealed class MainForm : Form
         FormBorderStyle = FormBorderStyle.None;
         KeyPreview = true;
 
-        _webView = new WebView2
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(6, 10, 18),
-            DefaultBackgroundColor = Color.FromArgb(6, 10, 18),
-        };
+        _webView = CreateWebViewControl();
 
         Controls.Add(_webView);
+        _modalDispatcher = new UiModalOperationDispatcher(
+            callback => BeginInvoke(new Action(() => _ = callback())),
+            () => IsHandleCreated && !IsDisposed && !Disposing && !_shutdownStarted);
         _sessionTimer = new System.Windows.Forms.Timer { Interval = 60_000 };
         _sessionTimer.Tick += OnSessionTimerTick;
         Shown += OnShown;
         FormClosing += OnFormClosing;
         FormClosed += OnFormClosed;
     }
+
+    private static WebView2 CreateWebViewControl() => new()
+    {
+        Dock = DockStyle.Fill,
+        BackColor = Color.FromArgb(6, 10, 18),
+        DefaultBackgroundColor = Color.FromArgb(6, 10, 18),
+    };
 
     private async void OnShown(object? sender, EventArgs e)
     {
@@ -146,9 +161,19 @@ public sealed class MainForm : Form
 
         Directory.CreateDirectory(userDataFolder);
 
+        var environmentOptions = new CoreWebView2EnvironmentOptions(
+            additionalBrowserArguments: _webViewRenderingConfiguration.AdditionalBrowserArguments);
         var environment = await CoreWebView2Environment.CreateAsync(
             browserExecutableFolder: null,
-            userDataFolder: userDataFolder);
+            userDataFolder: userDataFolder,
+            options: environmentOptions);
+        _webViewEnvironment = environment;
+        environment.BrowserProcessExited += OnWebViewBrowserProcessExited;
+        AppendWebViewDiagnostic("environment-created", new
+        {
+            compositionMode = _webViewRenderingConfiguration.Mode,
+            browserArguments = _webViewRenderingConfiguration.AdditionalBrowserArguments,
+        });
 
         await _webView.EnsureCoreWebView2Async(environment);
 
@@ -199,25 +224,34 @@ public sealed class MainForm : Form
         object? sender,
         CoreWebView2ProcessFailedEventArgs eventArgs)
     {
-        try
+        AppendWebViewDiagnostic("process-failed", new
         {
-            var logDirectory = Path.Combine(AppPaths.ResolveDefaultRootDirectory(), "Logs");
-            Directory.CreateDirectory(logDirectory);
-            File.AppendAllText(
-                Path.Combine(logDirectory, "webview-process.log"),
-                $"{DateTimeOffset.Now:O}\t{eventArgs.ProcessFailedKind}\tWebView2 process failed.{Environment.NewLine}");
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-#if DEBUG
-            System.Diagnostics.Debug.WriteLine(exception);
-#endif
-        }
+            kind = eventArgs.ProcessFailedKind.ToString(),
+            reason = eventArgs.Reason.ToString(),
+            eventArgs.ExitCode,
+            eventArgs.ProcessDescription,
+            eventArgs.FailureSourceModulePath,
+        });
 
         if (eventArgs.ProcessFailedKind != CoreWebView2ProcessFailedKind.RenderProcessExited
             || IsDisposed
             || Disposing)
         {
+            return;
+        }
+
+        if (!TryReserveRenderRecovery())
+        {
+            AppendWebViewDiagnostic("render-recovery-suppressed", new
+            {
+                maximumAttempts = MaximumRenderRecoveriesPerMinute,
+            });
+            PostFromAnyThread(new
+            {
+                type = "workspace:error",
+                code = "WEBVIEW_RENDERER_UNSTABLE",
+                message = "Giao diện WebView2 lỗi lặp lại. Hãy đóng và mở lại ứng dụng.",
+            });
             return;
         }
 
@@ -237,6 +271,195 @@ public sealed class MainForm : Form
             System.Diagnostics.Debug.WriteLine(exception);
 #endif
         }
+    }
+
+    private bool TryReserveRenderRecovery()
+    {
+        lock (_webViewRecoverySync)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_renderRecoveryWindowStarted == default
+                || now - _renderRecoveryWindowStarted >= TimeSpan.FromMinutes(1))
+            {
+                _renderRecoveryWindowStarted = now;
+                _renderRecoveryCount = 0;
+            }
+
+            if (_renderRecoveryCount >= MaximumRenderRecoveriesPerMinute)
+            {
+                return false;
+            }
+
+            _renderRecoveryCount++;
+            return true;
+        }
+    }
+
+    private void OnWebViewBrowserProcessExited(
+        object? sender,
+        CoreWebView2BrowserProcessExitedEventArgs eventArgs)
+    {
+        AppendWebViewDiagnostic("browser-process-exited", new
+        {
+            exitKind = eventArgs.BrowserProcessExitKind.ToString(),
+            eventArgs.BrowserProcessId,
+        });
+
+        if (eventArgs.BrowserProcessExitKind != CoreWebView2BrowserProcessExitKind.Failed
+            || _shutdownStarted
+            || IsDisposed
+            || Disposing)
+        {
+            return;
+        }
+
+        QueueWebViewRecovery();
+    }
+
+    private void QueueWebViewRecovery()
+    {
+        if (Interlocked.CompareExchange(ref _webViewRecoveryQueued, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            BeginInvoke(new Action(() => _ = RecoverWebViewAsync()));
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or ObjectDisposedException)
+        {
+            Interlocked.Exchange(ref _webViewRecoveryQueued, 0);
+            AppendWebViewDiagnostic("browser-recovery-queue-failed", new
+            {
+                exception = exception.ToString(),
+            });
+        }
+    }
+
+    private async Task RecoverWebViewAsync()
+    {
+        try
+        {
+            if (_shutdownStarted || IsDisposed || Disposing)
+            {
+                return;
+            }
+
+            var previousWebView = _webView;
+            var previousEnvironment = _webViewEnvironment;
+            if (previousEnvironment is not null)
+            {
+                previousEnvironment.BrowserProcessExited -= OnWebViewBrowserProcessExited;
+            }
+
+            Controls.Remove(previousWebView);
+            previousWebView.Dispose();
+            _webViewEnvironment = null;
+            _webView = CreateWebViewControl();
+            Controls.Add(_webView);
+            _webView.BringToFront();
+
+            await InitializeWebViewAsync();
+            AppendWebViewDiagnostic("browser-recovery-completed", new { });
+        }
+        catch (Exception exception)
+        {
+            AppendWebViewDiagnostic("browser-recovery-failed", new
+            {
+                exception = exception.ToString(),
+            });
+            if (!IsDisposed && !Disposing)
+            {
+                ShowStartupError(exception);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _webViewRecoveryQueued, 0);
+        }
+    }
+
+    private void AppendWebViewDiagnostic(string eventName, object details)
+    {
+        try
+        {
+            var logDirectory = Path.Combine(AppPaths.ResolveDefaultRootDirectory(), "Logs");
+            Directory.CreateDirectory(logDirectory);
+            var record = JsonSerializer.Serialize(new
+            {
+                timestamp = DateTimeOffset.Now,
+                eventName,
+                runtimeVersion = _webViewEnvironment?.BrowserVersionString,
+                sdkVersion = typeof(CoreWebView2Environment).Assembly.GetName().Version?.ToString(),
+                failureReportFolder = _webViewEnvironment?.FailureReportFolderPath,
+                details,
+            }, _jsonOptions);
+            lock (WebViewLogSync)
+            {
+                File.AppendAllText(
+                    Path.Combine(logDirectory, "webview-process.jsonl"),
+                    record + Environment.NewLine);
+            }
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidOperationException
+            or COMException)
+        {
+#if DEBUG
+            System.Diagnostics.Debug.WriteLine(exception);
+#endif
+        }
+    }
+
+    private void AppendFrontendDiagnostic(JsonElement message)
+    {
+        try
+        {
+            var logDirectory = Path.Combine(AppPaths.ResolveDefaultRootDirectory(), "Logs");
+            Directory.CreateDirectory(logDirectory);
+            var record = JsonSerializer.Serialize(new
+            {
+                timestamp = DateTimeOffset.Now,
+                projectId = _workspaceCoordinator.CurrentProject?.ProjectId,
+                source = ReadFrontendDiagnosticText(message, "source", 80),
+                name = ReadFrontendDiagnosticText(message, "name", 120),
+                errorMessage = ReadFrontendDiagnosticText(message, "message", 1_000),
+                stack = ReadFrontendDiagnosticText(message, "stack", 8_000),
+                componentStack = ReadFrontendDiagnosticText(message, "componentStack", 8_000),
+            }, _jsonOptions);
+            lock (WebViewLogSync)
+            {
+                File.AppendAllText(
+                    Path.Combine(logDirectory, "frontend-errors.jsonl"),
+                    record + Environment.NewLine);
+            }
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidOperationException)
+        {
+#if DEBUG
+            System.Diagnostics.Debug.WriteLine(exception);
+#endif
+        }
+    }
+
+    private static string ReadFrontendDiagnosticText(
+        JsonElement message,
+        string propertyName,
+        int maximumLength)
+    {
+        if (!message.TryGetProperty(propertyName, out var value)
+            || value.ValueKind != JsonValueKind.String)
+        {
+            return string.Empty;
+        }
+
+        var text = value.GetString() ?? string.Empty;
+        return text.Length <= maximumLength ? text : text[..maximumLength];
     }
 
     private void OnMediaResourceRequested(
@@ -374,9 +597,15 @@ public sealed class MainForm : Form
                 case "window:drag":
                     BeginWindowDrag();
                     break;
-                case "video:open":
-                    await OpenVideoAsync(document.RootElement);
+                case "ui:error":
+                    AppendFrontendDiagnostic(document.RootElement);
                     break;
+                case "video:open":
+                {
+                    var message = document.RootElement.Clone();
+                    QueueModalOperation(() => OpenVideoAsync(message));
+                    break;
+                }
                 case "video:import:cancel":
                     _workspaceCoordinator.CancelImport();
                     break;
@@ -394,13 +623,13 @@ public sealed class MainForm : Form
                     CancelFfmpegInstall();
                     break;
                 case "ffmpeg:folder:select":
-                    await SelectFfmpegFolderAsync();
+                    QueueModalOperation(SelectFfmpegFolderAsync);
                     break;
                 case "ffmpeg:folder:open":
                     OpenFfmpegFolder();
                     break;
                 case "video:export":
-                    await ExportVideoAsync();
+                    QueueModalOperation(ExportVideoAsync);
                     break;
                 case "project:list":
                     await SendProjectListAsync();
@@ -484,7 +713,7 @@ public sealed class MainForm : Form
                     await ChangeJobStateAsync(document.RootElement, "cancel");
                     break;
                 case "subtitle:import:srt":
-                    await ImportSrtAsync();
+                    QueueModalOperation(ImportSrtAsync);
                     break;
                 case "subtitle:update":
                     await UpdateSubtitleAsync(document.RootElement);
@@ -511,7 +740,7 @@ public sealed class MainForm : Form
                     RequestTimelineThumbnails(document.RootElement);
                     break;
                 case "subtitle:export:srt":
-                    await ExportSrtAsync();
+                    QueueModalOperation(ExportSrtAsync);
                     break;
                 case "app:ready":
                     SendWindowState();
@@ -569,7 +798,20 @@ public sealed class MainForm : Form
     {
         if (_authInitialized)
         {
-            PostAuthState(_authSessionManager.CurrentState);
+            var currentState = _authSessionManager.CurrentState;
+            PostAuthState(currentState);
+            if (currentState.IsAuthenticated)
+            {
+                await SendProjectListAsync();
+                if (_workspaceCoordinator.CurrentProject is not null)
+                {
+                    PostMessage(new
+                    {
+                        type = "project:state",
+                        project = _workspaceCoordinator.GetCurrentState(),
+                    });
+                }
+            }
             return;
         }
 
@@ -1084,24 +1326,20 @@ public sealed class MainForm : Form
             return;
         }
 
-        if (Interlocked.CompareExchange(ref _aiStoragePickerQueued, 1, 0) != 0
-            || Volatile.Read(ref _aiStorageChangeActive) != 0)
+        if (Volatile.Read(ref _aiStorageChangeActive) != 0)
         {
             PostWorkspaceError("AI_STORAGE_BUSY", "Một thao tác chọn hoặc chuyển thư mục AI đang được xử lý.");
             return;
         }
 
-        try
-        {
-            // FolderBrowserDialog must not start a nested native message loop while
-            // WebView2 is still dispatching WebMessageReceived.
-            BeginInvoke(new Action(ShowAiStorageSelectionDialog));
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or ObjectDisposedException)
-        {
-            Interlocked.Exchange(ref _aiStoragePickerQueued, 0);
-            HandleWorkspaceException(exception);
-        }
+        QueueModalOperation(
+            () =>
+            {
+                ShowAiStorageSelectionDialog();
+                return Task.CompletedTask;
+            },
+            "AI_STORAGE_BUSY",
+            "Một thao tác chọn hoặc chuyển thư mục AI đang được xử lý.");
     }
 
     private void ShowAiStorageSelectionDialog()
@@ -1140,10 +1378,40 @@ public sealed class MainForm : Form
         {
             HandleWorkspaceException(exception);
         }
-        finally
+    }
+
+    private void QueueModalOperation(
+        Func<Task> operation,
+        string busyCode = "DESKTOP_DIALOG_BUSY",
+        string busyMessage = "Một hộp thoại khác đang được mở. Hãy hoàn tất thao tác đó trước.")
+    {
+        UiModalScheduleResult result;
+        try
         {
-            Interlocked.Exchange(ref _aiStoragePickerQueued, 0);
+            result = _modalDispatcher.TrySchedule(operation, HandleModalOperationException);
         }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or ObjectDisposedException)
+        {
+            HandleModalOperationException(exception);
+            return;
+        }
+
+        if (result == UiModalScheduleResult.Busy)
+        {
+            PostWorkspaceError(busyCode, busyMessage);
+        }
+    }
+
+    private void HandleModalOperationException(Exception exception)
+    {
+        if (exception is OperationCanceledException
+            && _lifetimeCancellation.IsCancellationRequested)
+        {
+            return;
+        }
+
+        HandleWorkspaceException(exception);
     }
 
     private async Task ChangeAiStorageAsync(JsonElement message)
@@ -1239,7 +1507,8 @@ public sealed class MainForm : Form
             if (message.TryGetProperty("regions", out var regionsElement))
             {
                 if (regionsElement.ValueKind != JsonValueKind.Array
-                    || regionsElement.GetArrayLength() is < 1 or > DesktopWorkspaceCoordinator.MaxSubtitleRemovalRegions)
+                    || regionsElement.GetArrayLength() > DesktopWorkspaceCoordinator.MaxSubtitleRemovalRegions
+                    || (enabledElement.GetBoolean() && regionsElement.GetArrayLength() == 0))
                 {
                     PostWorkspaceError("PROJECT_SETTINGS_INVALID", "Danh sách vùng che không hợp lệ.");
                     return;
@@ -2196,6 +2465,10 @@ public sealed class MainForm : Form
 
     private void OnFormClosed(object? sender, FormClosedEventArgs eventArgs)
     {
+        if (_webViewEnvironment is not null)
+        {
+            _webViewEnvironment.BrowserProcessExited -= OnWebViewBrowserProcessExited;
+        }
         _sessionTimer.Stop();
         _sessionTimer.Dispose();
         _lifetimeCancellation.Cancel();

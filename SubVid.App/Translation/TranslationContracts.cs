@@ -41,7 +41,8 @@ public sealed record TranslationSceneRequest(
     IReadOnlyList<TranslationGlossaryEntry> Glossary,
     IReadOnlyList<TranslationMemoryEntry> TranslationMemory,
     IReadOnlyList<TranslationCueInput> Cues,
-    TranslationPass Pass)
+    TranslationPass Pass,
+    string ChapterContext = "")
 {
     public IReadOnlyList<Guid> TargetCueIds => Cues
         .Where(cue => cue.IsTarget)

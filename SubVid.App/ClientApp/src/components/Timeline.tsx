@@ -28,6 +28,7 @@ import {
 import { formatClock } from '../lib/format'
 import { hasNativeHost, postToHost, subscribeToHost } from '../lib/host'
 import { getTimelineFollowGeometry } from '../lib/timelineGeometry'
+import { selectVisibleTimelineItems } from '../lib/longFormVirtualization'
 import {
   buildTimelineThumbnailSamples,
   prioritizeTimelineThumbnailIndices,
@@ -92,32 +93,6 @@ const playheadAnchorStorageKey = 'subvid.timeline.playhead-anchor-ratio'
 const playbackViewportUpdateIntervalMilliseconds = 120
 const userScrubSeekIntervalMilliseconds = 50
 const userScrubSettleMilliseconds = 140
-const originalWaveformSampleCount = 512
-const originalWaveformBarsPath = (() => {
-  const centerY = 50
-  const raw = Array.from({ length: originalWaveformSampleCount + 4 }, (_, index) => {
-    const value = Math.sin((index + 1) * 12.9898 + 78.233) * 43758.5453
-    return value - Math.floor(value)
-  })
-  return Array.from({ length: originalWaveformSampleCount }, (_, index) => {
-    const x = index * 1000 / (originalWaveformSampleCount - 1)
-    const detail = (
-      raw[index] * 0.12
-      + raw[index + 1] * 0.22
-      + raw[index + 2] * 0.32
-      + raw[index + 3] * 0.22
-      + raw[index + 4] * 0.12
-    )
-    const rhythm = (
-      Math.abs(Math.sin(index * 0.071 + 0.35)) * 0.34
-      + Math.abs(Math.sin(index * 0.019 + 1.2)) * 0.22
-      + Math.abs(Math.sin(index * 0.41 + 2.1)) * 0.12
-    )
-    const amplitude = 5.5 + Math.min(1, detail * 0.74 + rhythm * 0.42) * 27.5
-    return `M${x.toFixed(2)} ${(centerY - amplitude).toFixed(2)}V${(centerY + amplitude).toFixed(2)}`
-  }).join('')
-})()
-
 export function Timeline({
   video,
   flipHorizontal,
@@ -153,7 +128,7 @@ export function Timeline({
   onUpdateVoiceBoundary,
   onNotify,
 }: TimelineProps) {
-  const [timelineZoom, setTimelineZoom] = useState(0)
+  const [timelineZoom, setTimelineZoom] = useState(100)
   const [bookmarks, setBookmarks] = useState<number[]>([])
   const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null)
   const [draftTranslation, setDraftTranslation] = useState('')
@@ -216,6 +191,23 @@ export function Timeline({
     currentTime > segment.start + 0.1 && currentTime < segment.end - 0.1) ?? null
   const sourceAudioActive = sourceAudioAvailable && sourceAudioEnabled
   const voiceAudioActive = voiceAudioAvailable && voiceAudioEnabled
+  const importantTimelineIds = useMemo(() => new Set([
+    ...(selectedId === null ? [] : [selectedId]),
+    ...(editingSegmentId === null ? [] : [editingSegmentId]),
+    ...(cueAtPlayhead === null ? [] : [cueAtPlayhead.id]),
+  ]), [selectedId, editingSegmentId, cueAtPlayhead])
+  const visibleTimelineSegments = useMemo(() => selectVisibleTimelineItems(
+    segments,
+    duration,
+    timelineViewport.scrollLeft,
+    timelineViewport.clientWidth,
+    timelineSurfaceWidth,
+    importantTimelineIds,
+  ), [segments, duration, timelineViewport, timelineSurfaceWidth, importantTimelineIds])
+  const timelineSegmentsByCueId = useMemo(
+    () => new Map(segments.map(segment => [segment.cueId, segment])),
+    [segments],
+  )
   const voiceClips = useMemo(() => {
     const clips: Array<{
       key: string
@@ -256,6 +248,17 @@ export function Timeline({
     }
     return clips
   }, [segments])
+  const originalAudioClips = useMemo(() => {
+    if (voiceClips.length > 0) return voiceClips
+    if (segments.length > 0) {
+      return segments.map((segment) => ({
+        key: `source-${segment.cueId}`,
+        start: segment.start,
+        end: segment.end,
+      }))
+    }
+    return video ? [{ key: 'source-audio', start: 0, end: duration }] : []
+  }, [duration, segments, video, voiceClips])
   const thumbnailSourceKey = video
     ? `${video.sha256 ?? video.fileName}:${video.playbackUrl ?? ''}`
     : ''
@@ -1109,7 +1112,7 @@ export function Timeline({
               ) : null}
             </div>
             <div className="timeline-track subtitle-track">
-              {segments.map((segment) => {
+              {visibleTimelineSegments.map((segment) => {
                 const displayText = segment.translated.trim()
                   || segment.original.trim()
                   || `Phân đoạn ${segment.id}`
@@ -1118,7 +1121,7 @@ export function Timeline({
                   && selectedId !== segment.id
                 const boundary = segment.voiceBoundaryAfter
                 const nextSegment = boundary
-                  ? segments.find((item) => item.cueId === boundary.nextCueId)
+                  ? timelineSegmentsByCueId.get(boundary.nextCueId)
                   : null
 
                 return (
@@ -1170,7 +1173,18 @@ export function Timeline({
               })}
             </div>
             <div className={`timeline-track audio-track ${sourceAudioActive ? '' : 'is-muted'}`}>
-              {video ? <Waveform kind="original" /> : null}
+              {originalAudioClips.map((clip) => (
+                <div
+                  key={clip.key}
+                  className="voice-clip original-audio-clip"
+                  style={{
+                    left: `${(clip.start / duration) * 100}%`,
+                    width: `${((clip.end - clip.start) / duration) * 100}%`,
+                  }}
+                >
+                  <Waveform kind="original" />
+                </div>
+              ))}
             </div>
             <div className={`timeline-track voice-track ${voiceAudioActive ? '' : 'is-muted'}`}>
               {voiceClips.map((clip) => (
@@ -1496,35 +1510,6 @@ const TimelineFilmstrip = memo(function TimelineFilmstrip({
 })
 
 function Waveform({ kind }: { kind: 'original' | 'voice' }) {
-  if (kind === 'original') {
-    return (
-      <span className="waveform waveform--original" aria-hidden="true">
-        <svg
-          className="waveform__continuous"
-          viewBox="0 0 1000 100"
-          preserveAspectRatio="none"
-          focusable="false"
-        >
-          <defs>
-            <linearGradient id="original-waveform-gradient" x1="0" y1="0" x2="0" y2="100" gradientUnits="userSpaceOnUse">
-              <stop offset="0" stopColor="#376f9f" stopOpacity="0.58" />
-              <stop offset="0.43" stopColor="#58b7ca" stopOpacity="0.86" />
-              <stop offset="0.5" stopColor="#72c9d5" stopOpacity="0.94" />
-              <stop offset="0.57" stopColor="#58b7ca" stopOpacity="0.86" />
-              <stop offset="1" stopColor="#376f9f" stopOpacity="0.58" />
-            </linearGradient>
-          </defs>
-          <line className="waveform__centerline" x1="0" y1="50" x2="1000" y2="50" />
-          <path
-            className="waveform__bars"
-            d={originalWaveformBarsPath}
-            stroke="url(#original-waveform-gradient)"
-          />
-        </svg>
-      </span>
-    )
-  }
-
   return (
     <span className={`waveform waveform--${kind}`} aria-hidden="true">
       {Array.from({ length: 52 }, (_, index) => (
