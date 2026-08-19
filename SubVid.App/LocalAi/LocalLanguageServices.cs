@@ -274,7 +274,9 @@ public sealed record VoiceSynthesisRequest(
     string OutputPath,
     string VoiceId = LocalVoiceCatalog.DefaultVoiceId,
     int Speed = 0,
-    VoiceProviderCheckpoint? ProviderCheckpoint = null);
+    VoiceProviderCheckpoint? ProviderCheckpoint = null,
+    string? PhraseId = null,
+    IReadOnlyList<Guid>? CueIds = null);
 
 public sealed record VoiceProviderCheckpoint(
     string? RequestId,
@@ -382,6 +384,25 @@ public sealed class VieNeuLocalVoiceSynthesizer : ILocalVoiceSynthesizer
                         HuggingFaceCacheRoot,
                         "*",
                         SearchOption.AllDirectories).Any();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+    }
+
+    public bool HasExistingModel
+    {
+        get
+        {
+            try
+            {
+                return File.Exists(ReadyMarkerPath)
+                    || (Directory.Exists(HuggingFaceCacheRoot)
+                        && Directory.EnumerateDirectories(HuggingFaceCacheRoot, "*", SearchOption.AllDirectories)
+                            .Select(Path.GetFileName)
+                            .Any(name => name?.Contains("VieNeu", StringComparison.OrdinalIgnoreCase) == true));
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {

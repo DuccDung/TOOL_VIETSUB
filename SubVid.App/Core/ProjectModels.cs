@@ -47,6 +47,8 @@ public sealed class ProjectManifest
 
     public List<SubtitleDocument> SubtitleTracks { get; set; } = [];
 
+    public List<VoicePhraseBoundaryOverride> VoicePhraseBoundaries { get; set; } = [];
+
     public ProjectSettings Settings { get; set; } = new();
 
     public ProjectTranslationContext TranslationContext { get; set; } = new();
@@ -93,6 +95,22 @@ public sealed class ProjectSettings
     public string? VoiceId { get; set; }
 
     public int VoiceSpeed { get; set; }
+
+    public double VoiceTimelinePreferredTempo { get; set; } = 1.12;
+
+    public double VoiceTimelineMaximumTempo { get; set; } = 1.20;
+
+    public int VoiceTimelineMaximumBorrowMilliseconds { get; set; } = 600;
+
+    public int VoiceTimelineMinimumGapMilliseconds { get; set; } = 90;
+
+    public bool VoiceTrimSilenceEnabled { get; set; } = true;
+
+    public int VoicePhraseGapMilliseconds { get; set; } = 500;
+
+    public double VoicePhraseMaximumDurationSeconds { get; set; } = 8;
+
+    public bool VoicePhraseSynthesisEnabled { get; set; } = true;
 
     public Dictionary<string, string> SpeakerVoiceIds { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
@@ -347,6 +365,10 @@ public sealed class LocalMediaReference
 
     public Guid? CueId { get; set; }
 
+    public List<Guid> CueIds { get; set; } = [];
+
+    public string? VoicePhraseId { get; set; }
+
     public string Role { get; set; } = "SOURCE_VIDEO";
 
     public string ImportMode { get; set; } = "LINK";
@@ -362,6 +384,8 @@ public sealed class LocalMediaReference
     public string Sha256 { get; set; } = string.Empty;
 
     public string? ContentFingerprint { get; set; }
+
+    public bool IsStale { get; set; }
 
     public DateTime SourceLastWriteAtUtc { get; set; }
 
@@ -445,6 +469,95 @@ public sealed class SubtitleCue
     public bool OriginalLocked { get; set; }
 
     public bool TranslationLocked { get; set; }
+
+    public VoiceTimingAnalysis? VoiceTiming { get; set; }
+}
+
+public static class VoicePhraseBoundaryModes
+{
+    public const string Auto = "AUTO";
+    public const string Join = "JOIN";
+    public const string Break = "BREAK";
+
+    public static string Normalize(string? mode) => mode?.Trim().ToUpperInvariant() switch
+    {
+        Join => Join,
+        Break => Break,
+        _ => Auto,
+    };
+}
+
+public sealed class VoicePhraseBoundaryOverride
+{
+    public Guid PreviousCueId { get; set; }
+
+    public Guid NextCueId { get; set; }
+
+    public string Mode { get; set; } = VoicePhraseBoundaryModes.Break;
+}
+
+public static class VoiceTimingStatuses
+{
+    public const string Natural = "NATURAL";
+    public const string Padded = "PADDED";
+    public const string GapFitted = "GAP_FITTED";
+    public const string Compressed = "COMPRESSED";
+    public const string ReviewRequired = "REVIEW_REQUIRED";
+    public const string Invalid = "INVALID";
+}
+
+public static class VoiceTimingSeverities
+{
+    public const string Info = "INFO";
+    public const string Warning = "WARNING";
+    public const string Error = "ERROR";
+}
+
+public sealed record class VoiceTimingAnalysis
+{
+    public double RawDurationSeconds { get; set; }
+
+    public double SourceDurationSeconds { get; set; }
+
+    public double TargetDurationSeconds { get; set; }
+
+    public double EffectiveWindowSeconds { get; set; }
+
+    public double RenderDurationSeconds { get; set; }
+
+    public double LeadingSilenceSeconds { get; set; }
+
+    public double TrailingSilenceSeconds { get; set; }
+
+    public double TrimStartSeconds { get; set; }
+
+    public double TrimEndSeconds { get; set; }
+
+    public double BorrowedGapSeconds { get; set; }
+
+    public double RequiredTempo { get; set; }
+
+    public double? AppliedTempo { get; set; }
+
+    public double PaddingSeconds { get; set; }
+
+    public int BaseTtsSpeed { get; set; }
+
+    public int AppliedTtsSpeed { get; set; }
+
+    public string? PhraseId { get; set; }
+
+    public string ResolutionAction { get; set; } = "NONE";
+
+    public string Status { get; set; } = VoiceTimingStatuses.Invalid;
+
+    public string Severity { get; set; } = VoiceTimingSeverities.Error;
+
+    public string Message { get; set; } = string.Empty;
+
+    public int? SuggestedMaximumCharacters { get; set; }
+
+    public DateTime AnalyzedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
 [JsonConverter(typeof(LocalJobStatusJsonConverter))]
@@ -565,6 +678,8 @@ public sealed class VoiceSynthesisJobMetrics
     public int CompletedCues { get; set; }
 
     public int TotalCues { get; set; }
+
+    public int TimingWarningCues { get; set; }
 }
 
 public sealed class TranslationJobMetrics

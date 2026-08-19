@@ -15,12 +15,20 @@ public sealed class VideoExportIntegrationTests : IDisposable
         Guid.NewGuid().ToString("N"));
 
     [Theory]
-    [InlineData(4, "atempo=2,atempo=2")]
-    [InlineData(0.25, "atempo=0.5,atempo=0.5")]
-    [InlineData(1.25, "atempo=1.25")]
-    public void BuildAtempo_UsesSafeFfmpegStages(double factor, string expected)
+    [InlineData(1, "atempo=1")]
+    [InlineData(1.1, "atempo=1.1")]
+    [InlineData(1.2, "atempo=1.2")]
+    public void BuildAtempo_OnlyBuildsSafeTimelineTempo(double factor, string expected)
     {
         Assert.Equal(expected, VoiceTimelineJobExecutor.BuildAtempo(factor));
+    }
+
+    [Theory]
+    [InlineData(0.99)]
+    [InlineData(1.21)]
+    public void BuildAtempo_RejectsSlowdownAndUnsafeCompression(double factor)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => VoiceTimelineJobExecutor.BuildAtempo(factor));
     }
 
     [Fact]
@@ -370,6 +378,46 @@ public sealed class VideoExportIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_RejectsStaleVoiceTimeline()
+    {
+        Directory.CreateDirectory(_root);
+        var sourcePath = Path.Combine(_root, "stale-voice-source.mp4");
+        var sourceBytes = Encoding.UTF8.GetBytes("source-placeholder");
+        await File.WriteAllBytesAsync(sourcePath, sourceBytes);
+        var paths = new AppPaths(Path.Combine(_root, "stale-voice-app"));
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Stale voice export");
+        project.SourceVideo = new LocalMediaReference
+        {
+            OriginalPath = sourcePath,
+            ImportMode = "LINK",
+            SizeBytes = sourceBytes.Length,
+            Sha256 = Convert.ToHexString(SHA256.HashData(sourceBytes)).ToLowerInvariant(),
+            Metadata = new MediaMetadata { HasAudio = false },
+        };
+        project.Settings.OriginalAudioEnabled = false;
+        project.Settings.VietnameseVoiceEnabled = true;
+        project.AudioTracks.Add(new LocalMediaReference
+        {
+            Role = "VOICE_TIMELINE",
+            IsStale = true,
+        });
+        var executor = new VideoExportJobExecutor(
+            paths,
+            workspace,
+            project,
+            ffmpegPath: "ffmpeg-not-used.exe",
+            inspector: new StubMediaInspector());
+
+        var exception = await Assert.ThrowsAsync<LocalJobException>(() => executor.ExecuteAsync(
+            new LocalJob(),
+            _ => ValueTask.CompletedTask,
+            CancellationToken.None));
+
+        Assert.Equal("VOICE_TIMELINE_STALE", exception.Code);
+    }
+
+    [Fact]
     public async Task FullExport_WithLocalFfmpeg_CreatesValidatedMp4WithoutChangingSource()
     {
         var ffmpeg = Environment.GetEnvironmentVariable("SUBVID_FFMPEG_PATH");
@@ -514,6 +562,12 @@ public sealed class VideoExportIntegrationTests : IDisposable
         {
             writer.Write((short)(Math.Sin(2 * Math.PI * 660 * index / sampleRate) * short.MaxValue * 0.15));
         }
+    }
+
+    private sealed class StubMediaInspector : IMediaInspector
+    {
+        public Task<MediaMetadata> InspectAsync(string filePath, CancellationToken cancellationToken) =>
+            Task.FromResult(new MediaMetadata());
     }
 
     public void Dispose()

@@ -13,6 +13,7 @@ public sealed class AppPaths
         RootDirectory = Path.GetFullPath(rootDirectory ?? ResolveDefaultRootDirectory());
         ProjectsDirectory = Path.Combine(RootDirectory, "Projects");
         LogsDirectory = Path.Combine(RootDirectory, "Logs");
+        CacheDirectory = Path.Combine(RootDirectory, "Cache");
 
         var configuredAiRoot = aiRootDirectory
             ?? Environment.GetEnvironmentVariable("SUBVID_AI_ROOT")
@@ -36,6 +37,8 @@ public sealed class AppPaths
     public string ProjectsDirectory { get; }
 
     public string LogsDirectory { get; }
+
+    public string CacheDirectory { get; }
 
     public string AiRootDirectory { get; private set; } = string.Empty;
 
@@ -103,11 +106,21 @@ public sealed class AppPaths
         return resolved;
     }
 
+    public string GetCachePath(params string[] segments)
+    {
+        var cacheDirectory = Path.GetFullPath(CacheDirectory);
+        var candidate = segments.Aggregate(cacheDirectory, Path.Combine);
+        var resolved = Path.GetFullPath(candidate);
+        EnsureWithin(cacheDirectory, resolved, "Đường dẫn cache không hợp lệ.");
+        return resolved;
+    }
+
     private void EnsureDirectories()
     {
         Directory.CreateDirectory(RootDirectory);
         Directory.CreateDirectory(ProjectsDirectory);
         Directory.CreateDirectory(LogsDirectory);
+        Directory.CreateDirectory(CacheDirectory);
         if (string.IsNullOrWhiteSpace(AiRootDirectory)) return;
         Directory.CreateDirectory(AiRootDirectory);
         Directory.CreateDirectory(ToolsDirectory);

@@ -123,7 +123,11 @@ public sealed class FullLocalPipelineIntegrationTests : IDisposable
         var cues = Assert.Single(project.SubtitleTracks).Cues;
         Assert.NotEmpty(cues);
         Assert.All(cues, cue => Assert.False(string.IsNullOrWhiteSpace(cue.TranslatedText)));
-        Assert.Equal(cues.Count, project.AudioTracks.Count(item => item.Role == "VOICE_CUE"));
+        var voicedCueIds = project.AudioTracks
+            .Where(item => item.Role is "VOICE_CUE" or "VOICE_PHRASE")
+            .SelectMany(item => item.CueId is Guid cueId ? item.CueIds.Append(cueId) : item.CueIds)
+            .ToHashSet();
+        Assert.Equal(cues.Count, voicedCueIds.Count);
         var outputMetadata = await new FfprobeMediaInspector(paths)
             .InspectAsync(destination, CancellationToken.None);
         Assert.True(outputMetadata.HasVideo);

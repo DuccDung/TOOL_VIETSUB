@@ -8,6 +8,7 @@ type VoiceWorkspaceProps = {
   segments: SubtitleSegment[]
   busy: boolean
   downloadPercent: number | null
+  downloadMessage: string | null
   storage: AiStorageInfo | null
   onSave: (defaultVoiceId: string, speakerVoiceIds: Record<string, string>, speed: number) => void
   onSaveFptCredential: (apiKey?: string, clearApiKey?: boolean) => void
@@ -24,6 +25,7 @@ export function VoiceWorkspace({
   segments,
   busy,
   downloadPercent,
+  downloadMessage,
   storage,
   onSave,
   onSaveFptCredential,
@@ -154,12 +156,30 @@ export function VoiceWorkspace({
               ))}
             </select>
             {selectedVoice?.requiresInstall && !selectedVoice.installed ? (
-              <small className="voice-install-note">Giọng này sẽ cần cài model trước lần tạo đầu tiên.</small>
+              <small className="voice-install-note">
+                {selectedVoice.installState === 'REPAIR_REQUIRED'
+                  ? 'Bộ giọng đã có dữ liệu nhưng cần được kiểm tra và sửa cài đặt.'
+                  : 'Giọng này sẽ cần cài model trước lần tạo đầu tiên.'}
+              </small>
             ) : null}
             {selectedVoice?.isCloud ? (
               <small className="voice-install-note">Giọng online dùng API key FPT.AI và không tải model về máy.</small>
             ) : null}
           </label>
+
+          <div className="voice-timeline-policy">
+            <Gauge size={17} />
+            <div>
+              <strong>Khớp timeline an toàn</strong>
+              <small>
+                {settings.phraseSynthesisEnabled ? 'Tạo giọng liền mạch theo cụm thoại' : 'Tạo riêng từng cue'} ·{' '}
+                {settings.trimSilenceEnabled ? 'tự cắt im lặng đầu/cuối' : 'giữ nguyên WAV'} · tận dụng tối đa{' '}
+                {(settings.timelineMaximumBorrowMilliseconds / 1000).toFixed(1)} giây khoảng trống · ưu tiên không quá{' '}
+                {settings.timelinePreferredTempo.toFixed(2)}x · giới hạn {settings.timelineMaximumTempo.toFixed(2)}x.
+              </small>
+            </div>
+            <span>Không làm chậm</span>
+          </div>
 
           {selectedVoice?.isCloud ? (
             <div className="voice-workspace-cloud-settings">
@@ -176,7 +196,7 @@ export function VoiceWorkspace({
                 <small>Key được mã hóa theo tài khoản Windows, không ghi vào project.</small>
               </label>
               <label className="voice-field voice-field--speed">
-                <span><Gauge size={14} /> Tốc độ FPT.AI: {speed > 0 ? `+${speed}` : speed}</span>
+                <span><Gauge size={14} /> Tốc độ giọng TTS FPT.AI: {speed > 0 ? `+${speed}` : speed}</span>
                 <input
                   type="range"
                   min={-3}
@@ -254,7 +274,7 @@ export function VoiceWorkspace({
         {downloadPercent !== null ? (
           <div className="voice-download-progress" aria-live="polite">
             <span style={{ width: `${downloadPercent}%` }} />
-            <small>Đang chuẩn bị model · {Math.round(downloadPercent)}%</small>
+            <small>{downloadMessage ?? 'Đang chuẩn bị model'} · {Math.round(downloadPercent)}%</small>
           </div>
         ) : null}
         <div className="voice-card-grid">
@@ -263,8 +283,16 @@ export function VoiceWorkspace({
               <div className="voice-card__top">
                 <span className={`voice-engine voice-engine--${voice.engine}`}>{voice.engine}</span>
                 <span className={voice.isCloud || voice.installed ? 'voice-ready is-ready' : 'voice-ready'}>
-                  {voice.isCloud ? <Cloud size={13} /> : voice.installed ? <CheckCircle2 size={13} /> : <Download size={13} />}
-                  {voice.isCloud ? 'Online' : voice.installed ? 'Đã cài' : 'Chưa cài'}
+                  {voice.isCloud
+                    ? <Cloud size={13} />
+                    : voice.installed
+                      ? <CheckCircle2 size={13} />
+                      : voice.installState === 'REPAIR_REQUIRED' ? <RefreshCw size={13} /> : <Download size={13} />}
+                  {voice.isCloud
+                    ? 'Online'
+                    : voice.installed
+                      ? 'Đã cài'
+                      : voice.installState === 'REPAIR_REQUIRED' ? 'Cần sửa' : 'Chưa cài'}
                 </span>
               </div>
               <strong>{voice.displayName}</strong>
@@ -295,7 +323,9 @@ export function VoiceWorkspace({
                     disabled={busy}
                     onClick={() => onInstall(voice.voiceId)}
                   >
-                    <Download size={13} /> Cài model
+                    {voice.installState === 'REPAIR_REQUIRED'
+                      ? <><RefreshCw size={13} /> Sửa cài đặt</>
+                      : <><Download size={13} /> Cài model</>}
                   </button>
                 ) : null}
               </div>

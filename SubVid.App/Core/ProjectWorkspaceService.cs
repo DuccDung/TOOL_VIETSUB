@@ -323,11 +323,102 @@ public sealed class ProjectWorkspaceService
         _ = NormalizeName(manifest.Name);
         manifest.Settings ??= new ProjectSettings();
         manifest.Settings.VoiceSpeed = Math.Clamp(manifest.Settings.VoiceSpeed, -3, 3);
+        manifest.Settings.VoiceTimelinePreferredTempo = double.IsFinite(
+            manifest.Settings.VoiceTimelinePreferredTempo)
+            ? Math.Clamp(manifest.Settings.VoiceTimelinePreferredTempo, 1.0, 1.12)
+            : 1.12;
+        manifest.Settings.VoiceTimelineMaximumTempo = double.IsFinite(
+            manifest.Settings.VoiceTimelineMaximumTempo)
+            ? Math.Clamp(manifest.Settings.VoiceTimelineMaximumTempo, 1.0, 1.20)
+            : 1.20;
+        manifest.Settings.VoiceTimelinePreferredTempo = Math.Min(
+            manifest.Settings.VoiceTimelinePreferredTempo,
+            manifest.Settings.VoiceTimelineMaximumTempo);
+        manifest.Settings.VoiceTimelineMaximumBorrowMilliseconds = Math.Clamp(
+            manifest.Settings.VoiceTimelineMaximumBorrowMilliseconds,
+            0,
+            2_000);
+        manifest.Settings.VoiceTimelineMinimumGapMilliseconds = Math.Clamp(
+            manifest.Settings.VoiceTimelineMinimumGapMilliseconds,
+            0,
+            500);
+        manifest.Settings.VoicePhraseGapMilliseconds = Math.Clamp(
+            manifest.Settings.VoicePhraseGapMilliseconds,
+            0,
+            2_000);
+        manifest.Settings.VoicePhraseMaximumDurationSeconds = double.IsFinite(
+            manifest.Settings.VoicePhraseMaximumDurationSeconds)
+            ? Math.Clamp(manifest.Settings.VoicePhraseMaximumDurationSeconds, 1, 20)
+            : 8;
+        foreach (var timing in manifest.SubtitleTracks
+            .SelectMany(track => track.Cues)
+            .Select(cue => cue.VoiceTiming)
+            .Where(timing => timing is not null)
+            .Cast<VoiceTimingAnalysis>())
+        {
+            if (!double.IsFinite(timing.RawDurationSeconds) || timing.RawDurationSeconds <= 0)
+            {
+                timing.RawDurationSeconds = Math.Max(0, timing.SourceDurationSeconds);
+            }
+
+            if (!double.IsFinite(timing.EffectiveWindowSeconds) || timing.EffectiveWindowSeconds <= 0)
+            {
+                timing.EffectiveWindowSeconds = Math.Max(0, timing.TargetDurationSeconds);
+            }
+
+            if (!double.IsFinite(timing.RenderDurationSeconds) || timing.RenderDurationSeconds <= 0)
+            {
+                timing.RenderDurationSeconds = Math.Max(0, timing.TargetDurationSeconds);
+            }
+
+            if (!double.IsFinite(timing.TrimEndSeconds) || timing.TrimEndSeconds <= 0)
+            {
+                timing.TrimEndSeconds = timing.RawDurationSeconds;
+            }
+
+            timing.BaseTtsSpeed = Math.Clamp(timing.BaseTtsSpeed, -3, 3);
+            timing.AppliedTtsSpeed = Math.Clamp(timing.AppliedTtsSpeed, -3, 3);
+            timing.ResolutionAction = string.IsNullOrWhiteSpace(timing.ResolutionAction)
+                ? "NONE"
+                : timing.ResolutionAction;
+        }
         manifest.Settings.SpeakerVoiceIds = manifest.Settings.SpeakerVoiceIds is null
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, string>(
                 manifest.Settings.SpeakerVoiceIds,
                 StringComparer.OrdinalIgnoreCase);
+        foreach (var media in manifest.AudioTracks)
+        {
+            media.CueIds ??= [];
+        }
+        manifest.VoicePhraseBoundaries ??= [];
+        var adjacentCuePairs = manifest.SubtitleTracks
+            .SelectMany(track => track.Cues
+                .OrderBy(cue => cue.StartMilliseconds)
+                .ThenBy(cue => cue.EndMilliseconds)
+                .Zip(
+                    track.Cues
+                        .OrderBy(cue => cue.StartMilliseconds)
+                        .ThenBy(cue => cue.EndMilliseconds)
+                        .Skip(1),
+                    (previous, next) => (previous.CueId, next.CueId)))
+            .ToHashSet();
+        manifest.VoicePhraseBoundaries = manifest.VoicePhraseBoundaries
+            .Where(boundary => boundary is not null
+                && boundary.PreviousCueId != Guid.Empty
+                && boundary.NextCueId != Guid.Empty
+                && adjacentCuePairs.Contains((boundary.PreviousCueId, boundary.NextCueId))
+                && VoicePhraseBoundaryModes.Normalize(boundary.Mode) is
+                    VoicePhraseBoundaryModes.Join or VoicePhraseBoundaryModes.Break)
+            .GroupBy(boundary => (boundary.PreviousCueId, boundary.NextCueId))
+            .Select(group => group.Last())
+            .Select(boundary => new VoicePhraseBoundaryOverride
+            {
+                PreviousCueId = boundary.PreviousCueId,
+                NextCueId = boundary.NextCueId,
+                Mode = VoicePhraseBoundaryModes.Normalize(boundary.Mode),
+            })
+            .ToList();
         manifest.Settings.OriginalSubtitleRemovalRegions ??= [];
         var validRemovalRegions = manifest.Settings.OriginalSubtitleRemovalRegions
             .Where(region => IsValidSubtitleRemovalRegion(region))

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import {
   AlignLeft,
@@ -10,10 +11,12 @@ import {
   Eye,
   Film,
   Layers3,
+  Link2,
   Mic2,
   Pause,
   Pencil,
   Play,
+  RotateCcw,
   Scissors,
   Trash2,
   Volume2,
@@ -23,7 +26,16 @@ import {
   ZoomOut,
 } from 'lucide-react'
 import { formatClock } from '../lib/format'
-import type { SubtitleSegment, VideoInfo } from '../types'
+import { hasNativeHost, postToHost, subscribeToHost } from '../lib/host'
+import { getTimelineFollowGeometry } from '../lib/timelineGeometry'
+import {
+  buildTimelineThumbnailSamples,
+  prioritizeTimelineThumbnailIndices,
+  timelineThumbnailCount,
+  timelineThumbnailProfileVersion,
+} from '../lib/timelineThumbnails'
+import type { TimelineThumbnailSample, TimelineViewport } from '../lib/timelineThumbnails'
+import type { SubtitleSegment, VideoInfo, VoiceBoundaryMode } from '../types'
 import { CompactRange, IconButton } from './Ui'
 
 type TimelineProps = {
@@ -32,6 +44,7 @@ type TimelineProps = {
   flipVertical: boolean
   segments: SubtitleSegment[]
   playing: boolean
+  playbackActive: boolean
   currentTime: number
   playbackRate: number
   sourceAudioEnabled: boolean
@@ -40,7 +53,12 @@ type TimelineProps = {
   voiceAudioEnabled: boolean
   voiceVolume: number
   voiceAudioAvailable: boolean
+  voiceAudioStale: boolean
   selectedId: number | null
+  focusRequest: {
+    sequence: number
+    timeSeconds: number
+  } | null
   busy: boolean
   onTogglePlay: () => void
   onSeek: (seconds: number) => void
@@ -55,25 +73,25 @@ type TimelineProps = {
   onAlignCue: (id: number, positionSeconds: number) => void
   onDuplicateCue: (id: number) => void
   onDeleteCue: (id: number) => void
+  onUpdateVoiceBoundary: (previousCueId: string, nextCueId: string, mode: VoiceBoundaryMode) => void
   onNotify: (title: string, description: string) => void
 }
 
-type TimelineViewport = {
-  scrollLeft: number
-  clientWidth: number
-  scrollWidth: number
+type RenderedTimelineThumbnail = TimelineThumbnailSample & {
+  url: string | null
+  isFallback: boolean
 }
 
-type TimelineThumbnailSample = {
-  key: string
-  time: number
-  start: number
-  end: number
-}
+type TimelineInteractionMode = 'IDLE' | 'FOLLOWING' | 'SCRUBBING' | 'DRAGGING_ANCHOR'
 
-const thumbnailTargetWidth = 112
-const thumbnailOverscan = 2
-const maximumCachedThumbnails = 160
+const minimumTimelineSurfaceWidth = 900
+const defaultPlayheadAnchorRatio = 0.5
+const minimumPlayheadAnchorRatio = 0.1
+const maximumPlayheadAnchorRatio = 0.9
+const playheadAnchorStorageKey = 'subvid.timeline.playhead-anchor-ratio'
+const playbackViewportUpdateIntervalMilliseconds = 120
+const userScrubSeekIntervalMilliseconds = 50
+const userScrubSettleMilliseconds = 140
 const originalWaveformSampleCount = 512
 const originalWaveformBarsPath = (() => {
   const centerY = 50
@@ -106,6 +124,7 @@ export function Timeline({
   flipVertical,
   segments,
   playing,
+  playbackActive,
   currentTime,
   playbackRate,
   sourceAudioEnabled,
@@ -114,7 +133,9 @@ export function Timeline({
   voiceAudioEnabled,
   voiceVolume,
   voiceAudioAvailable,
+  voiceAudioStale,
   selectedId,
+  focusRequest,
   busy,
   onTogglePlay,
   onSeek,
@@ -129,6 +150,7 @@ export function Timeline({
   onAlignCue,
   onDuplicateCue,
   onDeleteCue,
+  onUpdateVoiceBoundary,
   onNotify,
 }: TimelineProps) {
   const [timelineZoom, setTimelineZoom] = useState(0)
@@ -136,37 +158,104 @@ export function Timeline({
   const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null)
   const [draftTranslation, setDraftTranslation] = useState('')
   const [editorPosition, setEditorPosition] = useState<EditorPosition | null>(null)
+  const [editingBoundaryCueId, setEditingBoundaryCueId] = useState<string | null>(null)
+  const [boundaryPosition, setBoundaryPosition] = useState<BoundaryPosition | null>(null)
+  const [playheadAnchorRatio, setPlayheadAnchorRatio] = useState(readPlayheadAnchorRatio)
+  const [draggingPlayheadAnchor, setDraggingPlayheadAnchor] = useState(false)
+  const [scrubbingTimeline, setScrubbingTimeline] = useState(false)
   const [timelineViewport, setTimelineViewport] = useState<TimelineViewport>({
     scrollLeft: 0,
     clientWidth: 0,
     scrollWidth: 0,
   })
   const [thumbnailRevision, setThumbnailRevision] = useState(0)
+  const timelineShellRef = useRef<HTMLDivElement>(null)
   const timelineCanvasRef = useRef<HTMLDivElement>(null)
   const timelineContentRef = useRef<HTMLDivElement>(null)
+  const playheadRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<HTMLDivElement>(null)
   const editorInputRef = useRef<HTMLTextAreaElement>(null)
   const editingAnchorRef = useRef<HTMLButtonElement>(null)
-  const thumbnailVideoRef = useRef<HTMLVideoElement | null>(null)
-  const thumbnailReadyRef = useRef<Promise<void> | null>(null)
-  const thumbnailSourceGenerationRef = useRef(0)
-  const thumbnailGenerationQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const boundaryMenuRef = useRef<HTMLDivElement>(null)
+  const boundaryAnchorRef = useRef<HTMLButtonElement>(null)
   const thumbnailCacheRef = useRef<Map<string, string>>(new Map())
-  const desiredThumbnailKeysRef = useRef<Set<string>>(new Set())
+  const visibleThumbnailKeysRef = useRef<Set<string>>(new Set())
+  const viewportUpdateTimerRef = useRef<number | null>(null)
+  const programmaticScrollTargetRef = useRef<number | null>(null)
+  const lastTimelineScrollLeftRef = useRef(0)
+  const timelineInteractionModeRef = useRef<TimelineInteractionMode>('IDLE')
+  const scrubPlayheadPixelsRef = useRef<number | null>(null)
+  const scrubPointerActiveRef = useRef(false)
+  const pendingScrubTimeRef = useRef<number | null>(null)
+  const scrubSeekTimerRef = useRef<number | null>(null)
+  const scrubSettleTimerRef = useRef<number | null>(null)
+  const lastScrubSeekAtRef = useRef(0)
+  const displayedTimelineTimeRef = useRef(currentTime)
+  const playbackClockRef = useRef({
+    mediaTime: currentTime,
+    sampledAtMilliseconds: performance.now(),
+  })
   const duration = Math.max(video?.durationSeconds ?? 21, 0.001)
   const tickCount = 8
   const ticks = Array.from({ length: tickCount }, (_, index) =>
     index * duration / (tickCount - 1))
   const maximumZoomScale = Math.max(4, duration / 15)
-  const timelineScale = 1 + (timelineZoom / 100) * (maximumZoomScale - 1)
-  const timelineWidth = timelineScale * 100
+  const minimumTimelineScale = 2
+  const timelineScale = minimumTimelineScale
+    + (timelineZoom / 100) * (maximumZoomScale - minimumTimelineScale)
+  const timelineSurfaceWidth = Math.max(
+    minimumTimelineSurfaceWidth,
+    timelineViewport.clientWidth * timelineScale,
+  )
   const detailZoom = timelineZoom >= 70
   const selectedSegment = segments.find((segment) => segment.id === selectedId) ?? null
   const editingSegment = segments.find((segment) => segment.id === editingSegmentId) ?? null
+  const editingBoundarySegment = segments.find((segment) => segment.cueId === editingBoundaryCueId) ?? null
+  const selectedPhraseId = selectedSegment?.voicePhrase?.phraseId ?? null
   const cueAtPlayhead = segments.find((segment) =>
     currentTime > segment.start + 0.1 && currentTime < segment.end - 0.1) ?? null
   const sourceAudioActive = sourceAudioAvailable && sourceAudioEnabled
   const voiceAudioActive = voiceAudioAvailable && voiceAudioEnabled
+  const voiceClips = useMemo(() => {
+    const clips: Array<{
+      key: string
+      start: number
+      end: number
+      label: string | null
+      phraseId: string | null
+      hasAudio: boolean
+      needsRegeneration: boolean
+    }> = []
+    const visitedPhrases = new Set<string>()
+    for (const segment of segments) {
+      const phrase = segment.voicePhrase
+      if (phrase) {
+        if (visitedPhrases.has(phrase.phraseId)) continue
+        visitedPhrases.add(phrase.phraseId)
+        const members = segments.filter((item) => item.voicePhrase?.phraseId === phrase.phraseId)
+        clips.push({
+          key: `phrase-${phrase.phraseId}`,
+          start: Math.min(...members.map((item) => item.start)),
+          end: Math.max(...members.map((item) => item.end)),
+          label: `Cụm ${phrase.startCueNumber}–${phrase.endCueNumber}`,
+          phraseId: phrase.phraseId,
+          hasAudio: phrase.hasAudio,
+          needsRegeneration: phrase.needsRegeneration,
+        })
+      } else if (segment.hasVoice) {
+        clips.push({
+          key: `cue-${segment.cueId}`,
+          start: segment.start,
+          end: segment.end,
+          label: null,
+          phraseId: null,
+          hasAudio: true,
+          needsRegeneration: false,
+        })
+      }
+    }
+    return clips
+  }, [segments])
   const thumbnailSourceKey = video
     ? `${video.sha256 ?? video.fileName}:${video.playbackUrl ?? ''}`
     : ''
@@ -188,15 +277,277 @@ export function Timeline({
     ))
   }, [])
 
+  const updatePlayheadVisual = useCallback((pixels: number) => {
+    const playhead = playheadRef.current
+    const canvas = timelineCanvasRef.current
+    if (!playhead || !canvas) return
+    const clampedPixels = Math.min(canvas.clientWidth, Math.max(0, pixels))
+    playhead.style.left = `${clampedPixels}px`
+    playhead.dataset.edge = clampedPixels <= 9
+      ? 'start'
+      : clampedPixels >= canvas.clientWidth - 9
+        ? 'end'
+        : 'none'
+  }, [])
+
+  const scheduleTimelineViewportUpdate = useCallback(() => {
+    if (!playing) {
+      updateTimelineViewport()
+      return
+    }
+
+    if (viewportUpdateTimerRef.current !== null) return
+    viewportUpdateTimerRef.current = window.setTimeout(() => {
+      viewportUpdateTimerRef.current = null
+      updateTimelineViewport()
+    }, playbackViewportUpdateIntervalMilliseconds)
+  }, [playing, updateTimelineViewport])
+
+  const emitThrottledScrubSeek = useCallback((seconds: number) => {
+    pendingScrubTimeRef.current = seconds
+    const elapsed = performance.now() - lastScrubSeekAtRef.current
+    if (elapsed >= userScrubSeekIntervalMilliseconds) {
+      lastScrubSeekAtRef.current = performance.now()
+      onSeek(seconds)
+      return
+    }
+
+    if (scrubSeekTimerRef.current !== null) return
+    scrubSeekTimerRef.current = window.setTimeout(() => {
+      scrubSeekTimerRef.current = null
+      const pendingTime = pendingScrubTimeRef.current
+      if (pendingTime === null) return
+      lastScrubSeekAtRef.current = performance.now()
+      onSeek(pendingTime)
+    }, userScrubSeekIntervalMilliseconds - elapsed)
+  }, [onSeek])
+
+  const finishTimelineScrub = useCallback(() => {
+    if (timelineInteractionModeRef.current !== 'SCRUBBING') return
+    if (scrubSeekTimerRef.current !== null) {
+      window.clearTimeout(scrubSeekTimerRef.current)
+      scrubSeekTimerRef.current = null
+    }
+    if (scrubSettleTimerRef.current !== null) {
+      window.clearTimeout(scrubSettleTimerRef.current)
+      scrubSettleTimerRef.current = null
+    }
+
+    const finalTime = pendingScrubTimeRef.current
+    timelineInteractionModeRef.current = 'IDLE'
+    scrubPlayheadPixelsRef.current = null
+    scrubPointerActiveRef.current = false
+    pendingScrubTimeRef.current = null
+    setScrubbingTimeline(false)
+    if (finalTime !== null) onSeek(finalTime)
+  }, [onSeek])
+
+  const scheduleTimelineScrubFinish = useCallback(() => {
+    if (scrubSettleTimerRef.current !== null) {
+      window.clearTimeout(scrubSettleTimerRef.current)
+    }
+    scrubSettleTimerRef.current = window.setTimeout(() => {
+      scrubSettleTimerRef.current = null
+      if (!scrubPointerActiveRef.current) finishTimelineScrub()
+    }, userScrubSettleMilliseconds)
+  }, [finishTimelineScrub])
+
+  const beginTimelineScrub = useCallback((pointerActive: boolean) => {
+    const canvas = timelineCanvasRef.current
+    if (!canvas
+      || busy
+      || draggingPlayheadAnchor
+      || editingSegmentId !== null
+      || editingBoundaryCueId !== null) {
+      return false
+    }
+
+    if (timelineInteractionModeRef.current !== 'SCRUBBING') {
+      const timePixels = Math.min(duration, Math.max(0, displayedTimelineTimeRef.current))
+        / duration
+        * timelineSurfaceWidth
+      scrubPlayheadPixelsRef.current = Math.min(
+        canvas.clientWidth,
+        Math.max(0, timePixels - lastTimelineScrollLeftRef.current),
+      )
+      timelineInteractionModeRef.current = 'SCRUBBING'
+      programmaticScrollTargetRef.current = null
+      pendingScrubTimeRef.current = null
+      setScrubbingTimeline(true)
+      if (playing) onTogglePlay()
+    }
+    scrubPointerActiveRef.current = scrubPointerActiveRef.current || pointerActive
+    return true
+  }, [
+    busy,
+    draggingPlayheadAnchor,
+    duration,
+    editingBoundaryCueId,
+    editingSegmentId,
+    onTogglePlay,
+    playing,
+    timelineSurfaceWidth,
+  ])
+
+  const positionTimelineAtTime = useCallback((seconds: number) => {
+    const canvas = timelineCanvasRef.current
+    if (!canvas) return
+    if (timelineInteractionModeRef.current === 'SCRUBBING'
+      || timelineInteractionModeRef.current === 'DRAGGING_ANCHOR') return
+
+    const geometry = getTimelineFollowGeometry(
+      seconds,
+      duration,
+      timelineSurfaceWidth,
+      canvas.clientWidth,
+      playheadAnchorRatio,
+    )
+    displayedTimelineTimeRef.current = geometry.time
+    updatePlayheadVisual(geometry.playheadPixels)
+    if (Math.abs(canvas.scrollLeft - geometry.scrollLeft) > 0.25) {
+      timelineInteractionModeRef.current = 'FOLLOWING'
+      programmaticScrollTargetRef.current = geometry.scrollLeft
+      lastTimelineScrollLeftRef.current = geometry.scrollLeft
+      canvas.scrollLeft = geometry.scrollLeft
+    } else {
+      lastTimelineScrollLeftRef.current = canvas.scrollLeft
+      programmaticScrollTargetRef.current = null
+      if (timelineInteractionModeRef.current === 'FOLLOWING' && !playbackActive) {
+        timelineInteractionModeRef.current = 'IDLE'
+      }
+    }
+  }, [duration, playbackActive, playheadAnchorRatio, timelineSurfaceWidth, updatePlayheadVisual])
+
+  const handleTimelineScroll = useCallback(() => {
+    const canvas = timelineCanvasRef.current
+    if (!canvas) return
+    const previousScrollLeft = lastTimelineScrollLeftRef.current
+    lastTimelineScrollLeftRef.current = canvas.scrollLeft
+    scheduleTimelineViewportUpdate()
+
+    const programmaticTarget = programmaticScrollTargetRef.current
+    if (timelineInteractionModeRef.current === 'FOLLOWING') {
+      if (programmaticTarget !== null
+        && Math.abs(canvas.scrollLeft - programmaticTarget) <= 1) {
+        programmaticScrollTargetRef.current = null
+        if (!playbackActive) timelineInteractionModeRef.current = 'IDLE'
+      }
+      // A scroll event can arrive after the latest animation frame has already
+      // cleared its exact target. While media is running, FOLLOWING still means
+      // this scroll belongs to the playhead, not to a user scrub gesture.
+      if (playbackActive) return
+      if (programmaticTarget !== null) return
+    }
+
+    if (timelineInteractionModeRef.current === 'DRAGGING_ANCHOR') {
+      return
+    }
+    if (timelineSurfaceWidth <= 0 || !beginTimelineScrub(false)) return
+
+    const timePixels = Math.min(duration, Math.max(0, displayedTimelineTimeRef.current))
+      / duration
+      * timelineSurfaceWidth
+    const playheadPixels = scrubPlayheadPixelsRef.current ?? Math.min(
+      canvas.clientWidth,
+      Math.max(0, timePixels - previousScrollLeft),
+    )
+    scrubPlayheadPixelsRef.current = playheadPixels
+    updatePlayheadVisual(playheadPixels)
+    const selectedTime = Math.min(
+      duration,
+      Math.max(0, (canvas.scrollLeft + playheadPixels) / timelineSurfaceWidth * duration),
+    )
+    displayedTimelineTimeRef.current = selectedTime
+    emitThrottledScrubSeek(selectedTime)
+    scheduleTimelineScrubFinish()
+  }, [
+    beginTimelineScrub,
+    duration,
+    emitThrottledScrubSeek,
+    playbackActive,
+    scheduleTimelineViewportUpdate,
+    scheduleTimelineScrubFinish,
+    timelineSurfaceWidth,
+    updatePlayheadVisual,
+  ])
+
+  const updatePlayheadAnchorFromPointer = useCallback((clientX: number) => {
+    const shell = timelineShellRef.current
+    if (!shell) return
+    const bounds = shell.getBoundingClientRect()
+    if (bounds.width <= 0) return
+    const nextRatio = Math.min(
+      maximumPlayheadAnchorRatio,
+      Math.max(minimumPlayheadAnchorRatio, (clientX - bounds.left) / bounds.width),
+    )
+    updatePlayheadVisual(nextRatio * bounds.width)
+    setPlayheadAnchorRatio(nextRatio)
+  }, [updatePlayheadVisual])
+
+  const beginPlayheadAnchorDrag = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (busy) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    timelineInteractionModeRef.current = 'DRAGGING_ANCHOR'
+    programmaticScrollTargetRef.current = null
+    setDraggingPlayheadAnchor(true)
+    updatePlayheadAnchorFromPointer(event.clientX)
+  }, [busy, updatePlayheadAnchorFromPointer])
+
+  const movePlayheadAnchor = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!draggingPlayheadAnchor || !event.currentTarget.hasPointerCapture(event.pointerId)) return
+    event.preventDefault()
+    updatePlayheadAnchorFromPointer(event.clientX)
+  }, [draggingPlayheadAnchor, updatePlayheadAnchorFromPointer])
+
+  const finishPlayheadAnchorDrag = useCallback(() => {
+    if (timelineInteractionModeRef.current !== 'DRAGGING_ANCHOR') return
+    timelineInteractionModeRef.current = 'IDLE'
+    programmaticScrollTargetRef.current = null
+    setDraggingPlayheadAnchor(false)
+    window.requestAnimationFrame(() => positionTimelineAtTime(currentTime))
+  }, [currentTime, positionTimelineAtTime])
+
+  const endPlayheadAnchorDrag = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (timelineInteractionModeRef.current !== 'DRAGGING_ANCHOR') return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    finishPlayheadAnchorDrag()
+  }, [finishPlayheadAnchorDrag])
+
   const thumbnailSamples = useMemo(
-    () => buildTimelineThumbnailSamples(duration, timelineViewport, thumbnailSourceKey),
-    [duration, thumbnailSourceKey, timelineViewport],
+    () => buildTimelineThumbnailSamples(
+      duration,
+      timelineViewport,
+      thumbnailSourceKey,
+      timelineSurfaceWidth,
+    ),
+    [
+      duration,
+      thumbnailSourceKey,
+      timelineSurfaceWidth,
+      timelineViewport,
+    ],
+  )
+  visibleThumbnailKeysRef.current = new Set(
+    thumbnailSamples.map((sample) => sample.cacheKey),
   )
 
-  const timelineThumbnails = useMemo(() => thumbnailSamples.map((sample) => ({
-    ...sample,
-    dataUrl: thumbnailCacheRef.current.get(sample.key) ?? null,
-  })), [thumbnailRevision, thumbnailSamples])
+  const timelineThumbnails = useMemo(() => thumbnailSamples.map((sample) => {
+    const exactUrl = thumbnailCacheRef.current.get(sample.cacheKey) ?? null
+    const fallbackUrl = exactUrl ?? findNearestThumbnailUrl(
+      sample,
+      thumbnailSamples,
+      thumbnailCacheRef.current,
+    )
+    return {
+      ...sample,
+      url: fallbackUrl,
+      isFallback: exactUrl === null && fallbackUrl !== null,
+    }
+  }), [thumbnailRevision, thumbnailSamples])
 
   const closeEditor = useCallback(() => {
     setEditingSegmentId(null)
@@ -216,6 +567,9 @@ export function Timeline({
 
   const openEditor = useCallback((segment: SubtitleSegment, anchor: HTMLButtonElement) => {
     if (busy) return
+    setEditingBoundaryCueId(null)
+    setBoundaryPosition(null)
+    boundaryAnchorRef.current = null
     if (playing) onTogglePlay()
     onSelectSegment(segment.id)
     onSeek(segment.start)
@@ -225,18 +579,150 @@ export function Timeline({
     setEditorPosition(getEditorPosition(anchor))
   }, [busy, onSeek, onSelectSegment, onTogglePlay, playing])
 
+  const closeBoundaryMenu = useCallback(() => {
+    setEditingBoundaryCueId(null)
+    setBoundaryPosition(null)
+    boundaryAnchorRef.current = null
+  }, [])
+
+  const openBoundaryMenu = useCallback((segment: SubtitleSegment, anchor: HTMLButtonElement) => {
+    if (busy || !segment.voiceBoundaryAfter) return
+    closeEditor()
+    if (playing) onTogglePlay()
+    boundaryAnchorRef.current = anchor
+    setEditingBoundaryCueId(segment.cueId)
+    setBoundaryPosition(getBoundaryPosition(anchor))
+  }, [busy, closeEditor, onTogglePlay, playing])
+
+  const applyBoundaryMode = useCallback((mode: VoiceBoundaryMode) => {
+    const boundary = editingBoundarySegment?.voiceBoundaryAfter
+    if (!editingBoundarySegment || !boundary || busy) return
+    onUpdateVoiceBoundary(editingBoundarySegment.cueId, boundary.nextCueId, mode)
+    closeBoundaryMenu()
+  }, [busy, closeBoundaryMenu, editingBoundarySegment, onUpdateVoiceBoundary])
+
+  useEffect(() => {
+    playbackClockRef.current = {
+      mediaTime: Math.min(duration, Math.max(0, currentTime)),
+      sampledAtMilliseconds: performance.now(),
+    }
+    if (timelineInteractionModeRef.current !== 'SCRUBBING') {
+      displayedTimelineTimeRef.current = Math.min(duration, Math.max(0, currentTime))
+    }
+  }, [currentTime, duration, playbackActive, playbackRate])
+
+  useEffect(() => {
+    if (!playbackActive) return
+    let animationFrame = 0
+    const followPlayback = (now: number) => {
+      if (timelineInteractionModeRef.current === 'SCRUBBING'
+        || timelineInteractionModeRef.current === 'DRAGGING_ANCHOR') {
+        animationFrame = window.requestAnimationFrame(followPlayback)
+        return
+      }
+      const clock = playbackClockRef.current
+      const elapsedSeconds = Math.max(0, now - clock.sampledAtMilliseconds) / 1_000
+      positionTimelineAtTime(Math.min(
+        duration,
+        clock.mediaTime + elapsedSeconds * playbackRate,
+      ))
+      animationFrame = window.requestAnimationFrame(followPlayback)
+    }
+    animationFrame = window.requestAnimationFrame(followPlayback)
+    return () => window.cancelAnimationFrame(animationFrame)
+  }, [duration, playbackActive, playbackRate, positionTimelineAtTime])
+
+  useEffect(() => {
+    if (playbackActive) return
+    if (timelineInteractionModeRef.current === 'SCRUBBING'
+      || timelineInteractionModeRef.current === 'DRAGGING_ANCHOR') return
+    const frame = window.requestAnimationFrame(() => positionTimelineAtTime(currentTime))
+    return () => window.cancelAnimationFrame(frame)
+  }, [currentTime, playbackActive, positionTimelineAtTime, timelineViewport.clientWidth])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(playheadAnchorStorageKey, playheadAnchorRatio.toString())
+    } catch {
+      // The timeline preference remains available for this session if storage is blocked.
+    }
+  }, [playheadAnchorRatio])
+
+  useEffect(() => {
+    const releasePointerInteraction = () => {
+      if (timelineInteractionModeRef.current === 'DRAGGING_ANCHOR') {
+        finishPlayheadAnchorDrag()
+        return
+      }
+      if (timelineInteractionModeRef.current !== 'SCRUBBING'
+        || !scrubPointerActiveRef.current) return
+      scrubPointerActiveRef.current = false
+      scheduleTimelineScrubFinish()
+    }
+    const releaseOnBlur = () => {
+      if (timelineInteractionModeRef.current === 'DRAGGING_ANCHOR') {
+        finishPlayheadAnchorDrag()
+      } else if (timelineInteractionModeRef.current === 'SCRUBBING') {
+        scrubPointerActiveRef.current = false
+        finishTimelineScrub()
+      }
+    }
+    window.addEventListener('pointerup', releasePointerInteraction)
+    window.addEventListener('pointercancel', releasePointerInteraction)
+    window.addEventListener('blur', releaseOnBlur)
+    return () => {
+      window.removeEventListener('pointerup', releasePointerInteraction)
+      window.removeEventListener('pointercancel', releasePointerInteraction)
+      window.removeEventListener('blur', releaseOnBlur)
+    }
+  }, [finishPlayheadAnchorDrag, finishTimelineScrub, scheduleTimelineScrubFinish])
+
+  useEffect(() => {
+    scrubPlayheadPixelsRef.current = null
+    scrubPointerActiveRef.current = false
+    pendingScrubTimeRef.current = null
+    setDraggingPlayheadAnchor(false)
+    setScrubbingTimeline(false)
+    setPlayheadAnchorRatio(defaultPlayheadAnchorRatio)
+    const canvas = timelineCanvasRef.current
+    if (canvas && Math.abs(canvas.scrollLeft) > 0.25) {
+      timelineInteractionModeRef.current = 'FOLLOWING'
+      programmaticScrollTargetRef.current = 0
+      lastTimelineScrollLeftRef.current = 0
+      canvas.scrollLeft = 0
+    } else {
+      timelineInteractionModeRef.current = 'IDLE'
+      programmaticScrollTargetRef.current = null
+    }
+    displayedTimelineTimeRef.current = 0
+    updatePlayheadVisual(0)
+  }, [thumbnailSourceKey, updatePlayheadVisual])
+
+  useEffect(() => () => {
+    if (viewportUpdateTimerRef.current !== null) {
+      window.clearTimeout(viewportUpdateTimerRef.current)
+      viewportUpdateTimerRef.current = null
+    }
+    if (scrubSeekTimerRef.current !== null) {
+      window.clearTimeout(scrubSeekTimerRef.current)
+      scrubSeekTimerRef.current = null
+    }
+    if (scrubSettleTimerRef.current !== null) {
+      window.clearTimeout(scrubSettleTimerRef.current)
+      scrubSettleTimerRef.current = null
+    }
+  }, [])
+
   useEffect(() => {
     const canvas = timelineCanvasRef.current
-    if (!canvas || timelineZoom === 0) return
+    if (!canvas || !focusRequest) return
 
     const frame = window.requestAnimationFrame(() => {
-      const playheadPosition = Math.min(1, Math.max(0, currentTime / duration))
-      const targetLeft = canvas.scrollWidth * playheadPosition - canvas.clientWidth / 2
-      canvas.scrollLeft = Math.max(0, Math.min(targetLeft, canvas.scrollWidth - canvas.clientWidth))
+      positionTimelineAtTime(focusRequest.timeSeconds)
     })
 
     return () => window.cancelAnimationFrame(frame)
-  }, [duration, timelineZoom])
+  }, [focusRequest, positionTimelineAtTime])
 
   useEffect(() => {
     const canvas = timelineCanvasRef.current
@@ -252,86 +738,53 @@ export function Timeline({
   }, [timelineScale, updateTimelineViewport, video?.fileName])
 
   useEffect(() => {
-    const playbackUrl = video?.playbackUrl
-    thumbnailSourceGenerationRef.current += 1
-    const sourceGeneration = thumbnailSourceGenerationRef.current
     thumbnailCacheRef.current.clear()
-    desiredThumbnailKeysRef.current.clear()
     setThumbnailRevision((value) => value + 1)
 
-    const previousVideo = thumbnailVideoRef.current
-    if (previousVideo) {
-      previousVideo.removeAttribute('src')
-      previousVideo.load()
-    }
-    thumbnailVideoRef.current = null
-    thumbnailReadyRef.current = null
-    thumbnailGenerationQueueRef.current = Promise.resolve()
-    if (!playbackUrl) return
+    const sourceSha256 = video?.sha256?.toLowerCase()
+    if (!sourceSha256 || !hasNativeHost()) return
+    return subscribeToHost((message) => {
+      if (message.type !== 'timeline:thumbnail:ready'
+        || String(message.sourceSha256 ?? '').toLowerCase() !== sourceSha256) return
+      const index = Number(message.index)
+      const url = String(message.url ?? '')
+      if (!Number.isInteger(index)
+        || index < 0
+        || index >= timelineThumbnailCount
+        || !url.startsWith('https://media.subvid.local/thumbnail/')) return
 
-    const thumbnailVideo = document.createElement('video')
-    thumbnailVideo.crossOrigin = 'anonymous'
-    thumbnailVideo.preload = 'auto'
-    thumbnailVideo.muted = true
-    thumbnailVideo.playsInline = true
-    thumbnailVideoRef.current = thumbnailVideo
-    const thumbnailReady = waitForVideoMetadata(thumbnailVideo)
-    // Mark the rejection as observed even if the timeline is hidden before it
-    // requests its first frame. The generation queue still receives the same
-    // rejected promise and falls back to the colored clip.
-    void thumbnailReady.catch(() => undefined)
-    thumbnailReadyRef.current = thumbnailReady
-    thumbnailVideo.src = playbackUrl
-    thumbnailVideo.load()
-
-    return () => {
-      if (thumbnailSourceGenerationRef.current === sourceGeneration) {
-        thumbnailSourceGenerationRef.current += 1
+      const cacheKey = `${thumbnailSourceKey}:v${timelineThumbnailProfileVersion}:${index}`
+      if (thumbnailCacheRef.current.get(cacheKey) === url) return
+      thumbnailCacheRef.current.set(cacheKey, url)
+      if (visibleThumbnailKeysRef.current.has(cacheKey)) {
+        setThumbnailRevision((value) => value + 1)
       }
-      thumbnailVideo.removeAttribute('src')
-      thumbnailVideo.load()
-      if (thumbnailVideoRef.current === thumbnailVideo) {
-        thumbnailVideoRef.current = null
-        thumbnailReadyRef.current = null
-      }
-    }
-  }, [thumbnailSourceKey, video?.playbackUrl])
+    })
+  }, [thumbnailSourceKey, video?.sha256])
 
   useEffect(() => {
-    const desiredKeys = new Set(thumbnailSamples.map((sample) => sample.key))
-    desiredThumbnailKeysRef.current = desiredKeys
     const missingSamples = thumbnailSamples.filter(
-      (sample) => !thumbnailCacheRef.current.has(sample.key),
+      (sample) => !thumbnailCacheRef.current.has(sample.cacheKey),
     )
-    if (missingSamples.length === 0 || !thumbnailVideoRef.current || !thumbnailReadyRef.current) {
-      return
-    }
+    const sourceSha256 = video?.sha256?.toLowerCase()
+    if (!sourceSha256 || !hasNativeHost() || missingSamples.length === 0) return
 
-    const sourceGeneration = thumbnailSourceGenerationRef.current
-    thumbnailGenerationQueueRef.current = thumbnailGenerationQueueRef.current
-      .catch(() => undefined)
-      .then(async () => {
-        const thumbnailVideo = thumbnailVideoRef.current
-        const ready = thumbnailReadyRef.current
-        if (!thumbnailVideo || !ready || sourceGeneration !== thumbnailSourceGenerationRef.current) return
-        await ready
-
-        for (const sample of missingSamples) {
-          if (sourceGeneration !== thumbnailSourceGenerationRef.current) return
-          if (!desiredThumbnailKeysRef.current.has(sample.key)
-            || thumbnailCacheRef.current.has(sample.key)) continue
-          const dataUrl = await captureVideoThumbnail(thumbnailVideo, sample.time)
-          if (sourceGeneration !== thumbnailSourceGenerationRef.current) return
-          thumbnailCacheRef.current.set(sample.key, dataUrl)
-          pruneThumbnailCache(thumbnailCacheRef.current, desiredThumbnailKeysRef.current)
-          setThumbnailRevision((value) => value + 1)
-        }
-      })
-      .catch(() => {
-        // Some codecs can be processed by FFmpeg but not decoded by WebView2.
-        // Keep the normal colored clip as a safe fallback in that case.
-      })
-  }, [thumbnailSamples])
+    const viewportCenterTime = (
+      (timelineViewport.scrollLeft + timelineViewport.clientWidth / 2)
+      / Math.max(1, timelineSurfaceWidth)
+    ) * duration
+    postToHost('timeline:thumbnails:request', {
+      sourceSha256,
+      indices: prioritizeTimelineThumbnailIndices(missingSamples, viewportCenterTime),
+    })
+  }, [
+    duration,
+    thumbnailSamples,
+    timelineSurfaceWidth,
+    timelineViewport.clientWidth,
+    timelineViewport.scrollLeft,
+    video?.sha256,
+  ])
 
   useEffect(() => {
     if (editingSegmentId === null) return
@@ -375,6 +828,36 @@ export function Timeline({
   useEffect(() => {
     if (editingSegmentId !== null && !editingSegment) closeEditor()
   }, [closeEditor, editingSegment, editingSegmentId])
+
+  useEffect(() => {
+    if (editingBoundaryCueId === null) return
+    const updatePosition = () => {
+      if (boundaryAnchorRef.current) {
+        setBoundaryPosition(getBoundaryPosition(boundaryAnchorRef.current))
+      }
+    }
+    const closeWhenClickingOutside = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)
+        || boundaryMenuRef.current?.contains(target)
+        || boundaryAnchorRef.current?.contains(target)) {
+        return
+      }
+      closeBoundaryMenu()
+    }
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    document.addEventListener('pointerdown', closeWhenClickingOutside, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+      document.removeEventListener('pointerdown', closeWhenClickingOutside, true)
+    }
+  }, [closeBoundaryMenu, editingBoundaryCueId])
+
+  useEffect(() => {
+    if (editingBoundaryCueId !== null && !editingBoundarySegment) closeBoundaryMenu()
+  }, [closeBoundaryMenu, editingBoundaryCueId, editingBoundarySegment])
 
   const readingEstimate = editingSegment
     ? getReadingEstimate(draftTranslation, editingSegment.end - editingSegment.start)
@@ -453,7 +936,7 @@ export function Timeline({
         <div className="transport-spacer" />
 
         <CompactRange
-          label="Tốc độ phát"
+          label="Tốc độ xem trước (không ảnh hưởng file xuất)"
           value={playbackRate}
           min={0.5}
           max={2}
@@ -515,14 +998,16 @@ export function Timeline({
             <Volume2 size={15} />
             <strong>Âm gốc</strong>
           </div>
-          <div className={`track-label ${voiceAudioActive ? '' : 'is-muted'} ${voiceAudioAvailable ? '' : 'is-unavailable'}`}>
+          <div className={`track-label ${voiceAudioActive ? '' : 'is-muted'} ${voiceAudioAvailable ? '' : 'is-unavailable'} ${voiceAudioStale ? 'is-stale' : ''}`}>
             <button
               type="button"
               className="track-audio-toggle"
               aria-label={voiceAudioActive ? 'Tắt Giọng Việt' : 'Bật Giọng Việt'}
               aria-pressed={voiceAudioActive}
               title={voiceAudioAvailable
-                ? voiceAudioActive ? 'Tắt Giọng Việt' : 'Bật Giọng Việt'
+                ? voiceAudioStale
+                  ? 'Đây là bản nghe trước khi sửa text. Hãy tạo giọng lại để cập nhật.'
+                  : voiceAudioActive ? 'Tắt Giọng Việt' : 'Bật Giọng Việt'
                 : 'Hãy tạo giọng Việt trước'}
               disabled={busy || !voiceAudioAvailable}
               onClick={onToggleVoiceAudio}
@@ -530,88 +1015,92 @@ export function Timeline({
               {voiceAudioActive ? <Volume2 size={14} /> : <VolumeX size={14} />}
             </button>
             <Mic2 size={15} />
-            <strong>Giọng Việt</strong>
+            <strong>{voiceAudioStale ? 'Giọng Việt · bản cũ' : 'Giọng Việt'}</strong>
           </div>
         </div>
 
-        <div
-          ref={timelineCanvasRef}
-          className="timeline-canvas"
-          onScroll={updateTimelineViewport}
-        >
+        <div ref={timelineShellRef} className="timeline-canvas-shell">
           <div
-            ref={timelineContentRef}
-            className="timeline-scroll-content"
-            style={{ width: `${timelineWidth}%` }}
-          >
-          <div
-            className="timeline-ruler"
-            role="slider"
-            tabIndex={0}
-            aria-label="Vị trí phát trên dòng thời gian"
-            aria-valuemin={0}
-            aria-valuemax={duration}
-            aria-valuenow={Math.round(currentTime * 10) / 10}
-            onPointerDown={(event) => {
-              if (editingSegmentId !== null) {
-                event.preventDefault()
-                return
-              }
-              const rect = event.currentTarget.getBoundingClientRect()
-              onSeek(((event.clientX - rect.left) / rect.width) * duration)
+            ref={timelineCanvasRef}
+            className="timeline-canvas"
+            onScroll={handleTimelineScroll}
+            onPointerDownCapture={(event) => {
+              if (event.target === event.currentTarget) beginTimelineScrub(true)
             }}
-            onKeyDown={(event) => {
-              if (editingSegmentId !== null) return
-              if (event.key === 'ArrowLeft') onSeek(Math.max(0, currentTime - 0.25))
-              if (event.key === 'ArrowRight') onSeek(Math.min(duration, currentTime + 0.25))
-              if (event.key === 'Home') onSeek(0)
-              if (event.key === 'End') onSeek(duration)
+            onPointerUpCapture={() => {
+              if (timelineInteractionModeRef.current !== 'SCRUBBING') return
+              scrubPointerActiveRef.current = false
+              scheduleTimelineScrubFinish()
+            }}
+            onPointerCancelCapture={() => {
+              if (timelineInteractionModeRef.current !== 'SCRUBBING') return
+              scrubPointerActiveRef.current = false
+              scheduleTimelineScrubFinish()
+            }}
+            onWheelCapture={(event) => {
+              if (Math.abs(event.deltaX) > 0.01) beginTimelineScrub(false)
             }}
           >
-            {ticks.map((tick) => (
-              <span key={tick} style={{ left: `${(tick / duration) * 100}%` }}>
-                {formatClock(tick)}
-              </span>
-            ))}
-            {bookmarks.map((bookmark) => (
-              <i
-                key={bookmark}
-                className="timeline-bookmark"
-                style={{ left: `${(bookmark / duration) * 100}%` }}
-                aria-hidden="true"
-              />
-            ))}
-          </div>
+            <div
+              ref={timelineContentRef}
+              className="timeline-scroll-content"
+              style={{
+                width: `${timelineSurfaceWidth}px`,
+              }}
+            >
+            <div
+              className="timeline-time-surface"
+              style={{ width: `${timelineSurfaceWidth}px` }}
+            >
+            <div
+              className="timeline-ruler"
+              role="slider"
+              tabIndex={0}
+              aria-label="Vị trí phát trên dòng thời gian"
+              aria-valuemin={0}
+              aria-valuemax={duration}
+              aria-valuenow={Math.round(currentTime * 10) / 10}
+              onPointerDown={(event) => {
+                if (editingSegmentId !== null) {
+                  event.preventDefault()
+                  return
+                }
+                const rect = event.currentTarget.getBoundingClientRect()
+                onSeek(((event.clientX - rect.left) / rect.width) * duration)
+              }}
+              onKeyDown={(event) => {
+                if (editingSegmentId !== null) return
+                if (event.key === 'ArrowLeft') onSeek(Math.max(0, currentTime - 0.25))
+                if (event.key === 'ArrowRight') onSeek(Math.min(duration, currentTime + 0.25))
+                if (event.key === 'Home') onSeek(0)
+                if (event.key === 'End') onSeek(duration)
+              }}
+            >
+              {ticks.map((tick) => (
+                <span key={tick} style={{ left: `${(tick / duration) * 100}%` }}>
+                  {formatClock(tick)}
+                </span>
+              ))}
+              {bookmarks.map((bookmark) => (
+                <i
+                  key={bookmark}
+                  className="timeline-bookmark"
+                  style={{ left: `${(bookmark / duration) * 100}%` }}
+                  aria-hidden="true"
+                />
+              ))}
+            </div>
 
-          <div className="timeline-tracks">
+            <div className="timeline-tracks">
             <div className="timeline-track video-track">
               {video ? (
                 <div className="video-clip">
-                  <span className="video-filmstrip" aria-hidden="true">
-                    {timelineThumbnails.map((thumbnail) => thumbnail.dataUrl ? (
-                      <img
-                        key={thumbnail.key}
-                        className="video-filmstrip__frame"
-                        src={thumbnail.dataUrl}
-                        alt=""
-                        draggable={false}
-                        style={{
-                          left: `${(thumbnail.start / duration) * 100}%`,
-                          width: `${((thumbnail.end - thumbnail.start) / duration) * 100}%`,
-                          transform: `scale(${flipHorizontal ? -1 : 1}, ${flipVertical ? -1 : 1})`,
-                        }}
-                      />
-                    ) : (
-                      <i
-                        key={thumbnail.key}
-                        className="video-filmstrip__placeholder"
-                        style={{
-                          left: `${(thumbnail.start / duration) * 100}%`,
-                          width: `${((thumbnail.end - thumbnail.start) / duration) * 100}%`,
-                        }}
-                      />
-                    ))}
-                  </span>
+                  <TimelineFilmstrip
+                    thumbnails={timelineThumbnails}
+                    duration={duration}
+                    flipHorizontal={flipHorizontal}
+                    flipVertical={flipVertical}
+                  />
                   <span className="video-clip__label">
                     <Film size={13} />
                     <span>{video.fileName}</span>
@@ -624,34 +1113,59 @@ export function Timeline({
                 const displayText = segment.translated.trim()
                   || segment.original.trim()
                   || `Phân đoạn ${segment.id}`
+                const isPhrasePeer = selectedPhraseId !== null
+                  && segment.voicePhrase?.phraseId === selectedPhraseId
+                  && selectedId !== segment.id
+                const boundary = segment.voiceBoundaryAfter
+                const nextSegment = boundary
+                  ? segments.find((item) => item.cueId === boundary.nextCueId)
+                  : null
 
                 return (
-                  <button
-                    type="button"
-                    key={segment.id}
-                    className={`subtitle-clip ${currentTime >= segment.start && currentTime < segment.end ? 'is-current' : ''} ${selectedId === segment.id ? 'is-selected' : ''} ${editingSegmentId === segment.id ? 'is-editing' : ''}`}
-                    style={{
-                      left: `${(segment.start / duration) * 100}%`,
-                      width: `${((segment.end - segment.start) / duration) * 100}%`,
-                    }}
-                    title={`${formatClock(segment.start)} — ${formatClock(segment.end)}\n${displayText}\nNhấp đúp để sửa bản dịch`}
-                    aria-label={`Phân đoạn ${segment.id}, ${formatClock(segment.start)} đến ${formatClock(segment.end)}: ${displayText}`}
-                    onClick={() => {
-                      if (editingSegmentId !== null) return
-                      onSelectSegment(segment.id)
-                      onSeek(segment.start)
-                    }}
-                    onDoubleClick={(event) => openEditor(segment, event.currentTarget)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === 'F2') {
-                        event.preventDefault()
-                        openEditor(segment, event.currentTarget)
-                      }
-                    }}
-                  >
-                    <span className="subtitle-clip__text">{displayText}</span>
-                    <Pencil className="subtitle-clip__edit-icon" size={10} aria-hidden="true" />
-                  </button>
+                  <Fragment key={segment.id}>
+                    <button
+                      type="button"
+                      className={`subtitle-clip ${currentTime >= segment.start && currentTime < segment.end ? 'is-current' : ''} ${selectedId === segment.id ? 'is-selected' : ''} ${isPhrasePeer ? 'is-phrase-peer' : ''} ${editingSegmentId === segment.id ? 'is-editing' : ''}`}
+                      style={{
+                        left: `${(segment.start / duration) * 100}%`,
+                        width: `${((segment.end - segment.start) / duration) * 100}%`,
+                      }}
+                      title={`${formatClock(segment.start)} — ${formatClock(segment.end)}\n${displayText}\nNhấp đúp để sửa bản dịch`}
+                      aria-label={`Phân đoạn ${segment.id}, ${formatClock(segment.start)} đến ${formatClock(segment.end)}: ${displayText}`}
+                      onClick={() => {
+                        if (editingSegmentId !== null) return
+                        onSelectSegment(segment.id)
+                        onSeek(segment.start)
+                      }}
+                      onDoubleClick={(event) => openEditor(segment, event.currentTarget)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === 'F2') {
+                          event.preventDefault()
+                          openEditor(segment, event.currentTarget)
+                        }
+                      }}
+                    >
+                      <span className="subtitle-clip__text">{displayText}</span>
+                      <Pencil className="subtitle-clip__edit-icon" size={10} aria-hidden="true" />
+                    </button>
+                    {boundary && nextSegment ? (
+                      <button
+                        type="button"
+                        className={`voice-boundary-marker voice-boundary-marker--${boundary.mode.toLowerCase()} is-effective-${boundary.effectiveMode.toLowerCase()} ${boundary.canJoin ? '' : 'is-join-blocked'} ${editingBoundaryCueId === segment.cueId ? 'is-open' : ''}`}
+                        style={{ left: `${(nextSegment.start / duration) * 100}%` }}
+                        disabled={busy}
+                        title={`Cue ${segment.id} → ${nextSegment.id}: ${formatBoundaryLabel(boundary.mode, boundary.effectiveMode)}${boundary.constraintMessage ? `\n${boundary.constraintMessage}` : ''}`}
+                        aria-label={`Chỉnh nối hoặc ngắt giữa cue ${segment.id} và cue ${nextSegment.id}`}
+                        onClick={(event) => openBoundaryMenu(segment, event.currentTarget)}
+                      >
+                        {boundary.mode === 'JOIN'
+                          ? <Link2 size={10} />
+                          : boundary.mode === 'BREAK'
+                            ? <Pause size={10} />
+                            : <RotateCcw size={9} />}
+                      </button>
+                    ) : null}
+                  </Fragment>
                 )
               })}
             </div>
@@ -659,32 +1173,132 @@ export function Timeline({
               {video ? <Waveform kind="original" /> : null}
             </div>
             <div className={`timeline-track voice-track ${voiceAudioActive ? '' : 'is-muted'}`}>
-              {segments.filter((segment) => segment.hasVoice).map((segment) => (
+              {voiceClips.map((clip) => (
                 <div
-                  key={segment.id}
-                  className="voice-clip"
+                  key={clip.key}
+                  className={`voice-clip ${clip.phraseId ? 'is-phrase' : ''} ${clip.phraseId === selectedPhraseId ? 'is-selected-phrase' : ''} ${clip.needsRegeneration ? 'needs-regeneration' : ''}`}
                   style={{
-                    left: `${(segment.start / duration) * 100}%`,
-                    width: `${((segment.end - segment.start) / duration) * 100}%`,
+                    left: `${(clip.start / duration) * 100}%`,
+                    width: `${((clip.end - clip.start) / duration) * 100}%`,
                   }}
+                  title={clip.needsRegeneration
+                    ? `${clip.label ?? 'Đoạn giọng'} cần tạo lại`
+                    : clip.label ?? undefined}
                 >
-                  <Waveform kind="voice" />
+                  {clip.hasAudio ? <Waveform kind="voice" /> : null}
+                  {clip.label ? <span className="voice-clip__label">{clip.label}</span> : null}
                 </div>
               ))}
             </div>
 
-            <div
-              className="playhead"
-              style={{ left: `${(Math.min(currentTime, duration) / duration) * 100}%` }}
-              aria-hidden="true"
-            >
-              <span />
+            </div>
             </div>
           </div>
+          </div>
+          <div
+            ref={playheadRef}
+            className={`playhead ${draggingPlayheadAnchor ? 'is-dragging' : ''} ${scrubbingTimeline ? 'is-scrubbing' : ''}`}
+          >
+            <button
+              type="button"
+              className="playhead__anchor"
+              aria-label="Kéo để chọn vị trí đứng của playhead"
+              title="Kéo để chọn vị trí đứng của playhead"
+              disabled={busy}
+              onPointerDown={beginPlayheadAnchorDrag}
+              onPointerMove={movePlayheadAnchor}
+              onPointerUp={endPlayheadAnchorDrag}
+              onPointerCancel={endPlayheadAnchorDrag}
+              onLostPointerCapture={finishPlayheadAnchorDrag}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  finishPlayheadAnchorDrag()
+                  return
+                }
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+                event.preventDefault()
+                setPlayheadAnchorRatio((value) => Math.min(
+                  maximumPlayheadAnchorRatio,
+                  Math.max(
+                    minimumPlayheadAnchorRatio,
+                    value + (event.key === 'ArrowLeft' ? -0.05 : 0.05),
+                  ),
+                ))
+              }}
+            >
+              <span aria-hidden="true" />
+            </button>
           </div>
         </div>
       </div>
       </section>
+      {editingBoundarySegment?.voiceBoundaryAfter && boundaryPosition ? createPortal(
+        <div
+          ref={boundaryMenuRef}
+          className="voice-boundary-menu"
+          role="dialog"
+          aria-modal="false"
+          aria-label="Chỉnh nối hoặc ngắt cụm thoại"
+          style={boundaryPosition}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              closeBoundaryMenu()
+            }
+          }}
+        >
+          <div className="voice-boundary-menu__header">
+            <span>Ranh giới cụm thoại</span>
+            <strong>
+              Cue {editingBoundarySegment.id} → Cue{' '}
+              {segments.find((item) => (
+                item.cueId === editingBoundarySegment.voiceBoundaryAfter?.nextCueId
+              ))?.id ?? '?'}
+            </strong>
+          </div>
+          <div className="voice-boundary-menu__options" role="group" aria-label="Chế độ ranh giới">
+            <button
+              type="button"
+              className={editingBoundarySegment.voiceBoundaryAfter.mode === 'AUTO' ? 'is-active' : ''}
+              disabled={busy}
+              onClick={() => applyBoundaryMode('AUTO')}
+            >
+              <RotateCcw size={14} />
+              <span><strong>Tự động</strong><small>Để hệ thống quyết định theo nội dung.</small></span>
+            </button>
+            <button
+              type="button"
+              className={editingBoundarySegment.voiceBoundaryAfter.mode === 'JOIN' ? 'is-active is-join' : 'is-join'}
+              disabled={busy || !editingBoundarySegment.voiceBoundaryAfter.canJoin}
+              onClick={() => applyBoundaryMode('JOIN')}
+            >
+              <Link2 size={14} />
+              <span><strong>Nói liền</strong><small>Gửi hai cue trong cùng một cụm TTS.</small></span>
+            </button>
+            <button
+              type="button"
+              className={editingBoundarySegment.voiceBoundaryAfter.mode === 'BREAK' ? 'is-active is-break' : 'is-break'}
+              disabled={busy}
+              onClick={() => applyBoundaryMode('BREAK')}
+            >
+              <Pause size={14} />
+              <span><strong>Ngắt tại đây</strong><small>Bắt đầu một cụm giọng mới ở cue sau.</small></span>
+            </button>
+          </div>
+          {editingBoundarySegment.voiceBoundaryAfter.constraintMessage ? (
+            <p className="voice-boundary-menu__warning">
+              <CircleAlert size={13} />
+              {editingBoundarySegment.voiceBoundaryAfter.constraintMessage}
+            </p>
+          ) : (
+            <p className="voice-boundary-menu__hint">
+              Sau khi lưu, chỉ cụm bị ảnh hưởng cần tạo lại giọng.
+            </p>
+          )}
+        </div>,
+        document.body,
+      ) : null}
       {editingSegment && editorPosition ? createPortal(
       <div
         ref={editorRef}
@@ -801,6 +1415,34 @@ function getEditorPosition(anchor: HTMLElement): EditorPosition {
   return { top, left, width }
 }
 
+type BoundaryPosition = {
+  top: number
+  left: number
+  width: number
+}
+
+function getBoundaryPosition(anchor: HTMLElement): BoundaryPosition {
+  const viewportPadding = 12
+  const menuGap = 7
+  const estimatedHeight = 245
+  const rect = anchor.getBoundingClientRect()
+  const width = Math.max(250, Math.min(300, window.innerWidth - viewportPadding * 2))
+  const left = Math.max(
+    viewportPadding,
+    Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - viewportPadding),
+  )
+  const top = rect.bottom + menuGap + estimatedHeight <= window.innerHeight - viewportPadding
+    ? rect.bottom + menuGap
+    : Math.max(viewportPadding, rect.top - estimatedHeight - menuGap)
+  return { top, left, width }
+}
+
+function formatBoundaryLabel(mode: VoiceBoundaryMode, effectiveMode: 'JOIN' | 'BREAK') {
+  if (mode === 'JOIN') return 'Nói liền'
+  if (mode === 'BREAK') return 'Ngắt tại đây'
+  return effectiveMode === 'JOIN' ? 'Tự động · đang nói liền' : 'Tự động · đang ngắt'
+}
+
 function getReadingEstimate(text: string, durationSeconds: number) {
   const normalized = text.trim()
   const words = normalized ? normalized.split(/\s+/u).length : 0
@@ -812,6 +1454,46 @@ function getReadingEstimate(text: string, durationSeconds: number) {
     durationLabel: `${safeDuration.toFixed(safeDuration < 10 ? 1 : 0)} giây`,
   }
 }
+
+const TimelineFilmstrip = memo(function TimelineFilmstrip({
+  thumbnails,
+  duration,
+  flipHorizontal,
+  flipVertical,
+}: {
+  thumbnails: RenderedTimelineThumbnail[]
+  duration: number
+  flipHorizontal: boolean
+  flipVertical: boolean
+}) {
+  return (
+    <span className="video-filmstrip" aria-hidden="true">
+      {thumbnails.map((thumbnail) => thumbnail.url ? (
+        <img
+          key={thumbnail.key}
+          className={`video-filmstrip__frame ${thumbnail.isFallback ? 'is-fallback' : ''}`}
+          src={thumbnail.url}
+          alt=""
+          draggable={false}
+          style={{
+            left: `${(thumbnail.start / duration) * 100}%`,
+            width: `${((thumbnail.end - thumbnail.start) / duration) * 100}%`,
+            transform: `scale(${flipHorizontal ? -1 : 1}, ${flipVertical ? -1 : 1})`,
+          }}
+        />
+      ) : (
+        <i
+          key={thumbnail.key}
+          className="video-filmstrip__placeholder"
+          style={{
+            left: `${(thumbnail.start / duration) * 100}%`,
+            width: `${((thumbnail.end - thumbnail.start) / duration) * 100}%`,
+          }}
+        />
+      ))}
+    </span>
+  )
+})
 
 function Waveform({ kind }: { kind: 'original' | 'voice' }) {
   if (kind === 'original') {
@@ -855,137 +1537,35 @@ function Waveform({ kind }: { kind: 'original' | 'voice' }) {
   )
 }
 
-function buildTimelineThumbnailSamples(
-  duration: number,
-  viewport: TimelineViewport,
-  sourceKey: string,
-): TimelineThumbnailSample[] {
-  if (!sourceKey || duration <= 0 || viewport.clientWidth <= 0 || viewport.scrollWidth <= 0) {
-    return []
-  }
-
-  const scrollWidth = Math.max(viewport.clientWidth, viewport.scrollWidth)
-  const visibleStart = Math.min(duration, Math.max(0, viewport.scrollLeft / scrollWidth * duration))
-  const visibleEnd = Math.min(
-    duration,
-    Math.max(visibleStart, (viewport.scrollLeft + viewport.clientWidth) / scrollWidth * duration),
-  )
-  const visibleSpan = Math.max(duration / scrollWidth, visibleEnd - visibleStart)
-  const visibleCellCount = Math.max(6, Math.min(14, Math.ceil(viewport.clientWidth / thumbnailTargetWidth)))
-  const cellDuration = visibleSpan / visibleCellCount
-  const firstCell = Math.max(0, Math.floor(visibleStart / cellDuration) - thumbnailOverscan)
-  const lastCell = Math.min(
-    Math.ceil(duration / cellDuration),
-    Math.ceil(visibleEnd / cellDuration) + thumbnailOverscan,
-  )
-  const samples: TimelineThumbnailSample[] = []
-  for (let index = firstCell; index < lastCell; index += 1) {
-    const start = index * cellDuration
-    const end = Math.min(duration, (index + 1) * cellDuration)
-    if (end <= start) continue
-    const time = Math.min(Math.max(0.001, (start + end) / 2), Math.max(0.001, duration - 0.001))
-    samples.push({
-      key: `${sourceKey}:${Math.round(time * 1000)}`,
-      time,
-      start,
-      end,
-    })
-  }
-  return samples
-}
-
-function waitForVideoMetadata(video: HTMLVideoElement): Promise<void> {
-  if (video.readyState >= HTMLMediaElement.HAVE_METADATA) return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => finish(new Error('Quá thời gian đọc metadata video.')), 10_000)
-    const finish = (error?: Error) => {
-      window.clearTimeout(timeout)
-      video.removeEventListener('loadedmetadata', handleLoaded)
-      video.removeEventListener('error', handleError)
-      if (error) reject(error)
-      else resolve()
+function readPlayheadAnchorRatio() {
+  try {
+    const stored = Number.parseFloat(window.localStorage.getItem(playheadAnchorStorageKey) ?? '')
+    if (Number.isFinite(stored)) {
+      return Math.min(
+        maximumPlayheadAnchorRatio,
+        Math.max(minimumPlayheadAnchorRatio, stored),
+      )
     }
-    const handleLoaded = () => finish()
-    const handleError = () => finish(new Error('WebView2 không đọc được video để tạo thumbnail.'))
-    video.addEventListener('loadedmetadata', handleLoaded, { once: true })
-    video.addEventListener('error', handleError, { once: true })
-  })
+  } catch {
+    // Use the safe default when local storage is unavailable.
+  }
+  return defaultPlayheadAnchorRatio
 }
 
-async function captureVideoThumbnail(video: HTMLVideoElement, requestedTime: number) {
-  const lastSafeTime = Number.isFinite(video.duration)
-    ? Math.max(0.001, video.duration - 0.04)
-    : requestedTime
-  const time = Math.min(Math.max(0.001, requestedTime), lastSafeTime)
-  await seekVideoForThumbnail(video, time)
-
-  if (video.videoWidth <= 0 || video.videoHeight <= 0) {
-    throw new Error('Khung hình video không hợp lệ.')
+function findNearestThumbnailUrl(
+  target: TimelineThumbnailSample,
+  samples: TimelineThumbnailSample[],
+  cache: Map<string, string>,
+) {
+  let nearestUrl: string | null = null
+  let nearestDistance = Number.POSITIVE_INFINITY
+  for (const sample of samples) {
+    const url = cache.get(sample.cacheKey)
+    if (!url) continue
+    const distance = Math.abs(sample.index - target.index)
+    if (distance >= nearestDistance) continue
+    nearestDistance = distance
+    nearestUrl = url
   }
-  const canvas = document.createElement('canvas')
-  canvas.width = 192
-  canvas.height = 108
-  const context = canvas.getContext('2d', { alpha: false })
-  if (!context) throw new Error('Không thể tạo canvas thumbnail.')
-
-  const sourceRatio = video.videoWidth / video.videoHeight
-  const targetRatio = canvas.width / canvas.height
-  let sourceX = 0
-  let sourceY = 0
-  let sourceWidth = video.videoWidth
-  let sourceHeight = video.videoHeight
-  if (sourceRatio > targetRatio) {
-    sourceWidth = video.videoHeight * targetRatio
-    sourceX = (video.videoWidth - sourceWidth) / 2
-  } else if (sourceRatio < targetRatio) {
-    sourceHeight = video.videoWidth / targetRatio
-    sourceY = (video.videoHeight - sourceHeight) / 2
-  }
-  context.drawImage(
-    video,
-    sourceX,
-    sourceY,
-    sourceWidth,
-    sourceHeight,
-    0,
-    0,
-    canvas.width,
-    canvas.height,
-  )
-  return canvas.toDataURL('image/jpeg', 0.72)
-}
-
-function seekVideoForThumbnail(video: HTMLVideoElement, time: number): Promise<void> {
-  if (Math.abs(video.currentTime - time) < 0.015
-    && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-    return Promise.resolve()
-  }
-
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => finish(new Error('Quá thời gian lấy khung hình video.')), 8_000)
-    const finish = (error?: Error) => {
-      window.clearTimeout(timeout)
-      video.removeEventListener('seeked', handleSeeked)
-      video.removeEventListener('error', handleError)
-      if (error) reject(error)
-      else resolve()
-    }
-    const handleSeeked = () => finish()
-    const handleError = () => finish(new Error('Không đọc được khung hình video.'))
-    video.addEventListener('seeked', handleSeeked, { once: true })
-    video.addEventListener('error', handleError, { once: true })
-    try {
-      video.currentTime = time
-    } catch {
-      finish(new Error('Không thể tua video để tạo thumbnail.'))
-    }
-  })
-}
-
-function pruneThumbnailCache(cache: Map<string, string>, desiredKeys: Set<string>) {
-  if (cache.size <= maximumCachedThumbnails) return
-  for (const key of cache.keys()) {
-    if (!desiredKeys.has(key)) cache.delete(key)
-    if (cache.size <= maximumCachedThumbnails) break
-  }
+  return nearestUrl
 }

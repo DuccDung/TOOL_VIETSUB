@@ -74,6 +74,13 @@ public sealed class VideoExportJobExecutor : ILocalJobExecutor
         {
             var voice = _project.AudioTracks.LastOrDefault(item => item.Role == "VOICE_TIMELINE")
                 ?? throw new LocalJobException("VOICE_TIMELINE_MISSING", "Hãy đồng bộ giọng Việt trước khi xuất video.", retryable: false);
+            if (voice.IsStale)
+            {
+                throw new LocalJobException(
+                    "VOICE_TIMELINE_STALE",
+                    "Giọng Việt đang là bản nghe cũ. Hãy tạo giọng lại trước khi xuất video.",
+                    retryable: false);
+            }
             if (voice.WorkspaceRelativePath is null)
             {
                 throw new LocalJobException("VOICE_TIMELINE_MISSING", "Thiếu file timeline giọng Việt.");

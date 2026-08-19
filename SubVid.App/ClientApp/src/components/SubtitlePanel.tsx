@@ -3,8 +3,10 @@ import {
   AudioLines,
   Captions,
   CircleAlert,
+  Clock3,
   Download,
   FileUp,
+  Gauge,
   ListFilter,
   MessageSquareText,
   MoreHorizontal,
@@ -17,7 +19,7 @@ import { formatClock } from '../lib/format'
 import type { SubtitleSegment, VoiceInfo } from '../types'
 import { IconButton, SegmentTab } from './Ui'
 
-type Filter = 'all' | 'untranslated' | 'review' | 'missing-audio' | 'invalid-translation'
+type Filter = 'all' | 'untranslated' | 'review' | 'missing-audio' | 'invalid-translation' | 'voice-timing'
 
 type SubtitlePanelProps = {
   segments: SubtitleSegment[]
@@ -68,7 +70,9 @@ export function SubtitlePanel({
         filter === 'all' ||
         (filter === 'untranslated'
           ? segment.translated.trim().length === 0
-          : segment.status === filter)
+          : filter === 'voice-timing'
+            ? segment.voiceTiming?.status === 'REVIEW_REQUIRED' || segment.voiceTiming?.status === 'INVALID'
+            : segment.status === filter)
       const matchesQuery =
         !normalizedQuery ||
         segment.original.toLocaleLowerCase('vi').includes(normalizedQuery) ||
@@ -83,6 +87,23 @@ export function SubtitlePanel({
   ).length
   const translatedCount = segments.filter(
     (segment) => segment.translated.trim().length > 0,
+  ).length
+  const timingAnalyzedCount = segments.filter((segment) => segment.voiceTiming).length
+  const timingPaddedCount = segments.filter(
+    (segment) => segment.voiceTiming?.status === 'PADDED',
+  ).length
+  const timingGapFittedCount = segments.filter(
+    (segment) => segment.voiceTiming?.status === 'GAP_FITTED',
+  ).length
+  const timingTrimmedCount = segments.filter(
+    (segment) => segment.voiceTiming
+      && segment.voiceTiming.rawDurationSeconds - segment.voiceTiming.sourceDurationSeconds > 0.05,
+  ).length
+  const timingCompressedCount = segments.filter(
+    (segment) => segment.voiceTiming?.status === 'COMPRESSED',
+  ).length
+  const timingReviewCount = segments.filter(
+    (segment) => segment.voiceTiming?.status === 'REVIEW_REQUIRED' || segment.voiceTiming?.status === 'INVALID',
   ).length
 
   useEffect(() => {
@@ -160,6 +181,7 @@ export function SubtitlePanel({
               { id: 'review' as const, label: 'Cần chú ý' },
               { id: 'invalid-translation' as const, label: 'Lỗi dịch' },
               { id: 'missing-audio' as const, label: 'Thiếu audio' },
+              { id: 'voice-timing' as const, label: `Cảnh báo thời lượng${timingReviewCount ? ` (${timingReviewCount})` : ''}` },
             ].map((item) => (
               <button
                 key={item.id}
@@ -180,7 +202,11 @@ export function SubtitlePanel({
               disabled={busy || segments.length === 0}
             >
               <WandSparkles size={15} />
-              <span>{invalidTranslationCount > 0 ? `Dịch lại ${invalidTranslationCount} lỗi` : 'Dịch'}</span>
+              <span>{invalidTranslationCount > 0
+                ? `Dịch lại ${invalidTranslationCount} lỗi`
+                : timingReviewCount > 0
+                  ? `Rút gọn ${timingReviewCount} câu`
+                  : 'Dịch'}</span>
             </button>
             <button
               type="button"
@@ -212,6 +238,26 @@ export function SubtitlePanel({
             </button>
           </div>
 
+          {timingAnalyzedCount > 0 ? (
+            <div className={`voice-timing-summary ${timingReviewCount > 0 ? 'has-errors' : ''}`}>
+              <div className="voice-timing-summary__title">
+                <Gauge size={14} />
+                <span>
+                  <strong>Kiểm tra khớp timeline</strong>
+                  <small>Đã cắt im lặng {timingTrimmedCount} câu · quá thời lượng vẫn tạo giọng · tối đa 1.20x</small>
+                </span>
+              </div>
+              <div className="voice-timing-summary__metrics">
+                <span><b>{timingPaddedCount}</b> thêm khoảng lặng</span>
+                <span><b>{timingGapFittedCount}</b> dùng khoảng trống</span>
+                <span><b>{timingCompressedCount}</b> tăng nhẹ</span>
+                <span className={timingReviewCount > 0 ? 'is-error' : ''}>
+                  <b>{timingReviewCount}</b> cảnh báo cần kiểm tra
+                </span>
+              </div>
+            </div>
+          ) : null}
+
           <div className="subtitle-list" aria-live="polite">
             {segments.length === 0 ? (
               <div className="empty-subtitles">
@@ -237,14 +283,25 @@ export function SubtitlePanel({
                   <span className="subtitle-card__content">
                     <span className="subtitle-card__meta">
                       <time>{formatClock(segment.start)} — {formatClock(segment.end)}</time>
-                      <span
-                        className={`status-badge status-badge--${segment.status}`}
-                        title={segment.translationWarnings?.length
-                          ? segment.translationWarnings.join(', ')
-                          : undefined}
-                      >
-                        {segment.status !== 'translated' ? <CircleAlert size={11} /> : null}
-                        {statusLabels[segment.status]}
+                      <span className="subtitle-card__badges">
+                        {segment.voiceTiming && segment.voiceTiming.status !== 'NATURAL' ? (
+                          <span
+                            className={`voice-timing-badge voice-timing-badge--${segment.voiceTiming.status.toLowerCase().replace('_', '-')}`}
+                            title={segment.voiceTiming.message}
+                          >
+                            {segment.voiceTiming.status === 'PADDED' ? <Clock3 size={10} /> : <Gauge size={10} />}
+                            {formatVoiceTimingBadge(segment.voiceTiming)}
+                          </span>
+                        ) : null}
+                        <span
+                          className={`status-badge status-badge--${segment.status}`}
+                          title={segment.translationWarnings?.length
+                            ? segment.translationWarnings.join(', ')
+                            : undefined}
+                        >
+                          {segment.status !== 'translated' ? <CircleAlert size={11} /> : null}
+                          {statusLabels[segment.status]}
+                        </span>
                       </span>
                     </span>
                     <span className="subtitle-original">{segment.original}</span>
@@ -267,6 +324,27 @@ export function SubtitlePanel({
                   <small>{formatClock(selectedSegment.start)} — {formatClock(selectedSegment.end)}</small>
                 </div>
               </div>
+              {selectedSegment.voiceTiming ? (
+                <div className={`voice-timing-detail voice-timing-detail--${selectedSegment.voiceTiming.severity.toLowerCase()}`}>
+                  <div><Gauge size={15} /><strong>Khớp thời lượng giọng</strong></div>
+                  <dl>
+                    <div><dt>WAV gốc</dt><dd>{selectedSegment.voiceTiming.rawDurationSeconds.toFixed(2)} giây</dd></div>
+                    <div><dt>Phần có giọng</dt><dd>{selectedSegment.voiceTiming.sourceDurationSeconds.toFixed(2)} giây</dd></div>
+                    <div><dt>Ô phụ đề</dt><dd>{selectedSegment.voiceTiming.targetDurationSeconds.toFixed(2)} giây</dd></div>
+                    <div><dt>Cửa sổ khả dụng</dt><dd>{selectedSegment.voiceTiming.effectiveWindowSeconds.toFixed(2)} giây</dd></div>
+                    <div><dt>Tốc độ cần</dt><dd>{selectedSegment.voiceTiming.requiredTempo.toFixed(2)}x</dd></div>
+                    <div><dt>Đã áp dụng</dt><dd>{selectedSegment.voiceTiming.appliedTempo?.toFixed(2) ?? 'Chưa áp dụng'}{selectedSegment.voiceTiming.appliedTempo ? 'x' : ''}</dd></div>
+                    <div><dt>Đã cắt im lặng</dt><dd>{Math.max(0, selectedSegment.voiceTiming.rawDurationSeconds - selectedSegment.voiceTiming.sourceDurationSeconds).toFixed(2)} giây</dd></div>
+                    <div><dt>Dùng khoảng trống</dt><dd>{selectedSegment.voiceTiming.borrowedGapSeconds.toFixed(2)} giây</dd></div>
+                    <div><dt>Tốc độ TTS</dt><dd>{selectedSegment.voiceTiming.appliedTtsSpeed}</dd></div>
+                    <div><dt>Cụm thoại</dt><dd>{selectedSegment.voiceTiming.phraseId ?? 'Riêng lẻ'}</dd></div>
+                  </dl>
+                  <p>{selectedSegment.voiceTiming.message}</p>
+                  {selectedSegment.voiceTiming.suggestedMaximumCharacters ? (
+                    <small>Nên rút còn khoảng {selectedSegment.voiceTiming.suggestedMaximumCharacters} ký tự hoặc tăng thời lượng cue.</small>
+                  ) : null}
+                </div>
+              ) : null}
               <label>
                 <span>Nội dung gốc</span>
                 <textarea
@@ -351,4 +429,13 @@ export function SubtitlePanel({
       )}
     </aside>
   )
+}
+
+function formatVoiceTimingBadge(timing: NonNullable<SubtitleSegment['voiceTiming']>) {
+  if (timing.status === 'PADDED') return `Nghỉ +${timing.paddingSeconds.toFixed(1)}s`
+  if (timing.status === 'GAP_FITTED') return `Mượn ${timing.borrowedGapSeconds.toFixed(1)}s`
+  if (timing.status === 'COMPRESSED') return `Tăng ${timing.appliedTempo?.toFixed(2)}x`
+  if (timing.status === 'REVIEW_REQUIRED') return `Quá dài · ${timing.requiredTempo.toFixed(2)}x`
+  if (timing.status === 'INVALID') return 'Sai thời lượng'
+  return 'Tự nhiên 1.0x'
 }

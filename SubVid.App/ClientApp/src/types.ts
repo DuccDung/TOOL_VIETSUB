@@ -59,6 +59,7 @@ export type VoiceSynthesisJobMetrics = {
   cacheHitCues: number
   completedCues: number
   totalCues: number
+  timingWarningCues?: number
 }
 
 export type ProjectSummaryInfo = {
@@ -84,6 +85,7 @@ export type ProjectInfo = {
   aiStorage: AiStorageInfo
   video: VideoInfo | null
   voicePlaybackUrl: string | null
+  voicePlaybackStale: boolean
   subtitles: SubtitleSegment[]
   jobs: LocalJobInfo[]
 }
@@ -124,6 +126,12 @@ export type VoiceSettingsInfo = {
   speakerVoiceIds: Record<string, string>
   voices: VoiceInfo[]
   speed: number
+  timelineMaximumTempo: number
+  timelinePreferredTempo: number
+  timelineMaximumBorrowMilliseconds: number
+  trimSilenceEnabled: boolean
+  phraseSynthesisEnabled: boolean
+  timelineSlowdownEnabled: boolean
   fptApiKeyConfigured: boolean
   estimatedCharacters: number
 }
@@ -140,6 +148,7 @@ export type VoiceInfo = {
   installed: boolean
   isCloud: boolean
   requiresInstall: boolean
+  installState: 'ONLINE' | 'READY' | 'MISSING' | 'REPAIR_REQUIRED' | string
 }
 
 export type TranslationSettingsInfo = {
@@ -246,6 +255,53 @@ export type SubtitleSegment = {
   hasVoice?: boolean
   translationConfidence?: number | null
   translationWarnings?: string[]
+  voiceTiming?: VoiceTimingInfo | null
+  voicePhrase?: VoicePhraseInfo | null
+  voiceBoundaryAfter?: VoiceBoundaryInfo | null
+}
+
+export type VoiceBoundaryMode = 'AUTO' | 'JOIN' | 'BREAK'
+
+export type VoicePhraseInfo = {
+  phraseId: string
+  startCueNumber: number
+  endCueNumber: number
+  cueCount: number
+  hasAudio: boolean
+  needsRegeneration: boolean
+}
+
+export type VoiceBoundaryInfo = {
+  nextCueId: string
+  mode: VoiceBoundaryMode
+  effectiveMode: 'JOIN' | 'BREAK'
+  canJoin: boolean
+  constraintMessage: string | null
+}
+
+export type VoiceTimingInfo = {
+  rawDurationSeconds: number
+  sourceDurationSeconds: number
+  targetDurationSeconds: number
+  effectiveWindowSeconds: number
+  renderDurationSeconds: number
+  leadingSilenceSeconds: number
+  trailingSilenceSeconds: number
+  trimStartSeconds: number
+  trimEndSeconds: number
+  borrowedGapSeconds: number
+  requiredTempo: number
+  appliedTempo: number | null
+  paddingSeconds: number
+  baseTtsSpeed: number
+  appliedTtsSpeed: number
+  phraseId: string | null
+  resolutionAction: string
+  status: 'NATURAL' | 'PADDED' | 'GAP_FITTED' | 'COMPRESSED' | 'REVIEW_REQUIRED' | 'INVALID'
+  severity: 'INFO' | 'WARNING' | 'ERROR'
+  message: string
+  suggestedMaximumCharacters: number | null
+  analyzedAtUtc: string
 }
 
 export type ToastMessage = {

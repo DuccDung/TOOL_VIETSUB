@@ -12,6 +12,14 @@ public static class LocalVoiceEngines
         string.Equals(engine, Fpt, StringComparison.OrdinalIgnoreCase);
 }
 
+public static class LocalVoiceInstallStates
+{
+    public const string Online = "ONLINE";
+    public const string Ready = "READY";
+    public const string Missing = "MISSING";
+    public const string RepairRequired = "REPAIR_REQUIRED";
+}
+
 public sealed record LocalVoiceDefinition(
     string VoiceId,
     string Engine,

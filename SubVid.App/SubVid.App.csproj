@@ -39,6 +39,10 @@
     </Content>
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="SubVid.App.Tests" />
+  </ItemGroup>
+
   <!-- WebView2 ships WPF and WinForms references together. This app only uses
        WinForms, so remove the unused WPF assembly to avoid WindowsBase conflicts. -->
   <Target Name="RemoveUnusedWebView2WpfReference"

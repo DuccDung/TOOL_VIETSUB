@@ -32,6 +32,7 @@ public sealed class MainForm : Form
     private readonly AuthSessionManager _authSessionManager = new();
     private readonly DesktopWorkspaceCoordinator _workspaceCoordinator;
     private readonly FfmpegRuntimeProvisioner _ffmpegProvisioner;
+    private readonly TimelineThumbnailService _timelineThumbnails;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private readonly System.Windows.Forms.Timer _sessionTimer;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
@@ -48,16 +49,40 @@ public sealed class MainForm : Form
     {
         _workspaceCoordinator = new DesktopWorkspaceCoordinator(_authSessionManager);
         _ffmpegProvisioner = new FfmpegRuntimeProvisioner(new AppPaths());
+        _timelineThumbnails = new TimelineThumbnailService(
+            new AppPaths(),
+            () => _ffmpegProvisioner.GetStatus().FfmpegPath);
+        _timelineThumbnails.ThumbnailReady += (_, thumbnail) => PostFromAnyThread(new
+        {
+            type = "timeline:thumbnail:ready",
+            sourceSha256 = thumbnail.SourceSha256,
+            index = thumbnail.Index,
+            url = thumbnail.Url,
+        });
+        _timelineThumbnails.ThumbnailFailed += (_, thumbnail) => PostFromAnyThread(new
+        {
+            type = "timeline:thumbnail:failed",
+            sourceSha256 = thumbnail.SourceSha256,
+            index = thumbnail.Index,
+        });
         _workspaceCoordinator.ImportProgressChanged += (_, progress) => PostMessage(new
         {
             type = "video:import:progress",
             progress,
         });
-        _workspaceCoordinator.JobChanged += (_, job) => PostFromAnyThread(new
+        _workspaceCoordinator.JobChanged += (_, job) =>
         {
-            type = "job:changed",
-            job,
-        }, includeProjectState: job.Status is LocalJobStatus.Completed or LocalJobStatus.Failed);
+            if (job.JobType == "EXPORT_VIDEO_LOCAL")
+            {
+                _timelineThumbnails.SetResourcePaused(
+                    job.Status is LocalJobStatus.Pending or LocalJobStatus.Running);
+            }
+            PostFromAnyThread(new
+            {
+                type = "job:changed",
+                job,
+            }, includeProjectState: job.Status is LocalJobStatus.Completed or LocalJobStatus.Failed);
+        };
         _workspaceCoordinator.ModelDownloadProgressChanged += (_, progress) => PostFromAnyThread(new
         {
             type = "model:download:progress",
@@ -136,8 +161,11 @@ public sealed class MainForm : Form
             $"https://{MediaHostName}/video",
             CoreWebView2WebResourceContext.All);
         core.AddWebResourceRequestedFilter(
-            $"https://{MediaHostName}/voice",
+            $"https://{MediaHostName}/voice*",
             CoreWebView2WebResourceContext.All);
+        core.AddWebResourceRequestedFilter(
+            $"https://{MediaHostName}/thumbnail/*",
+            CoreWebView2WebResourceContext.Image);
         core.WebResourceRequested += OnMediaResourceRequested;
 
         core.Settings.AreDefaultContextMenusEnabled = false;
@@ -217,13 +245,20 @@ public sealed class MainForm : Form
     {
         if (!Uri.TryCreate(eventArgs.Request.Uri, UriKind.Absolute, out var uri)
             || !string.Equals(uri.Host, MediaHostName, StringComparison.OrdinalIgnoreCase)
-            || uri.AbsolutePath is not ("/video" or "/voice"))
+            || (uri.AbsolutePath is not ("/video" or "/voice")
+                && !uri.AbsolutePath.StartsWith("/thumbnail/", StringComparison.Ordinal)))
         {
             return;
         }
 
         try
         {
+            if (uri.AbsolutePath.StartsWith("/thumbnail/", StringComparison.Ordinal))
+            {
+                ServeTimelineThumbnail(eventArgs, uri.AbsolutePath);
+                return;
+            }
+
             var sourcePath = uri.AbsolutePath == "/voice"
                 ? _workspaceCoordinator.GetCurrentVoiceTimelinePath()
                 : _workspaceCoordinator.GetCurrentSourcePath();
@@ -256,7 +291,9 @@ public sealed class MainForm : Form
                     sourcePath,
                     FileMode.Open,
                     FileAccess.Read,
-                    FileShare.Read,
+                    uri.AbsolutePath == "/voice"
+                        ? FileShare.Read | FileShare.Delete
+                        : FileShare.Read,
                     1024 * 1024,
                     FileOptions.Asynchronous | FileOptions.RandomAccess);
                 content = new BoundedReadStream(fileStream, range.Start, range.Length);
@@ -282,7 +319,10 @@ public sealed class MainForm : Form
                 isPartial ? "Partial Content" : "OK",
                 headers);
         }
-        catch (Exception exception) when (exception is FileNotFoundException or InvalidOperationException)
+        catch (Exception exception) when (exception is FileNotFoundException
+            or InvalidOperationException
+            or IOException
+            or UnauthorizedAccessException)
         {
             eventArgs.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
                 Stream.Null,
@@ -463,6 +503,12 @@ public sealed class MainForm : Form
                     break;
                 case "timeline:delete":
                     await EditTimelineAsync(document.RootElement, "delete");
+                    break;
+                case "timeline:voice-boundary:update":
+                    await UpdateVoicePhraseBoundaryAsync(document.RootElement);
+                    break;
+                case "timeline:thumbnails:request":
+                    RequestTimelineThumbnails(document.RootElement);
                     break;
                 case "subtitle:export:srt":
                     await ExportSrtAsync();
@@ -1426,9 +1472,17 @@ public sealed class MainForm : Form
             && apiKeyElement.ValueKind == JsonValueKind.String
                 ? apiKeyElement.GetString()
                 : null;
+        var forcePhraseRegeneration = message.TryGetProperty("forcePhraseRegeneration", out var forceElement)
+            && forceElement.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && forceElement.GetBoolean();
         await RunWorkspaceJobAsync(
             "synthesize-voice",
-            token => _workspaceCoordinator.SynthesizeVoiceAsync(voiceId, speed, apiKey, token));
+            token => _workspaceCoordinator.SynthesizeVoiceAsync(
+                voiceId,
+                speed,
+                apiKey,
+                forcePhraseRegeneration,
+                token));
     }
 
     private async Task RunWorkspaceJobAsync(
@@ -1624,6 +1678,75 @@ public sealed class MainForm : Form
         }
     }
 
+    private void ServeTimelineThumbnail(
+        CoreWebView2WebResourceRequestedEventArgs eventArgs,
+        string absolutePath)
+    {
+        var cachedPath = _timelineThumbnails.TryResolveCachedPath(absolutePath);
+        if (cachedPath is null)
+        {
+            eventArgs.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
+                Stream.Null,
+                404,
+                "Not Found",
+                "Cache-Control: no-store");
+            return;
+        }
+
+        var file = new FileInfo(cachedPath);
+        Stream content = Stream.Null;
+        if (!string.Equals(eventArgs.Request.Method, "HEAD", StringComparison.OrdinalIgnoreCase))
+        {
+            content = new FileStream(
+                cachedPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read | FileShare.Delete,
+                64 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        eventArgs.Response = _webView.CoreWebView2.Environment.CreateWebResourceResponse(
+            content,
+            200,
+            "OK",
+            string.Join("\r\n",
+            [
+                "Content-Type: image/jpeg",
+                $"Content-Length: {file.Length}",
+                $"Access-Control-Allow-Origin: https://{AppHostName}",
+                "Cache-Control: private, max-age=31536000, immutable",
+            ]));
+    }
+
+    private async Task UpdateVoicePhraseBoundaryAsync(JsonElement message)
+    {
+        if (!TryGetRequiredString(message, "previousCueId", out var previousCueText)
+            || !Guid.TryParse(previousCueText, out var previousCueId)
+            || !TryGetRequiredString(message, "nextCueId", out var nextCueText)
+            || !Guid.TryParse(nextCueText, out var nextCueId)
+            || !TryGetRequiredString(message, "mode", out var mode))
+        {
+            PostWorkspaceError("VOICE_BOUNDARY_REQUEST_INVALID", "Ranh giới cụm thoại không hợp lệ.");
+            return;
+        }
+
+        try
+        {
+            PostMessage(new { type = "subtitle:busy", operation = "voice-boundary" });
+            var state = await _workspaceCoordinator.UpdateVoicePhraseBoundaryAsync(
+                previousCueId,
+                nextCueId,
+                mode,
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "project:state", project = state });
+            PostMessage(new { type = "subtitle:saved", operation = "voice-boundary" });
+        }
+        catch (Exception exception)
+        {
+            HandleWorkspaceException(exception);
+        }
+    }
+
     private async Task ExportSrtAsync()
     {
         using var dialog = new SaveFileDialog
@@ -1677,6 +1800,52 @@ public sealed class MainForm : Form
         await RunWorkspaceJobAsync(
             "export-video",
             token => _workspaceCoordinator.ExportVideoAsync(dialog.FileName, token));
+    }
+
+    private void RequestTimelineThumbnails(JsonElement message)
+    {
+        var project = _workspaceCoordinator.CurrentProject;
+        var source = project?.SourceVideo;
+        if (project is null
+            || source is null
+            || !message.TryGetProperty("sourceSha256", out var shaElement)
+            || !string.Equals(
+                shaElement.GetString(),
+                source.Sha256,
+                StringComparison.OrdinalIgnoreCase)
+            || !message.TryGetProperty("indices", out var indicesElement)
+            || indicesElement.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        var indices = indicesElement
+            .EnumerateArray()
+            .Take(64)
+            .Where(item => item.TryGetInt32(out _))
+            .Select(item => item.GetInt32())
+            .Where(index => index is >= 0 and < TimelineThumbnailService.ThumbnailCount)
+            .Distinct()
+            .ToArray();
+        if (indices.Length == 0) return;
+
+        try
+        {
+            _timelineThumbnails.Request(
+                project.ProjectId,
+                _workspaceCoordinator.GetCurrentSourcePath(),
+                source.Sha256,
+                source.Metadata.DurationSeconds,
+                indices);
+        }
+        catch (Exception exception) when (exception is ArgumentException
+            or FileNotFoundException
+            or InvalidOperationException)
+        {
+#if DEBUG
+            System.Diagnostics.Debug.WriteLine(exception);
+#endif
+        }
     }
 
     private async Task OpenVideoAsync(JsonElement message)
@@ -2004,6 +2173,7 @@ public sealed class MainForm : Form
         _ffmpegInstallCancellation?.Cancel();
         try
         {
+            await _timelineThumbnails.DisposeAsync();
             await _workspaceCoordinator.DisposeAsync();
             if (_ffmpegInstallTask is not null)
             {

@@ -49,8 +49,11 @@ public sealed class SrtServiceTests : IDisposable
 
         var track = await service.ImportAsync(project, sourcePath, "en", CancellationToken.None);
         var cue = Assert.Single(track.Cues);
+        cue.VoiceTiming = new VoiceTimingAnalysis { Status = VoiceTimingStatuses.Padded };
         project.AudioTracks.Add(new LocalMediaReference { Role = "VOICE_CUE", CueId = cue.CueId });
-        project.AudioTracks.Add(new LocalMediaReference { Role = "VOICE_TIMELINE" });
+        project.AudioTracks.Add(new LocalMediaReference { Role = "VOICE_PHRASE", CueIds = [cue.CueId] });
+        var voiceTimeline = new LocalMediaReference { Role = "VOICE_TIMELINE" };
+        project.AudioTracks.Add(voiceTimeline);
         await service.UpdateCueAsync(
             project,
             cue.CueId,
@@ -68,7 +71,39 @@ public sealed class SrtServiceTests : IDisposable
         Assert.True(cue.OriginalLocked);
         Assert.True(cue.TranslationLocked);
         Assert.DoesNotContain(project.AudioTracks, item => item.CueId == cue.CueId);
-        Assert.DoesNotContain(project.AudioTracks, item => item.Role == "VOICE_TIMELINE");
+        Assert.DoesNotContain(project.AudioTracks, item => item.Role == "VOICE_PHRASE");
+        Assert.Contains(voiceTimeline, project.AudioTracks);
+        Assert.True(voiceTimeline.IsStale);
+        Assert.Null(cue.VoiceTiming);
+    }
+
+    [Fact]
+    public async Task UpdateCueAsync_WhenTranslationIsUnchanged_KeepsVoiceTimelineCurrent()
+    {
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Unchanged subtitle voice");
+        var cue = new SubtitleCue
+        {
+            OriginalText = "Welcome.",
+            TranslatedText = "Chào mừng bạn.",
+            StartMilliseconds = 500,
+            EndMilliseconds = 2_000,
+        };
+        project.SubtitleTracks.Add(new SubtitleDocument { LanguageCode = "en", Cues = [cue] });
+        var voiceTimeline = new LocalMediaReference { Role = "VOICE_TIMELINE" };
+        project.AudioTracks.Add(voiceTimeline);
+        var service = new SrtService(paths, workspace);
+
+        await service.UpdateCueAsync(
+            project,
+            cue.CueId,
+            cue.OriginalText,
+            cue.TranslatedText,
+            CancellationToken.None);
+
+        Assert.Contains(voiceTimeline, project.AudioTracks);
+        Assert.False(voiceTimeline.IsStale);
     }
 
     [Fact]
@@ -87,6 +122,7 @@ public sealed class SrtServiceTests : IDisposable
             EndMilliseconds = 4_000,
             OriginalText = "one two three four",
             TranslatedText = "một hai ba bốn",
+            VoiceTiming = new VoiceTimingAnalysis { Status = VoiceTimingStatuses.Padded },
         };
         var track = new SubtitleDocument { Cues = [cue] };
         project.SubtitleTracks.Add(track);
@@ -99,6 +135,8 @@ public sealed class SrtServiceTests : IDisposable
         Assert.Equal("one two", track.Cues[0].OriginalText);
         Assert.Equal("three four", track.Cues[1].OriginalText);
         Assert.True(track.Cues[0].OriginalLocked);
+        Assert.Null(track.Cues[0].VoiceTiming);
+        Assert.Null(track.Cues[1].VoiceTiming);
         Assert.DoesNotContain(project.AudioTracks, item => item.CueId == cue.CueId);
 
         var right = track.Cues[1];
@@ -132,6 +170,50 @@ public sealed class SrtServiceTests : IDisposable
             service.SplitCueAsync(project, cue.CueId, 1_050, CancellationToken.None));
 
         Assert.Equal("SUBTITLE_SPLIT_POSITION_INVALID", exception.Code);
+    }
+
+    [Fact]
+    public async Task TimelineEdits_KeepOnlyValidAdjacentVoiceBoundaries()
+    {
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Voice boundary edits");
+        var first = new SubtitleCue
+        {
+            StartMilliseconds = 0,
+            EndMilliseconds = 2_000,
+            OriginalText = "one two",
+            TranslatedText = "một hai",
+        };
+        var second = new SubtitleCue
+        {
+            StartMilliseconds = 2_100,
+            EndMilliseconds = 3_000,
+            OriginalText = "three",
+            TranslatedText = "ba",
+        };
+        var track = new SubtitleDocument { Cues = [first, second] };
+        project.SubtitleTracks.Add(track);
+        project.VoicePhraseBoundaries.Add(new VoicePhraseBoundaryOverride
+        {
+            PreviousCueId = first.CueId,
+            NextCueId = second.CueId,
+            Mode = VoicePhraseBoundaryModes.Break,
+        });
+        var service = new SrtService(paths, workspace);
+
+        await service.SplitCueAsync(project, first.CueId, 1_000, CancellationToken.None);
+
+        var splitRight = track.Cues[1];
+        var boundary = Assert.Single(project.VoicePhraseBoundaries);
+        Assert.Equal(splitRight.CueId, boundary.PreviousCueId);
+        Assert.Equal(second.CueId, boundary.NextCueId);
+
+        await service.DeleteCueAsync(project, second.CueId, CancellationToken.None);
+
+        Assert.Empty(project.VoicePhraseBoundaries);
+        var reopened = await workspace.OpenAsync(project.ProjectId);
+        Assert.Empty(reopened.VoicePhraseBoundaries);
     }
 
     public void Dispose()

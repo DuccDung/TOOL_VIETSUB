@@ -162,6 +162,40 @@ public sealed class ProjectWorkspaceServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SaveAndOpen_PreservesAdjacentVoiceBoundaryAndDropsOrphans()
+    {
+        var paths = new AppPaths(_root);
+        var service = new ProjectWorkspaceService(paths);
+        var project = await service.CreateAsync(Guid.NewGuid(), "Voice boundaries");
+        var first = new SubtitleCue { StartMilliseconds = 0, EndMilliseconds = 1_000 };
+        var second = new SubtitleCue { StartMilliseconds = 1_100, EndMilliseconds = 2_000 };
+        project.SubtitleTracks.Add(new SubtitleDocument { Cues = [first, second] });
+        project.VoicePhraseBoundaries =
+        [
+            new VoicePhraseBoundaryOverride
+            {
+                PreviousCueId = first.CueId,
+                NextCueId = second.CueId,
+                Mode = VoicePhraseBoundaryModes.Join,
+            },
+            new VoicePhraseBoundaryOverride
+            {
+                PreviousCueId = first.CueId,
+                NextCueId = Guid.NewGuid(),
+                Mode = VoicePhraseBoundaryModes.Break,
+            },
+        ];
+
+        await service.SaveAsync(project);
+        var reopened = await service.OpenAsync(project.ProjectId);
+
+        var boundary = Assert.Single(reopened.VoicePhraseBoundaries);
+        Assert.Equal(first.CueId, boundary.PreviousCueId);
+        Assert.Equal(second.CueId, boundary.NextCueId);
+        Assert.Equal(VoicePhraseBoundaryModes.Join, boundary.Mode);
+    }
+
+    [Fact]
     public void GetProjectPath_RejectsTraversalOutsideWorkspace()
     {
         var paths = new AppPaths(_root);

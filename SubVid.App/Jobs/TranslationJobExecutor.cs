@@ -89,6 +89,10 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
             .Where(cue => !cue.TranslationLocked
                 && (string.IsNullOrWhiteSpace(cue.TranslatedText)
                     || TranslationQualityValidator.LooksPathological(cue.OriginalText, cue.TranslatedText)
+                    || string.Equals(
+                        cue.VoiceTiming?.Status,
+                        VoiceTimingStatuses.ReviewRequired,
+                        StringComparison.OrdinalIgnoreCase)
                     || !string.Equals(
                         cue.TranslationSourceFingerprint,
                         fingerprints[cue.CueId],
@@ -402,9 +406,11 @@ public sealed class TranslationJobExecutor : ILocalJobExecutor
                 : null;
             if (changed)
             {
+                entry.Cue.VoiceTiming = null;
+                VoiceTimelinePreviewState.MarkStale(_project);
                 _project.AudioTracks.RemoveAll(item =>
-                    item.Role == "VOICE_TIMELINE"
-                    || (item.Role == "VOICE_CUE" && item.CueId == entry.Cue.CueId));
+                    (item.Role == "VOICE_CUE" && item.CueId == entry.Cue.CueId)
+                    || (item.Role == "VOICE_PHRASE" && item.CueIds.Contains(entry.Cue.CueId)));
             }
         }
 

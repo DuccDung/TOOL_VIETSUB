@@ -79,7 +79,14 @@ public static class TranslationScenePlanner
         double maximumCharactersPerSecond)
     {
         var durationSeconds = Math.Max(0.25, (cue.EndMilliseconds - cue.StartMilliseconds) / 1000d);
-        var suggestedMaximum = Math.Max(8, (int)Math.Ceiling(durationSeconds * maximumCharactersPerSecond));
+        var durationMaximum = Math.Max(8, (int)Math.Ceiling(durationSeconds * maximumCharactersPerSecond));
+        var suggestedMaximum = cue.VoiceTiming is
+            {
+                Status: VoiceTimingStatuses.ReviewRequired,
+                SuggestedMaximumCharacters: > 0,
+            }
+            ? Math.Max(3, Math.Min(durationMaximum, cue.VoiceTiming.SuggestedMaximumCharacters.Value))
+            : durationMaximum;
         return new TranslationCueInput(
             cue.CueId,
             cue.StartMilliseconds,

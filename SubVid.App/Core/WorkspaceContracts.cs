@@ -1,3 +1,5 @@
+using SubVid.App.LocalAi;
+
 namespace SubVid.App.Core;
 
 public sealed record DesktopVideoInfo(
@@ -29,6 +31,7 @@ public sealed record DesktopProjectState(
     DesktopAiStorageInfo AiStorage,
     DesktopVideoInfo? Video,
     string? VoicePlaybackUrl,
+    bool VoicePlaybackStale,
     IReadOnlyList<DesktopSubtitleCue> Subtitles,
     IReadOnlyList<LocalJob> Jobs);
 
@@ -73,6 +76,12 @@ public sealed record DesktopVoiceSettings(
     IReadOnlyDictionary<string, string> SpeakerVoiceIds,
     IReadOnlyList<DesktopVoiceInfo> Voices,
     int Speed = 0,
+    double TimelineMaximumTempo = 1.20,
+    double TimelinePreferredTempo = 1.12,
+    int TimelineMaximumBorrowMilliseconds = 600,
+    bool TrimSilenceEnabled = true,
+    bool PhraseSynthesisEnabled = true,
+    bool TimelineSlowdownEnabled = false,
     bool FptApiKeyConfigured = false,
     int EstimatedCharacters = 0);
 
@@ -87,7 +96,8 @@ public sealed record DesktopVoiceInfo(
     string License,
     bool Installed,
     bool IsCloud = false,
-    bool RequiresInstall = true);
+    bool RequiresInstall = true,
+    string InstallState = LocalVoiceInstallStates.Missing);
 
 public sealed record DesktopTranslationSettings(
     string Provider,
@@ -135,7 +145,49 @@ public sealed record DesktopSubtitleCue(
     bool OverlapsPrevious,
     bool HasVoice,
     double? TranslationConfidence,
-    IReadOnlyList<string> TranslationWarnings);
+    IReadOnlyList<string> TranslationWarnings,
+    DesktopVoiceTiming? VoiceTiming,
+    DesktopVoicePhrase? VoicePhrase,
+    DesktopVoiceBoundary? VoiceBoundaryAfter);
+
+public sealed record DesktopVoicePhrase(
+    string PhraseId,
+    int StartCueNumber,
+    int EndCueNumber,
+    int CueCount,
+    bool HasAudio,
+    bool NeedsRegeneration);
+
+public sealed record DesktopVoiceBoundary(
+    Guid NextCueId,
+    string Mode,
+    string EffectiveMode,
+    bool CanJoin,
+    string? ConstraintMessage);
+
+public sealed record DesktopVoiceTiming(
+    double SourceDurationSeconds,
+    double TargetDurationSeconds,
+    double RequiredTempo,
+    double? AppliedTempo,
+    double PaddingSeconds,
+    string Status,
+    string Severity,
+    string Message,
+    int? SuggestedMaximumCharacters,
+    DateTime AnalyzedAtUtc,
+    double RawDurationSeconds,
+    double EffectiveWindowSeconds,
+    double RenderDurationSeconds,
+    double LeadingSilenceSeconds,
+    double TrailingSilenceSeconds,
+    double TrimStartSeconds,
+    double TrimEndSeconds,
+    double BorrowedGapSeconds,
+    int BaseTtsSpeed,
+    int AppliedTtsSpeed,
+    string? PhraseId,
+    string ResolutionAction);
 
 public sealed record WorkspaceOperationResult<T>(
     bool Succeeded,

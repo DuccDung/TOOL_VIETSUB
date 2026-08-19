@@ -196,14 +196,17 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     cue.TranslationConfidence = null;
                     cue.TranslationWarnings = [];
                     cue.TranslationReviewedAtUtc = null;
+                    cue.VoiceTiming = null;
                     return cue.CueId;
                 })
                 .ToHashSet();
+            VoiceTimelinePreviewState.MarkStale(manifest);
             manifest.AudioTracks.RemoveAll(track =>
-                track.Role == "VOICE_TIMELINE"
-                || (track.Role == "VOICE_CUE"
+                (track.Role == "VOICE_CUE"
                     && track.CueId is Guid cueId
-                    && invalidatedCueIds.Contains(cueId)));
+                    && invalidatedCueIds.Contains(cueId))
+                || (track.Role == "VOICE_PHRASE"
+                    && track.CueIds.Any(invalidatedCueIds.Contains)));
         }
 
         await _session!.FlushAsync(cancellationToken);
@@ -518,11 +521,13 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             ? null
             : LocalVoiceCatalog.Find(voiceId)?.VoiceId
                 ?? throw new InvalidOperationException("Giọng đọc của phân đoạn không hợp lệ.");
+        var previousSpeaker = cue.Speaker;
         var previousVoiceId = LocalVoiceCatalog.Resolve(manifest, cue).VoiceId;
         cue.Speaker = NormalizeSpeaker(speaker);
         cue.VoiceId = normalizedVoiceId;
         var currentVoiceId = LocalVoiceCatalog.Resolve(manifest, cue).VoiceId;
-        if (!string.Equals(previousVoiceId, currentVoiceId, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(previousSpeaker, cue.Speaker, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(previousVoiceId, currentVoiceId, StringComparison.OrdinalIgnoreCase))
         {
             InvalidateVoice(manifest, new HashSet<Guid> { cue.CueId });
         }
@@ -542,27 +547,59 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         {
             throw new InvalidOperationException("Giọng FPT.AI không cần cài model. Hãy cấu hình API key để sử dụng.");
         }
-        if (voice.Engine == LocalVoiceEngines.Piper)
+
+        VoiceInstallLog.Write(
+            _paths,
+            voice.Engine,
+            voice.VoiceId,
+            "STARTED",
+            "Bắt đầu kiểm tra và cài bộ giọng local.");
+        RuntimeProgressChanged?.Invoke(this, new LocalRuntimeProgress(
+            "VOICE_CHECK",
+            1,
+            $"Đang kiểm tra bộ giọng {voice.DisplayName} trên máy."));
+        try
         {
-            await EnsureLanguageRuntimeAsync(cancellationToken);
-            var progress = new Progress<LocalModelDownloadProgress>(value =>
-                ModelDownloadProgressChanged?.Invoke(this, value));
-            await _models.DownloadAsync(PiperLocalVoiceSynthesizer.ModelId, progress, cancellationToken);
+            if (voice.Engine == LocalVoiceEngines.Piper)
+            {
+                await EnsureLanguageRuntimeAsync(cancellationToken);
+                var progress = new Progress<LocalModelDownloadProgress>(value =>
+                    ModelDownloadProgressChanged?.Invoke(this, value));
+                await _models.DownloadAsync(PiperLocalVoiceSynthesizer.ModelId, progress, cancellationToken);
+            }
+            else
+            {
+                var runtimeProgress = new Progress<LocalRuntimeProgress>(value =>
+                    RuntimeProgressChanged?.Invoke(this, value));
+                await _vieNeuRuntimeProvisioner.EnsureReadyAsync(runtimeProgress, cancellationToken);
+                RuntimeProgressChanged?.Invoke(this, new LocalRuntimeProgress(
+                    "VOICE_MODEL",
+                    85,
+                    "Đang kiểm tra bộ giọng VieNeu. Lần cài mới có thể mất vài phút."));
+                await new VieNeuLocalVoiceSynthesizer(_paths).EnsureReadyAsync(cancellationToken);
+                RuntimeProgressChanged?.Invoke(this, new LocalRuntimeProgress(
+                    "VOICE_MODEL",
+                    100,
+                    "Bộ giọng VieNeu đã sẵn sàng."));
+            }
+
+            VoiceInstallLog.Write(
+                _paths,
+                voice.Engine,
+                voice.VoiceId,
+                "COMPLETED",
+                "Bộ giọng local đã được xác thực và sẵn sàng.");
         }
-        else
+        catch (Exception exception)
         {
-            var runtimeProgress = new Progress<LocalRuntimeProgress>(value =>
-                RuntimeProgressChanged?.Invoke(this, value));
-            await _vieNeuRuntimeProvisioner.EnsureReadyAsync(runtimeProgress, cancellationToken);
-            RuntimeProgressChanged?.Invoke(this, new LocalRuntimeProgress(
-                "VOICE_MODEL",
-                0,
-                "Đang tải bộ giọng VieNeu lần đầu. Quá trình này có thể mất vài phút."));
-            await new VieNeuLocalVoiceSynthesizer(_paths).EnsureReadyAsync(cancellationToken);
-            RuntimeProgressChanged?.Invoke(this, new LocalRuntimeProgress(
-                "VOICE_MODEL",
-                100,
-                "Bộ giọng VieNeu đã sẵn sàng."));
+            VoiceInstallLog.Write(
+                _paths,
+                voice.Engine,
+                voice.VoiceId,
+                "FAILED",
+                "Không thể hoàn tất cài đặt bộ giọng local.",
+                exception);
+            throw;
         }
 
         return Map(manifest);
@@ -680,11 +717,20 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             return;
         }
 
+        foreach (var cue in manifest.SubtitleTracks
+            .SelectMany(track => track.Cues)
+            .Where(cue => cueIds.Contains(cue.CueId)))
+        {
+            cue.VoiceTiming = null;
+        }
+
+        VoiceTimelinePreviewState.MarkStale(manifest);
         manifest.AudioTracks.RemoveAll(item =>
-            item.Role == "VOICE_TIMELINE"
-            || (item.Role == "VOICE_CUE"
+            (item.Role == "VOICE_CUE"
                 && item.CueId is Guid cueId
-                && cueIds.Contains(cueId)));
+                && cueIds.Contains(cueId))
+            || (item.Role == "VOICE_PHRASE"
+                && item.CueIds.Any(cueIds.Contains)));
     }
 
     public async Task<DesktopProjectState> ImportVideoAsync(
@@ -749,6 +795,112 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             original,
             translated,
             cancellationToken);
+        await _session!.FlushAsync(cancellationToken);
+        return Map(manifest);
+    }
+
+    public async Task<DesktopProjectState> UpdateVoicePhraseBoundaryAsync(
+        Guid previousCueId,
+        Guid nextCueId,
+        string mode,
+        CancellationToken cancellationToken)
+    {
+        var manifest = RequireProject();
+        var normalizedMode = VoicePhraseBoundaryModes.Normalize(mode);
+        if (!string.Equals(mode?.Trim(), normalizedMode, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Chế độ nối/ngắt cụm thoại không hợp lệ.");
+        }
+
+        var track = manifest.SubtitleTracks.LastOrDefault(item => item.Cues.Count > 0)
+            ?? throw new InvalidOperationException("Chưa có timeline phụ đề để chỉnh cụm thoại.");
+        var orderedCues = track.Cues
+            .OrderBy(cue => cue.StartMilliseconds)
+            .ThenBy(cue => cue.EndMilliseconds)
+            .ToArray();
+        var boundaryIndex = Array.FindIndex(
+            orderedCues,
+            cue => cue.CueId == previousCueId);
+        if (boundaryIndex < 0
+            || boundaryIndex + 1 >= orderedCues.Length
+            || orderedCues[boundaryIndex + 1].CueId != nextCueId)
+        {
+            throw new InvalidOperationException("Chỉ có thể chỉnh ranh giới giữa hai cue liền kề.");
+        }
+
+        var previous = orderedCues[boundaryIndex];
+        var next = orderedCues[boundaryIndex + 1];
+        if (string.Equals(
+                VoicePhrasePlanner.GetBoundaryMode(manifest, previousCueId, nextCueId),
+                normalizedMode,
+                StringComparison.Ordinal))
+        {
+            return Map(manifest);
+        }
+
+        if (normalizedMode == VoicePhraseBoundaryModes.Join
+            && VoicePhrasePlanner.GetManualJoinConstraint(
+                manifest,
+                previous,
+                next,
+                manifest.Settings.VoicePhraseMaximumDurationSeconds) is { } constraint)
+        {
+            throw new InvalidOperationException($"Không thể đặt Nói liền: {constraint}");
+        }
+
+        var previousPhrases = VoicePhrasePlanner.Plan(
+            manifest,
+            orderedCues,
+            manifest.Settings.VoicePhraseGapMilliseconds,
+            manifest.Settings.VoicePhraseMaximumDurationSeconds);
+        var affectedCueIds = previousPhrases
+            .Where(phrase => phrase.Cues.Any(cue => cue.CueId == previousCueId || cue.CueId == nextCueId))
+            .SelectMany(phrase => phrase.Cues)
+            .Select(cue => cue.CueId)
+            .ToHashSet();
+        affectedCueIds.Add(previousCueId);
+        affectedCueIds.Add(nextCueId);
+
+        manifest.VoicePhraseBoundaries.RemoveAll(boundary =>
+            boundary.PreviousCueId == previousCueId && boundary.NextCueId == nextCueId);
+        if (normalizedMode is VoicePhraseBoundaryModes.Join or VoicePhraseBoundaryModes.Break)
+        {
+            manifest.VoicePhraseBoundaries.Add(new VoicePhraseBoundaryOverride
+            {
+                PreviousCueId = previousCueId,
+                NextCueId = nextCueId,
+                Mode = normalizedMode,
+            });
+        }
+
+        var currentPhrases = VoicePhrasePlanner.Plan(
+            manifest,
+            orderedCues,
+            manifest.Settings.VoicePhraseGapMilliseconds,
+            manifest.Settings.VoicePhraseMaximumDurationSeconds);
+        if (previousPhrases.Select(phrase => phrase.PhraseId)
+            .SequenceEqual(currentPhrases.Select(phrase => phrase.PhraseId), StringComparer.Ordinal))
+        {
+            await _session!.FlushAsync(cancellationToken);
+            return Map(manifest);
+        }
+
+        foreach (var cueId in currentPhrases
+            .Where(phrase => phrase.Cues.Any(cue => cue.CueId == previousCueId || cue.CueId == nextCueId))
+            .SelectMany(phrase => phrase.Cues)
+            .Select(cue => cue.CueId))
+        {
+            affectedCueIds.Add(cueId);
+        }
+
+        foreach (var cue in orderedCues.Where(cue => affectedCueIds.Contains(cue.CueId)))
+        {
+            cue.VoiceTiming = null;
+        }
+
+        VoiceTimelinePreviewState.MarkStale(manifest);
+        manifest.AudioTracks.RemoveAll(item =>
+            item.Role == "VOICE_PHRASE" && item.CueIds.Any(affectedCueIds.Contains));
         await _session!.FlushAsync(cancellationToken);
         return Map(manifest);
     }
@@ -972,12 +1124,14 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             requestedDefaultVoiceId,
             requestedSpeed: null,
             apiKey: null,
+            forcePhraseRegeneration: false,
             cancellationToken: cancellationToken);
 
     public async Task<DesktopProjectState> SynthesizeVoiceAsync(
         string? requestedDefaultVoiceId,
         int? requestedSpeed,
         string? apiKey,
+        bool forcePhraseRegeneration,
         CancellationToken cancellationToken)
     {
         var manifest = RequireProject();
@@ -1053,6 +1207,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
             {
                 ["provider"] = usesFpt ? ProtectedVoiceCredentialStore.FptProvider : "local",
                 ["speed"] = Math.Clamp(manifest.Settings.VoiceSpeed, -3, 3).ToString(),
+                [VoiceSynthesisJobExecutor.ForcePhraseRegenerationParameter] = forcePhraseRegeneration.ToString(),
             });
         return Map(manifest);
     }
@@ -1132,7 +1287,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         }
 
         if (includeVietnameseVoice
-            && !manifest.AudioTracks.Any(item => item.Role == "VOICE_CUE"))
+            && !manifest.AudioTracks.Any(item => item.Role is "VOICE_CUE" or "VOICE_PHRASE"))
         {
             throw new InvalidOperationException("Hãy tạo giọng Việt trước khi xuất video.");
         }
@@ -1641,11 +1796,46 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
         var track = manifest.SubtitleTracks.LastOrDefault();
         if (track is not null)
         {
-            for (var index = 0; index < track.Cues.Count; index++)
+            var orderedCues = track.Cues
+                .OrderBy(cue => cue.StartMilliseconds)
+                .ThenBy(cue => cue.EndMilliseconds)
+                .ToArray();
+            var phrasePlans = VoicePhrasePlanner.Plan(
+                manifest,
+                orderedCues,
+                manifest.Settings.VoicePhraseGapMilliseconds,
+                manifest.Settings.VoicePhraseMaximumDurationSeconds);
+            var phraseByCueId = phrasePlans
+                .SelectMany(phrase => phrase.Cues.Select(cue => (cue.CueId, Phrase: phrase)))
+                .ToDictionary(item => item.CueId, item => item.Phrase);
+            var phraseAudioIds = phrasePlans
+                .Where(phrase => phrase.Cues.Count > 1)
+                .Where(phrase => manifest.AudioTracks.Any(media =>
+                    media.Role == "VOICE_PHRASE"
+                    && string.Equals(media.VoicePhraseId, phrase.PhraseId, StringComparison.Ordinal)
+                    && media.CueIds.SequenceEqual(phrase.Cues.Select(cue => cue.CueId))
+                    && string.Equals(
+                        media.ContentFingerprint,
+                        VoiceSynthesisJobExecutor.BuildPhraseFingerprint(manifest, phrase),
+                        StringComparison.Ordinal)))
+                .Select(phrase => phrase.PhraseId)
+                .ToHashSet(StringComparer.Ordinal);
+            var cueNumbers = orderedCues
+                .Select((cue, index) => (cue.CueId, Number: index + 1))
+                .ToDictionary(item => item.CueId, item => item.Number);
+            for (var index = 0; index < orderedCues.Length; index++)
             {
-                var cue = track.Cues[index];
-                var overlap = index > 0 && cue.StartMilliseconds < track.Cues[index - 1].EndMilliseconds;
-                var hasVoice = voicedCueIds.Contains(cue.CueId);
+                var cue = orderedCues[index];
+                var overlap = index > 0 && cue.StartMilliseconds < orderedCues[index - 1].EndMilliseconds;
+                phraseByCueId.TryGetValue(cue.CueId, out var phrase);
+                var multiCuePhrase = manifest.Settings.VoicePhraseSynthesisEnabled
+                    && phrase is { Cues.Count: > 1 }
+                        ? phrase
+                        : null;
+                var hasPhraseAudio = multiCuePhrase is not null && phraseAudioIds.Contains(multiCuePhrase.PhraseId);
+                var hasVoice = manifest.Settings.VoicePhraseSynthesisEnabled && multiCuePhrase is not null
+                    ? hasPhraseAudio
+                    : voicedCueIds.Contains(cue.CueId);
                 var invalidTranslation = !string.IsNullOrWhiteSpace(cue.TranslatedText)
                     && TranslationQualityValidator.LooksPathological(cue.OriginalText, cue.TranslatedText);
                 var requiresReview = string.Equals(
@@ -1672,7 +1862,48 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     overlap,
                     hasVoice,
                     cue.TranslationConfidence,
-                    cue.TranslationWarnings ?? []));
+                    cue.TranslationWarnings ?? [],
+                    cue.VoiceTiming is null
+                        ? null
+                        : new DesktopVoiceTiming(
+                            cue.VoiceTiming.SourceDurationSeconds,
+                            cue.VoiceTiming.TargetDurationSeconds,
+                            cue.VoiceTiming.RequiredTempo,
+                            cue.VoiceTiming.AppliedTempo,
+                            cue.VoiceTiming.PaddingSeconds,
+                            cue.VoiceTiming.Status,
+                            cue.VoiceTiming.Severity,
+                            cue.VoiceTiming.Message,
+                            cue.VoiceTiming.SuggestedMaximumCharacters,
+                            cue.VoiceTiming.AnalyzedAtUtc,
+                            cue.VoiceTiming.RawDurationSeconds,
+                            cue.VoiceTiming.EffectiveWindowSeconds,
+                            cue.VoiceTiming.RenderDurationSeconds,
+                            cue.VoiceTiming.LeadingSilenceSeconds,
+                            cue.VoiceTiming.TrailingSilenceSeconds,
+                            cue.VoiceTiming.TrimStartSeconds,
+                            cue.VoiceTiming.TrimEndSeconds,
+                            cue.VoiceTiming.BorrowedGapSeconds,
+                            cue.VoiceTiming.BaseTtsSpeed,
+                            cue.VoiceTiming.AppliedTtsSpeed,
+                            cue.VoiceTiming.PhraseId,
+                            cue.VoiceTiming.ResolutionAction),
+                    multiCuePhrase is null
+                        ? null
+                        : new DesktopVoicePhrase(
+                            multiCuePhrase.PhraseId,
+                            cueNumbers[multiCuePhrase.Cues[0].CueId],
+                            cueNumbers[multiCuePhrase.Cues[^1].CueId],
+                            multiCuePhrase.Cues.Count,
+                            hasPhraseAudio,
+                            !hasPhraseAudio),
+                    index + 1 >= orderedCues.Length
+                        ? null
+                        : CreateDesktopVoiceBoundary(
+                            manifest,
+                            cue,
+                            orderedCues[index + 1],
+                            phraseByCueId)));
             }
         }
 
@@ -1693,11 +1924,21 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     ? $"{entry.SourceText} = {entry.TargetText}"
                     : $"{entry.SourceText} = {entry.TargetText} | {entry.Note}"));
         var subtitleStyle = SubtitleStyleRules.Normalize(manifest.Settings.SubtitleStyle);
+        var voiceTimeline = manifest.AudioTracks.LastOrDefault(item =>
+            item.Role == VoiceTimelinePreviewState.TimelineRole
+            && !string.IsNullOrWhiteSpace(item.WorkspaceRelativePath));
+        var voicePlaybackUrl = voiceTimeline is null
+            ? null
+            : $"{VoicePlaybackUrl}?v={voiceTimeline.MediaId:N}";
         manifest.Settings.SpeakerVoiceIds ??= new(StringComparer.OrdinalIgnoreCase);
-        var piperInstalled = _models.GetStatuses()
-            .Any(status => status.Id == PiperLocalVoiceSynthesizer.ModelId && status.Ready);
+        var piperStatus = _models.GetStatuses()
+            .Single(status => status.Id == PiperLocalVoiceSynthesizer.ModelId);
+        var piperInstalled = piperStatus.Ready;
+        var vieNeuSynthesizer = new VieNeuLocalVoiceSynthesizer(_paths);
         var vieNeuInstalled = _vieNeuRuntimeProvisioner.IsReady
-            && new VieNeuLocalVoiceSynthesizer(_paths).IsReady;
+            && vieNeuSynthesizer.IsReady;
+        var vieNeuNeedsRepair = !vieNeuInstalled
+            && (_vieNeuRuntimeProvisioner.HasExistingRuntime || vieNeuSynthesizer.HasExistingModel);
         var voiceSettings = new DesktopVoiceSettings(
             LocalVoiceCatalog.Resolve(manifest.Settings.VoiceId).VoiceId,
             new Dictionary<string, string>(
@@ -1718,9 +1959,28 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                         ? vieNeuInstalled
                         : _voiceCredentials.HasFptKey,
                 voice.IsCloud,
-                voice.RequiresInstall))
+                voice.RequiresInstall,
+                voice.IsCloud
+                    ? LocalVoiceInstallStates.Online
+                    : voice.Engine == LocalVoiceEngines.Piper
+                        ? piperInstalled
+                            ? LocalVoiceInstallStates.Ready
+                            : piperStatus.InstalledBytes > 0
+                                ? LocalVoiceInstallStates.RepairRequired
+                                : LocalVoiceInstallStates.Missing
+                        : vieNeuInstalled
+                            ? LocalVoiceInstallStates.Ready
+                            : vieNeuNeedsRepair
+                                ? LocalVoiceInstallStates.RepairRequired
+                                : LocalVoiceInstallStates.Missing))
                 .ToArray(),
             Math.Clamp(manifest.Settings.VoiceSpeed, -3, 3),
+            Math.Clamp(manifest.Settings.VoiceTimelineMaximumTempo, 1.0, 1.20),
+            Math.Clamp(manifest.Settings.VoiceTimelinePreferredTempo, 1.0, 1.12),
+            Math.Clamp(manifest.Settings.VoiceTimelineMaximumBorrowMilliseconds, 0, 2_000),
+            manifest.Settings.VoiceTrimSilenceEnabled,
+            manifest.Settings.VoicePhraseSynthesisEnabled,
+            false,
             _voiceCredentials.HasFptKey,
             manifest.SubtitleTracks
                 .SelectMany(track => track.Cues)
@@ -1792,13 +2052,38 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                     subtitleStyle.MaxLines)),
             MapAiStorage(),
             video,
-            manifest.AudioTracks.Any(item =>
-                item.Role == "VOICE_TIMELINE"
-                && !string.IsNullOrWhiteSpace(item.WorkspaceRelativePath))
-                ? VoicePlaybackUrl
-                : null,
+            voicePlaybackUrl,
+            voiceTimeline?.IsStale ?? false,
             subtitleCues,
             manifest.Jobs);
+    }
+
+    private static DesktopVoiceBoundary CreateDesktopVoiceBoundary(
+        ProjectManifest manifest,
+        SubtitleCue previous,
+        SubtitleCue next,
+        IReadOnlyDictionary<Guid, VoicePhrasePlan> phraseByCueId)
+    {
+        var configuredMode = VoicePhrasePlanner.GetBoundaryMode(
+            manifest,
+            previous.CueId,
+            next.CueId);
+        var constraint = VoicePhrasePlanner.GetManualJoinConstraint(
+            manifest,
+            previous,
+            next,
+            manifest.Settings.VoicePhraseMaximumDurationSeconds);
+        var effectiveMode = phraseByCueId.TryGetValue(previous.CueId, out var previousPhrase)
+            && phraseByCueId.TryGetValue(next.CueId, out var nextPhrase)
+            && string.Equals(previousPhrase.PhraseId, nextPhrase.PhraseId, StringComparison.Ordinal)
+                ? VoicePhraseBoundaryModes.Join
+                : VoicePhraseBoundaryModes.Break;
+        return new DesktopVoiceBoundary(
+            next.CueId,
+            configuredMode,
+            effectiveMode,
+            constraint is null,
+            constraint);
     }
 
     public async ValueTask DisposeAsync()

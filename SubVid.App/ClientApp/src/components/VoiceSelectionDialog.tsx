@@ -8,6 +8,7 @@ import {
   KeyRound,
   MapPin,
   Play,
+  RefreshCw,
   ShieldCheck,
   UserRound,
   X,
@@ -23,10 +24,11 @@ type VoiceSelectionDialogProps = {
   previewBusy: boolean
   previewAudioDataUrl: string | null
   downloadPercent: number | null
+  downloadMessage: string | null
   onClose: () => void
   onInstall: (voiceId: string) => void
   onPreview: (voiceId: string, speed: number, apiKey?: string) => void
-  onConfirm: (voiceId: string, speed: number, apiKey?: string) => void
+  onConfirm: (voiceId: string, speed: number, apiKey?: string, forcePhraseRegeneration?: boolean) => void
 }
 
 const formatCharacters = (value: number) => new Intl.NumberFormat('vi-VN').format(Math.max(0, value))
@@ -38,6 +40,7 @@ export function VoiceSelectionDialog({
   previewBusy,
   previewAudioDataUrl,
   downloadPercent,
+  downloadMessage,
   onClose,
   onInstall,
   onPreview,
@@ -46,6 +49,7 @@ export function VoiceSelectionDialog({
   const [selectedVoiceId, setSelectedVoiceId] = useState('')
   const [speed, setSpeed] = useState(0)
   const [apiKey, setApiKey] = useState('')
+  const [forcePhraseRegeneration, setForcePhraseRegeneration] = useState(false)
   const [filter, setFilter] = useState<VoiceFilter>('all')
   const confirmButtonRef = useRef<HTMLButtonElement>(null)
 
@@ -54,6 +58,7 @@ export function VoiceSelectionDialog({
     setSelectedVoiceId(settings.defaultVoiceId || settings.voices[0]?.voiceId || '')
     setSpeed(settings.speed ?? 0)
     setApiKey('')
+    setForcePhraseRegeneration(false)
     setFilter('all')
   }, [open, settings?.defaultVoiceId, settings?.speed])
 
@@ -114,7 +119,7 @@ export function VoiceSelectionDialog({
         {downloadPercent !== null ? (
           <div className="voice-selection-download" aria-live="polite">
             <div>
-              <strong>Đang chuẩn bị model giọng đọc</strong>
+              <strong>{downloadMessage ?? 'Đang chuẩn bị model giọng đọc'}</strong>
               <span>{Math.round(downloadPercent)}%</span>
             </div>
             <div><span style={{ width: `${Math.max(0, Math.min(100, downloadPercent))}%` }} /></div>
@@ -160,8 +165,14 @@ export function VoiceSelectionDialog({
                   <span className={voice.isCloud || voice.installed ? 'voice-ready is-ready' : 'voice-ready'}>
                     {voice.isCloud
                       ? <Cloud size={13} />
-                      : voice.installed ? <CheckCircle2 size={13} /> : <Download size={13} />}
-                    {voice.isCloud ? 'Online' : voice.installed ? 'Đã cài' : 'Chưa cài'}
+                      : voice.installed
+                        ? <CheckCircle2 size={13} />
+                        : voice.installState === 'REPAIR_REQUIRED' ? <RefreshCw size={13} /> : <Download size={13} />}
+                    {voice.isCloud
+                      ? 'Online'
+                      : voice.installed
+                        ? 'Đã cài'
+                        : voice.installState === 'REPAIR_REQUIRED' ? 'Cần sửa' : 'Chưa cài'}
                   </span>
                   <strong>{voice.displayName}</strong>
                   <span className="voice-selection-card__meta">
@@ -172,7 +183,9 @@ export function VoiceSelectionDialog({
                 </label>
                 {voice.requiresInstall && !voice.installed ? (
                   <button type="button" disabled={actionBusy} onClick={() => onInstall(voice.voiceId)}>
-                    <Download size={13} /> Cài model
+                    {voice.installState === 'REPAIR_REQUIRED'
+                      ? <><RefreshCw size={13} /> Sửa cài đặt</>
+                      : <><Download size={13} /> Cài model</>}
                   </button>
                 ) : null}
               </article>
@@ -200,7 +213,7 @@ export function VoiceSelectionDialog({
                 </small>
               </label>
               <label className="voice-speed-control">
-                <span><Gauge size={14} /> Tốc độ: {speed > 0 ? `+${speed}` : speed}</span>
+                <span><Gauge size={14} /> Tốc độ giọng TTS: {speed > 0 ? `+${speed}` : speed}</span>
                 <input
                   type="range"
                   min={-3}
@@ -210,7 +223,7 @@ export function VoiceSelectionDialog({
                   disabled={actionBusy}
                   onChange={(event) => setSpeed(Number(event.target.value))}
                 />
-                <small>-3 chậm · 0 bình thường · +3 nhanh</small>
+                <small>-3 chậm · 0 tự nhiên · +3 nhanh · độc lập với khớp timeline</small>
               </label>
             </div>
             <div className="voice-cloud-preview">
@@ -226,11 +239,28 @@ export function VoiceSelectionDialog({
           </section>
         ) : null}
 
+        {settings.phraseSynthesisEnabled ? (
+          <label className="voice-phrase-regeneration">
+            <input
+              type="checkbox"
+              checked={forcePhraseRegeneration}
+              disabled={actionBusy}
+              onChange={(event) => setForcePhraseRegeneration(event.target.checked)}
+            />
+            <span>
+              <strong>Tạo lại toàn bộ theo cụm thoại</strong>
+              <small>
+                Dùng cho project cũ đang có WAV từng câu. Tùy chọn này tạo lại audio và có thể sử dụng API/token FPT.AI.
+              </small>
+            </span>
+          </label>
+        ) : null}
+
         <footer className="voice-selection-dialog__footer">
           <p>
             <ShieldCheck size={14} />
             {selectedVoice?.isCloud
-              ? `Ước tính ${formatCharacters(settings.estimatedCharacters)} ký tự; chỉ cue chưa có audio mới gửi lên FPT.AI.`
+              ? `Ước tính ${formatCharacters(settings.estimatedCharacters)} ký tự; chỉ cụm hoặc cue chưa có audio hay đã thay đổi mới gửi lên FPT.AI.`
               : 'Audio đã tạo đúng nội dung và đúng giọng sẽ được tái sử dụng.'}
           </p>
           <div>
@@ -244,6 +274,7 @@ export function VoiceSelectionDialog({
                 selectedVoice.voiceId,
                 selectedVoice.isCloud ? speed : 0,
                 apiKey.trim() || undefined,
+                forcePhraseRegeneration,
               )}
             >
               <AudioLines size={15} />

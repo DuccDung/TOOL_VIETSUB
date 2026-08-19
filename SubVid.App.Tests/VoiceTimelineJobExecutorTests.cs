@@ -20,6 +20,7 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
         var paths = new AppPaths(_root);
         var workspace = new ProjectWorkspaceService(paths);
         var project = await workspace.CreateAsync(Guid.NewGuid(), "Voice timeline test");
+        project.Settings.VoicePhraseSynthesisEnabled = false;
         project.SourceVideo = new LocalMediaReference
         {
             FileName = "source.mp4",
@@ -89,6 +90,12 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
         Assert.All(inputPaths, path => Assert.False(Path.IsPathRooted(path), path));
         Assert.All(inputPaths, path => Assert.StartsWith($"voice{Path.DirectorySeparatorChar}", path));
         Assert.False(Path.IsPathRooted(runner.Arguments[^1]));
+        Assert.DoesNotContain("atempo=", runner.FilterScriptContents, StringComparison.Ordinal);
+        Assert.All(track.Cues, cue =>
+        {
+            Assert.Equal(VoiceTimingStatuses.Padded, cue.VoiceTiming?.Status);
+            Assert.Equal(1, cue.VoiceTiming?.AppliedTempo);
+        });
 
         var effectiveArguments = new[] { "-progress", "pipe:1", "-nostats" }
             .Concat(runner.Arguments)
@@ -153,6 +160,258 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_WhenCueNeedsUnsafeTempo_CreatesTimelineAndPersistsWarning()
+    {
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Voice timing review");
+        project.Settings.VoiceTimelineMaximumBorrowMilliseconds = 0;
+        project.SourceVideo = new LocalMediaReference
+        {
+            FileName = "source.mp4",
+            Metadata = new MediaMetadata { DurationSeconds = 3 },
+        };
+        var cue = new SubtitleCue
+        {
+            StartMilliseconds = 0,
+            EndMilliseconds = 1_000,
+            TranslatedText = "Đây là một câu quá dài",
+        };
+        project.SubtitleTracks.Add(new SubtitleDocument { LanguageCode = "vi", Cues = [cue] });
+        var waveBytes = CreateWave(sampleRate: 16_000, durationMilliseconds: 1_300);
+        var relativeCuePath = Path.Combine("voice", $"cue-{cue.CueId:N}.wav");
+        var cuePath = paths.GetProjectPath(project.ProjectId, relativeCuePath);
+        await File.WriteAllBytesAsync(cuePath, waveBytes);
+        project.AudioTracks.Add(new LocalMediaReference
+        {
+            CueId = cue.CueId,
+            Role = "VOICE_CUE",
+            WorkspaceRelativePath = relativeCuePath,
+            SizeBytes = waveBytes.Length,
+            Sha256 = Convert.ToHexString(SHA256.HashData(waveBytes)).ToLowerInvariant(),
+            Metadata = new MediaMetadata { DurationSeconds = 1.3, HasAudio = true },
+        });
+        var previousTimelinePath = paths.GetProjectPath(project.ProjectId, "voice", "voice-timeline.wav");
+        var previousTimeline = CreateWave(sampleRate: 48_000, durationMilliseconds: 500);
+        await File.WriteAllBytesAsync(previousTimelinePath, previousTimeline);
+        project.AudioTracks.Add(new LocalMediaReference
+        {
+            Role = "VOICE_TIMELINE",
+            WorkspaceRelativePath = Path.Combine("voice", "voice-timeline.wav"),
+            SizeBytes = previousTimeline.Length,
+        });
+        await workspace.SaveAsync(project);
+        var runner = new RecordingFfmpegRunner();
+        var job = new LocalJob
+        {
+            JobType = "SYNTHESIZE_VOICE_LOCAL",
+            Steps = [new LocalJobStep { Code = "SYNC_VOICE" }],
+        };
+
+        await new VoiceTimelineJobExecutor(paths, workspace, project, "ffmpeg-test.exe", runner)
+            .ExecuteAsync(job, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.True(runner.WasCalled);
+        Assert.Equal(VoiceTimingStatuses.ReviewRequired, cue.VoiceTiming?.Status);
+        Assert.Equal(VoiceTimelineFitPolicy.DefaultMaximumAutomaticTempo, cue.VoiceTiming?.AppliedTempo);
+        Assert.Contains("atempo=1.2", runner.FilterScriptContents, StringComparison.Ordinal);
+        Assert.NotEqual(previousTimeline.Length, (await File.ReadAllBytesAsync(previousTimelinePath)).Length);
+        Assert.Equal(1, job.VoiceMetrics?.TimingWarningCues);
+        Assert.Single(project.AudioTracks, item => item.Role == "VOICE_TIMELINE");
+        var reopened = await workspace.OpenAsync(project.ProjectId);
+        Assert.Equal(
+            VoiceTimingStatuses.ReviewRequired,
+            Assert.Single(Assert.Single(reopened.SubtitleTracks).Cues).VoiceTiming?.Status);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenCueNeedsSafeCompression_UsesOnlyRequiredTempo()
+    {
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Voice timing compression");
+        project.Settings.VoiceTimelineMaximumBorrowMilliseconds = 0;
+        project.SourceVideo = new LocalMediaReference
+        {
+            FileName = "source.mp4",
+            Metadata = new MediaMetadata { DurationSeconds = 2 },
+        };
+        var cue = new SubtitleCue
+        {
+            StartMilliseconds = 0,
+            EndMilliseconds = 1_000,
+            TranslatedText = "Câu dài hơn một chút",
+        };
+        project.SubtitleTracks.Add(new SubtitleDocument { LanguageCode = "vi", Cues = [cue] });
+        var waveBytes = CreateWave(sampleRate: 16_000, durationMilliseconds: 1_100);
+        var relativeCuePath = Path.Combine("voice", $"cue-{cue.CueId:N}.wav");
+        var cuePath = paths.GetProjectPath(project.ProjectId, relativeCuePath);
+        await File.WriteAllBytesAsync(cuePath, waveBytes);
+        project.AudioTracks.Add(new LocalMediaReference
+        {
+            CueId = cue.CueId,
+            Role = "VOICE_CUE",
+            WorkspaceRelativePath = relativeCuePath,
+            SizeBytes = waveBytes.Length,
+            Sha256 = Convert.ToHexString(SHA256.HashData(waveBytes)).ToLowerInvariant(),
+            Metadata = new MediaMetadata { DurationSeconds = 1.1, HasAudio = true },
+        });
+        await workspace.SaveAsync(project);
+        var runner = new RecordingFfmpegRunner();
+        var job = new LocalJob
+        {
+            JobType = "SYNTHESIZE_VOICE_LOCAL",
+            Steps = [new LocalJobStep { Code = "SYNC_VOICE" }],
+        };
+
+        await new VoiceTimelineJobExecutor(paths, workspace, project, "ffmpeg-test.exe", runner)
+            .ExecuteAsync(job, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.True(runner.WasCalled);
+        Assert.Contains("atempo=1.1", runner.FilterScriptContents, StringComparison.Ordinal);
+        Assert.DoesNotContain("atempo=0.", runner.FilterScriptContents, StringComparison.Ordinal);
+        Assert.Equal(VoiceTimingStatuses.Compressed, cue.VoiceTiming?.Status);
+        Assert.Equal(1.1, cue.VoiceTiming!.AppliedTempo!.Value, 6);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WhenFollowingGapIsAvailable_KeepsNaturalTempoAndBorrowsOnlySafeGap()
+    {
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Voice natural gap fit");
+        project.SourceVideo = new LocalMediaReference
+        {
+            FileName = "source.mp4",
+            Metadata = new MediaMetadata { DurationSeconds = 3 },
+        };
+        var cue = new SubtitleCue
+        {
+            StartMilliseconds = 0,
+            EndMilliseconds = 1_000,
+            TranslatedText = "Câu dài hơn ô phụ đề nhưng vẫn còn khoảng trống",
+        };
+        var nextCue = new SubtitleCue
+        {
+            StartMilliseconds = 1_700,
+            EndMilliseconds = 2_500,
+            TranslatedText = string.Empty,
+        };
+        project.SubtitleTracks.Add(new SubtitleDocument { LanguageCode = "vi", Cues = [cue, nextCue] });
+        var waveBytes = CreateWave(sampleRate: 16_000, durationMilliseconds: 1_300);
+        var relativeCuePath = Path.Combine("voice", $"cue-{cue.CueId:N}.wav");
+        var cuePath = paths.GetProjectPath(project.ProjectId, relativeCuePath);
+        await File.WriteAllBytesAsync(cuePath, waveBytes);
+        project.AudioTracks.Add(new LocalMediaReference
+        {
+            CueId = cue.CueId,
+            Role = "VOICE_CUE",
+            WorkspaceRelativePath = relativeCuePath,
+            SizeBytes = waveBytes.Length,
+            Sha256 = Convert.ToHexString(SHA256.HashData(waveBytes)).ToLowerInvariant(),
+            Metadata = new MediaMetadata { DurationSeconds = 1.3, HasAudio = true },
+        });
+        await workspace.SaveAsync(project);
+        var runner = new RecordingFfmpegRunner();
+        var job = new LocalJob
+        {
+            JobType = "SYNTHESIZE_VOICE_LOCAL",
+            Steps = [new LocalJobStep { Code = "SYNC_VOICE" }],
+        };
+
+        await new VoiceTimelineJobExecutor(paths, workspace, project, "ffmpeg-test.exe", runner)
+            .ExecuteAsync(job, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.True(runner.WasCalled);
+        Assert.DoesNotContain("atempo=", runner.FilterScriptContents, StringComparison.Ordinal);
+        Assert.Equal(VoiceTimingStatuses.GapFitted, cue.VoiceTiming?.Status);
+        Assert.Equal(1, cue.VoiceTiming?.AppliedTempo);
+        Assert.Equal(0.3, cue.VoiceTiming!.BorrowedGapSeconds, 6);
+        Assert.Equal("BORROW_GAP", cue.VoiceTiming.ResolutionAction);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithPhraseAudio_UsesOneInputAndAppliesDiagnosticsToEveryCue()
+    {
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Voice phrase timeline");
+        project.SourceVideo = new LocalMediaReference
+        {
+            FileName = "source.mp4",
+            Metadata = new MediaMetadata { DurationSeconds = 4 },
+        };
+        var first = new SubtitleCue
+        {
+            StartMilliseconds = 0,
+            EndMilliseconds = 1_000,
+            TranslatedText = "Xin chào",
+        };
+        var second = new SubtitleCue
+        {
+            StartMilliseconds = 1_200,
+            EndMilliseconds = 2_400,
+            TranslatedText = "Bạn khỏe không?",
+        };
+        project.SubtitleTracks.Add(new SubtitleDocument { LanguageCode = "vi", Cues = [first, second] });
+        var waveBytes = CreateWave(sampleRate: 16_000, durationMilliseconds: 2_000);
+        var phrase = Assert.Single(VoicePhrasePlanner.Plan(
+            project,
+            [first, second],
+            project.Settings.VoicePhraseGapMilliseconds,
+            project.Settings.VoicePhraseMaximumDurationSeconds));
+        var phraseId = phrase.PhraseId;
+        var relativePath = Path.Combine("voice", $"phrase-{phraseId}.wav");
+        var absolutePath = paths.GetProjectPath(project.ProjectId, relativePath);
+        await File.WriteAllBytesAsync(absolutePath, waveBytes);
+        project.AudioTracks.Add(new LocalMediaReference
+        {
+            CueIds = [first.CueId, second.CueId],
+            VoicePhraseId = phraseId,
+            Role = "VOICE_PHRASE",
+            WorkspaceRelativePath = relativePath,
+            SizeBytes = waveBytes.Length,
+            Sha256 = Convert.ToHexString(SHA256.HashData(waveBytes)).ToLowerInvariant(),
+            ContentFingerprint = VoiceSynthesisJobExecutor.BuildPhraseFingerprint(project, phrase),
+            Metadata = new MediaMetadata { DurationSeconds = 2, HasAudio = true },
+        });
+        project.AudioTracks.Add(new LocalMediaReference
+        {
+            CueId = first.CueId,
+            Role = "VOICE_CUE",
+            WorkspaceRelativePath = relativePath,
+            SizeBytes = waveBytes.Length,
+            Sha256 = Convert.ToHexString(SHA256.HashData(waveBytes)).ToLowerInvariant(),
+            Metadata = new MediaMetadata { DurationSeconds = 1, HasAudio = true },
+        });
+        project.AudioTracks.Add(new LocalMediaReference
+        {
+            CueId = second.CueId,
+            Role = "VOICE_CUE",
+            WorkspaceRelativePath = relativePath,
+            SizeBytes = waveBytes.Length,
+            Sha256 = Convert.ToHexString(SHA256.HashData(waveBytes)).ToLowerInvariant(),
+            Metadata = new MediaMetadata { DurationSeconds = 1, HasAudio = true },
+        });
+        await workspace.SaveAsync(project);
+        var runner = new RecordingFfmpegRunner();
+        var job = new LocalJob
+        {
+            JobType = "SYNTHESIZE_VOICE_LOCAL",
+            Steps = [new LocalJobStep { Code = "SYNC_VOICE" }],
+        };
+
+        await new VoiceTimelineJobExecutor(paths, workspace, project, "ffmpeg-test.exe", runner)
+            .ExecuteAsync(job, _ => ValueTask.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(1, runner.Arguments.Select((value, index) => (value, index))
+            .Count(item => item.index > 0 && runner.Arguments[item.index - 1] == "-i"));
+        Assert.Equal(VoiceTimingStatuses.Padded, first.VoiceTiming?.Status);
+        Assert.Equal(first.VoiceTiming, second.VoiceTiming);
+        Assert.Equal(phraseId, first.VoiceTiming?.PhraseId);
+    }
+
+    [Fact]
     public async Task RunAsync_WhenCommandIsTooLong_ReturnsSpecificErrorBeforeStartingProcess()
     {
         var runner = new FfmpegProgressRunner();
@@ -204,6 +463,10 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
 
         public string? WorkingDirectory { get; private set; }
 
+        public string FilterScriptContents { get; private set; } = string.Empty;
+
+        public bool WasCalled { get; private set; }
+
         public async Task RunAsync(
             string ffmpegPath,
             IReadOnlyList<string> arguments,
@@ -212,8 +475,17 @@ public sealed class VoiceTimelineJobExecutorTests : IDisposable
             CancellationToken cancellationToken,
             string? workingDirectory = null)
         {
+            WasCalled = true;
             Arguments = arguments.ToArray();
             WorkingDirectory = workingDirectory;
+            var filterIndex = Arguments.ToList().IndexOf("-/filter_complex");
+            if (filterIndex >= 0 && filterIndex + 1 < Arguments.Count)
+            {
+                var filterPath = Path.IsPathRooted(Arguments[filterIndex + 1])
+                    ? Arguments[filterIndex + 1]
+                    : Path.Combine(workingDirectory!, Arguments[filterIndex + 1]);
+                FilterScriptContents = await File.ReadAllTextAsync(filterPath, cancellationToken);
+            }
             var outputPath = Path.IsPathRooted(arguments[^1])
                 ? arguments[^1]
                 : Path.Combine(workingDirectory!, arguments[^1]);

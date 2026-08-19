@@ -43,4 +43,31 @@ public sealed class TranslationScenePlannerTests
         Assert.Contains(plans.SelectMany(plan => plan.Cues), cue =>
             !cue.IsTarget && cue.CandidateTranslation == "Bản dịch ngữ cảnh đã duyệt");
     }
+
+    [Fact]
+    public void Plan_WhenVoiceTimingRequiresReview_UsesMeasuredCharacterBudget()
+    {
+        var cue = new SubtitleCue
+        {
+            StartMilliseconds = 0,
+            EndMilliseconds = 500,
+            OriginalText = "A long sentence",
+            TranslatedText = "Đây là một câu quá dài",
+            VoiceTiming = new VoiceTimingAnalysis
+            {
+                Status = VoiceTimingStatuses.ReviewRequired,
+                SuggestedMaximumCharacters = 5,
+            },
+        };
+
+        var plan = Assert.Single(TranslationScenePlanner.Plan(
+            [cue],
+            new HashSet<Guid> { cue.CueId },
+            maximumTargetCues: 3,
+            contextCueCount: 0,
+            sceneGapMilliseconds: 5_000,
+            maximumCharactersPerSecond: 18));
+
+        Assert.Equal(5, Assert.Single(plan.Cues).SuggestedMaximumCharacters);
+    }
 }

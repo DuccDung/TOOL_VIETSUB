@@ -66,6 +66,7 @@ type PreviewPanelProps = {
   videoTransform: VideoTransformSettings
   onTogglePlay: () => void
   onTimeUpdate: (seconds: number) => void
+  onPlaybackStateChange: (state: 'playing' | 'paused' | 'waiting') => void
   onPlaybackEnded: () => void
   onPlaybackError: () => void
   onVoicePlaybackError: () => void
@@ -113,6 +114,7 @@ export function PreviewPanel({
   videoTransform,
   onTogglePlay,
   onTimeUpdate,
+  onPlaybackStateChange,
   onPlaybackEnded,
   onPlaybackError,
   onVoicePlaybackError,
@@ -845,6 +847,13 @@ export function PreviewPanel({
                     setPlaybackFailed(false)
                   }}
                   onTimeUpdate={(event) => onTimeUpdate(event.currentTarget.currentTime)}
+                  onPlaying={() => onPlaybackStateChange('playing')}
+                  onPause={() => onPlaybackStateChange('paused')}
+                  onWaiting={() => onPlaybackStateChange('waiting')}
+                  onSeeking={() => onPlaybackStateChange('waiting')}
+                  onSeeked={(event) => onPlaybackStateChange(
+                    event.currentTarget.paused ? 'paused' : 'playing',
+                  )}
                   onEnded={onPlaybackEnded}
                   onError={() => {
                     setPlaybackFailed(true)

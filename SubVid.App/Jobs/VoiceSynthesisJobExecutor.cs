@@ -6,6 +6,8 @@ namespace SubVid.App.Jobs;
 
 public sealed class VoiceSynthesisJobExecutor : ILocalJobExecutor
 {
+    public const string ForcePhraseRegenerationParameter = "voice.forcePhraseRegeneration";
+
     private readonly AppPaths _paths;
     private readonly ProjectWorkspaceService _workspace;
     private readonly ProjectManifest _project;
@@ -43,7 +45,11 @@ public sealed class VoiceSynthesisJobExecutor : ILocalJobExecutor
                 retryable: false);
         }
 
-        var cues = track.Cues.Where(cue => !string.IsNullOrWhiteSpace(cue.TranslatedText)).ToArray();
+        var cues = track.Cues
+            .Where(cue => !string.IsNullOrWhiteSpace(cue.TranslatedText))
+            .OrderBy(cue => cue.StartMilliseconds)
+            .ThenBy(cue => cue.EndMilliseconds)
+            .ToArray();
         if (cues.Length == 0)
         {
             throw new LocalJobException(
@@ -52,50 +58,110 @@ public sealed class VoiceSynthesisJobExecutor : ILocalJobExecutor
                 retryable: false);
         }
 
-        var fingerprints = cues.ToDictionary(cue => cue.CueId, BuildFingerprint);
+        var phrases = VoicePhrasePlanner.Plan(
+            _project,
+            track.Cues,
+            _project.Settings.VoicePhraseGapMilliseconds,
+            _project.Settings.VoicePhraseMaximumDurationSeconds);
+        var forcePhraseRegeneration = bool.TryParse(
+            job.Parameters.GetValueOrDefault(ForcePhraseRegenerationParameter),
+            out var forceRegeneration)
+            && forceRegeneration;
         job.VoiceMetrics = new VoiceSynthesisJobMetrics
         {
             TotalCharacters = cues.Sum(cue => cue.TranslatedText.Trim().Length),
             TotalCues = cues.Length,
             RetryRequests = Math.Max(0, job.AttemptCount - 1),
         };
-        var pending = new List<SubtitleCue>(cues.Length);
-        foreach (var cue in cues)
+
+        var pending = new List<VoiceSynthesisUnit>();
+        var completed = 0;
+        var cacheMetadataChanged = false;
+        foreach (var phrase in phrases)
         {
-            var cached = _project.AudioTracks.LastOrDefault(item =>
-                item.Role == "VOICE_CUE"
-                && item.CueId == cue.CueId
-                && item.ContentFingerprint == fingerprints[cue.CueId]);
-            if (cached?.WorkspaceRelativePath is not { } relativePath)
+            cancellationToken.ThrowIfCancellationRequested();
+            var phraseUnit = CreatePhraseUnit(phrase);
+            var shouldSynthesizePhrase = _project.Settings.VoicePhraseSynthesisEnabled
+                && phrase.Cues.Count > 1;
+            var cachedPhrase = shouldSynthesizePhrase
+                ? _project.AudioTracks.LastOrDefault(item =>
+                    item.Role == "VOICE_PHRASE"
+                    && string.Equals(item.VoicePhraseId, phrase.PhraseId, StringComparison.Ordinal)
+                    && item.ContentFingerprint == phraseUnit.Fingerprint)
+                : null;
+            if (shouldSynthesizePhrase)
             {
-                pending.Add(cue);
+                if (!forcePhraseRegeneration
+                    && cachedPhrase is not null
+                    && await IsCachedMediaValidAsync(cachedPhrase, cancellationToken))
+                {
+                    var removedCueTracks = _project.AudioTracks.RemoveAll(item =>
+                        item.Role == "VOICE_CUE"
+                        && item.CueId is Guid cueId
+                        && phrase.Cues.Any(cue => cue.CueId == cueId));
+                    cacheMetadataChanged |= removedCueTracks > 0;
+                    completed += phrase.Cues.Count;
+                    continue;
+                }
+
+                if (!forcePhraseRegeneration && cachedPhrase is not null)
+                {
+                    _project.AudioTracks.Remove(cachedPhrase);
+                    cacheMetadataChanged = true;
+                }
+
+                // Per-cue cache is intentionally ignored for a multi-cue phrase. It remains
+                // available until the replacement phrase has been synthesized successfully.
+                pending.Add(phraseUnit);
                 continue;
             }
 
-            var cachedPath = _paths.GetProjectPath(_project.ProjectId, relativePath);
-            var cachedFile = new FileInfo(cachedPath);
-            if (!cachedFile.Exists || cachedFile.Length != cached.SizeBytes
-                || string.IsNullOrWhiteSpace(cached.Sha256)
-                || !string.Equals(
-                    await CalculateHashAsync(cachedPath, cancellationToken),
-                    cached.Sha256,
-                    StringComparison.OrdinalIgnoreCase))
+            var missingCueUnits = new List<VoiceSynthesisUnit>();
+            foreach (var cue in phrase.Cues)
             {
-                pending.Add(cue);
+                var cueUnit = CreateCueUnit(cue);
+                var cachedCue = _project.AudioTracks.LastOrDefault(item =>
+                    item.Role == "VOICE_CUE"
+                    && item.CueId == cue.CueId
+                    && item.ContentFingerprint == cueUnit.Fingerprint);
+                if (!forcePhraseRegeneration
+                    && cachedCue is not null
+                    && await IsCachedMediaValidAsync(cachedCue, cancellationToken))
+                {
+                    completed++;
+                    continue;
+                }
+
+                if (!forcePhraseRegeneration && cachedCue is not null)
+                {
+                    _project.AudioTracks.Remove(cachedCue);
+                }
+
+                missingCueUnits.Add(cueUnit);
             }
+
+            if (missingCueUnits.Count == 0)
+            {
+                continue;
+            }
+
+            pending.AddRange(missingCueUnits);
         }
 
-        var completed = cues.Length - pending.Count;
         job.VoiceMetrics.CacheHitCues = completed;
         job.VoiceMetrics.CompletedCues = completed;
         if (pending.Count == 0)
         {
+            if (cacheMetadataChanged)
+            {
+                await _workspace.SaveAsync(_project, cancellationToken);
+            }
             job.Steps.Single(item => item.Code == "SYNTHESIZE_VOICE").OutputRelativePath = "voice";
             await reportProgress(new JobProgressUpdate(
                 "SYNTHESIZE_VOICE",
                 100,
                 100,
-                $"ÄÃ£ dÃ¹ng láº¡i cache cho {completed} Ä‘oáº¡n giá»ng Viá»‡t."));
+                $"Đã dùng lại cache cho {completed} đoạn giọng Việt."));
             return;
         }
 
@@ -106,24 +172,24 @@ public sealed class VoiceSynthesisJobExecutor : ILocalJobExecutor
                 "SYNTHESIZE_VOICE",
                 cachedPercent,
                 cachedPercent,
-                $"ÄÃ£ dÃ¹ng láº¡i {completed} Ä‘oáº¡n giá»ng tá»« cache."));
+                $"Đã dùng lại {completed} đoạn giọng từ cache."));
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        var requests = pending.Select(cue =>
+        var unitsByRequestId = pending.ToDictionary(unit => unit.RequestId);
+        var requests = pending.Select(unit =>
         {
             var partialPath = _paths.GetProjectPath(
                 _project.ProjectId,
                 "temp",
-                $"voice-{cue.CueId:N}.partial.wav");
+                $"voice-{unit.RequestId:N}.partial.wav");
             if (File.Exists(partialPath))
             {
                 File.Delete(partialPath);
             }
 
-            var voice = LocalVoiceCatalog.Resolve(_project, cue);
-            var checkpointPrefix = GetCheckpointPrefix(cue.CueId);
-            var providerCheckpoint = voice.Engine == LocalVoiceEngines.Fpt
+            var checkpointPrefix = GetCheckpointPrefix(unit.RequestId);
+            var providerCheckpoint = unit.Voice.Engine == LocalVoiceEngines.Fpt
                 ? new VoiceProviderCheckpoint(
                     job.Parameters.GetValueOrDefault(checkpointPrefix + "requestId"),
                     job.Parameters.GetValueOrDefault(checkpointPrefix + "resultUrl"),
@@ -136,42 +202,64 @@ public sealed class VoiceSynthesisJobExecutor : ILocalJobExecutor
                         if (wasSubmitted)
                         {
                             job.VoiceMetrics.ApiRequests++;
-                            job.VoiceMetrics.SubmittedCharacters += cue.TranslatedText.Trim().Length;
+                            job.VoiceMetrics.SubmittedCharacters += unit.Text.Length;
                         }
 
                         await _workspace.SaveAsync(_project, token);
                     })
                 : null;
             return new VoiceSynthesisRequest(
-                cue.CueId,
-                cue.TranslatedText,
+                unit.RequestId,
+                unit.Text,
                 partialPath,
-                voice.VoiceId,
-                voice.Engine == LocalVoiceEngines.Fpt ? Math.Clamp(_project.Settings.VoiceSpeed, -3, 3) : 0,
-                providerCheckpoint);
+                unit.Voice.VoiceId,
+                unit.Voice.Engine == LocalVoiceEngines.Fpt
+                    ? Math.Clamp(_project.Settings.VoiceSpeed, -3, 3)
+                    : 0,
+                providerCheckpoint,
+                unit.PhraseId,
+                unit.Cues.Select(cue => cue.CueId).ToArray());
         }).ToArray();
 
         async ValueTask PersistCompletedAsync(VoiceSynthesisRequest request)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var relativeOutput = Path.Combine("voice", $"cue-{request.CueId:N}.wav");
+            var unit = unitsByRequestId[request.CueId];
+            var relativeOutput = unit.IsPhrase
+                ? Path.Combine("voice", $"phrase-{unit.PhraseId}.wav")
+                : Path.Combine("voice", $"cue-{unit.Cues[0].CueId:N}.wav");
             var outputPath = _paths.GetProjectPath(_project.ProjectId, relativeOutput);
             File.Move(request.OutputPath, outputPath, overwrite: true);
             var file = new FileInfo(outputPath);
             var wave = WaveFileMetadata.Read(outputPath);
             var sha = await CalculateHashAsync(outputPath, cancellationToken);
-            _project.AudioTracks.RemoveAll(item =>
-                item.Role == "VOICE_CUE" && item.CueId == request.CueId);
+            if (unit.IsPhrase)
+            {
+                _project.AudioTracks.RemoveAll(item =>
+                    (item.Role == "VOICE_PHRASE"
+                        && string.Equals(item.VoicePhraseId, unit.PhraseId, StringComparison.Ordinal))
+                    || (item.Role == "VOICE_CUE"
+                        && item.CueId is Guid cueId
+                        && unit.Cues.Any(cue => cue.CueId == cueId)));
+            }
+            else
+            {
+                _project.AudioTracks.RemoveAll(item =>
+                    item.Role == "VOICE_CUE" && item.CueId == unit.Cues[0].CueId);
+            }
+
             _project.AudioTracks.Add(new LocalMediaReference
             {
-                CueId = request.CueId,
-                Role = "VOICE_CUE",
+                CueId = unit.IsPhrase ? null : unit.Cues[0].CueId,
+                CueIds = unit.Cues.Select(cue => cue.CueId).ToList(),
+                VoicePhraseId = unit.PhraseId,
+                Role = unit.IsPhrase ? "VOICE_PHRASE" : "VOICE_CUE",
                 ImportMode = "GENERATED",
                 WorkspaceRelativePath = relativeOutput,
                 FileName = file.Name,
                 SizeBytes = file.Length,
                 Sha256 = sha,
-                ContentFingerprint = fingerprints[request.CueId],
+                ContentFingerprint = unit.Fingerprint,
                 SourceLastWriteAtUtc = file.LastWriteTimeUtc,
                 Metadata = new MediaMetadata
                 {
@@ -188,15 +276,17 @@ public sealed class VoiceSynthesisJobExecutor : ILocalJobExecutor
             var checkpointPrefix = GetCheckpointPrefix(request.CueId);
             job.Parameters.Remove(checkpointPrefix + "requestId");
             job.Parameters.Remove(checkpointPrefix + "resultUrl");
-            completed++;
-            job.VoiceMetrics.CompletedCues = completed;
+            completed += unit.Cues.Count;
+            job.VoiceMetrics.CompletedCues = Math.Min(cues.Length, completed);
             await _workspace.SaveAsync(_project, cancellationToken);
-            var percent = completed * 100d / cues.Length;
+            var percent = Math.Min(100, completed * 100d / cues.Length);
             await reportProgress(new JobProgressUpdate(
                 "SYNTHESIZE_VOICE",
                 percent,
                 percent,
-                $"Đã tạo và lưu {completed}/{cues.Length} đoạn giọng Việt."));
+                unit.IsPhrase
+                    ? $"Đã tạo cụm giọng tự nhiên {completed}/{cues.Length} câu."
+                    : $"Đã tạo và lưu {completed}/{cues.Length} đoạn giọng Việt."));
         }
 
         try
@@ -207,7 +297,6 @@ public sealed class VoiceSynthesisJobExecutor : ILocalJobExecutor
             }
             else
             {
-                // Local engine chỉ nạp model một lần cho toàn bộ phần còn thiếu của job.
                 await _synthesizer.SynthesizeAsync(requests, cancellationToken);
                 foreach (var request in requests)
                 {
@@ -234,22 +323,85 @@ public sealed class VoiceSynthesisJobExecutor : ILocalJobExecutor
         await _workspace.SaveAsync(_project, cancellationToken);
     }
 
-    private string BuildFingerprint(SubtitleCue cue)
+    private VoiceSynthesisUnit CreateCueUnit(SubtitleCue cue)
     {
         var voice = LocalVoiceCatalog.Resolve(_project, cue);
+        var text = cue.TranslatedText.Trim();
+        return new VoiceSynthesisUnit(
+            cue.CueId,
+            null,
+            [cue],
+            text,
+            voice,
+            BuildFingerprint("VOICE-V3", voice, text),
+            false);
+    }
+
+    private VoiceSynthesisUnit CreatePhraseUnit(VoicePhrasePlan phrase)
+    {
+        var voice = LocalVoiceCatalog.Resolve(_project, phrase.Cues[0]);
+        return new VoiceSynthesisUnit(
+            phrase.RequestId,
+            phrase.PhraseId,
+            phrase.Cues,
+            phrase.SynthesisText,
+            voice,
+            BuildPhraseFingerprint(_project, phrase),
+            true);
+    }
+
+    public static string BuildPhraseFingerprint(ProjectManifest project, VoicePhrasePlan phrase)
+    {
+        var voice = LocalVoiceCatalog.Resolve(project, phrase.Cues[0]);
+        var identityText = string.Join(
+            '\n',
+            phrase.PhraseId,
+            phrase.SynthesisText);
+        return BuildFingerprint(project, "VOICE-PHRASE-V2", voice, identityText);
+    }
+
+    private string BuildFingerprint(string version, LocalVoiceDefinition voice, string text)
+        => BuildFingerprint(_project, version, voice, text);
+
+    private static string BuildFingerprint(
+        ProjectManifest project,
+        string version,
+        LocalVoiceDefinition voice,
+        string text)
+    {
         var identity = string.Join(
             '\n',
-            "VOICE-V3",
+            version,
             voice.Engine,
             voice.ModelId,
             voice.ModelVersion,
             voice.ProviderVoiceId,
             voice.Engine == LocalVoiceEngines.Fpt
-                ? Math.Clamp(_project.Settings.VoiceSpeed, -3, 3).ToString()
+                ? Math.Clamp(project.Settings.VoiceSpeed, -3, 3).ToString()
                 : "0",
-            cue.TranslatedText.Trim());
+            text);
         return Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity)))
             .ToLowerInvariant();
+    }
+
+    private async Task<bool> IsCachedMediaValidAsync(
+        LocalMediaReference cached,
+        CancellationToken cancellationToken)
+    {
+        if (cached.WorkspaceRelativePath is not { } relativePath)
+        {
+            return false;
+        }
+
+        var cachedPath = _paths.GetProjectPath(_project.ProjectId, relativePath);
+        var cachedFile = new FileInfo(cachedPath);
+        return cachedFile.Exists
+            && cachedFile.Length == cached.SizeBytes
+            && !string.IsNullOrWhiteSpace(cached.Sha256)
+            && string.Equals(
+                await CalculateHashAsync(cachedPath, cancellationToken),
+                cached.Sha256,
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<string> CalculateHashAsync(string path, CancellationToken cancellationToken)
@@ -264,7 +416,7 @@ public sealed class VoiceSynthesisJobExecutor : ILocalJobExecutor
         return Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant();
     }
 
-    private static string GetCheckpointPrefix(Guid cueId) => $"voice.fpt.{cueId:N}.";
+    private static string GetCheckpointPrefix(Guid requestId) => $"voice.fpt.{requestId:N}.";
 
     private static void SetOrRemove(
         IDictionary<string, string> parameters,
@@ -280,6 +432,15 @@ public sealed class VoiceSynthesisJobExecutor : ILocalJobExecutor
             parameters[key] = value;
         }
     }
+
+    private sealed record VoiceSynthesisUnit(
+        Guid RequestId,
+        string? PhraseId,
+        IReadOnlyList<SubtitleCue> Cues,
+        string Text,
+        LocalVoiceDefinition Voice,
+        string Fingerprint,
+        bool IsPhrase);
 }
 
 public sealed record WaveFileMetadata(int SampleRate, int Channels, double DurationSeconds)
@@ -290,13 +451,13 @@ public sealed record WaveFileMetadata(int SampleRate, int Channels, double Durat
         using var reader = new BinaryReader(stream);
         if (new string(reader.ReadChars(4)) != "RIFF")
         {
-            throw new LocalJobException("VOICE_WAVE_INVALID", "Piper tạo file WAV không hợp lệ.");
+            throw new LocalJobException("VOICE_WAVE_INVALID", "Bộ tổng hợp giọng tạo file WAV không hợp lệ.");
         }
 
         _ = reader.ReadUInt32();
         if (new string(reader.ReadChars(4)) != "WAVE")
         {
-            throw new LocalJobException("VOICE_WAVE_INVALID", "Piper tạo file WAV không hợp lệ.");
+            throw new LocalJobException("VOICE_WAVE_INVALID", "Bộ tổng hợp giọng tạo file WAV không hợp lệ.");
         }
 
         int sampleRate = 0;
@@ -326,7 +487,7 @@ public sealed record WaveFileMetadata(int SampleRate, int Channels, double Durat
 
         if (sampleRate <= 0 || channels <= 0 || blockAlign <= 0 || dataSize <= 0)
         {
-            throw new LocalJobException("VOICE_WAVE_INVALID", "Piper tạo file WAV không hợp lệ.");
+            throw new LocalJobException("VOICE_WAVE_INVALID", "Bộ tổng hợp giọng tạo file WAV không hợp lệ.");
         }
 
         return new WaveFileMetadata(sampleRate, channels, dataSize / (double)(sampleRate * blockAlign));

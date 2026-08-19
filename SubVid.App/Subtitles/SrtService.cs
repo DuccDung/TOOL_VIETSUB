@@ -164,6 +164,9 @@ public sealed partial class SrtService
         CancellationToken cancellationToken)
     {
         var (track, cue, index) = FindCue(project, cueId);
+        var followingCueId = index + 1 < track.Cues.Count
+            ? track.Cues[index + 1].CueId
+            : (Guid?)null;
         if (positionMilliseconds <= cue.StartMilliseconds + 100
             || positionMilliseconds >= cue.EndMilliseconds - 100)
         {
@@ -191,6 +194,14 @@ public sealed partial class SrtService
         cue.OriginalLocked = true;
         cue.TranslationLocked = !string.IsNullOrWhiteSpace(translatedLeft);
         track.Cues.Insert(index + 1, right);
+        if (followingCueId is Guid nextCueId)
+        {
+            foreach (var boundary in project.VoicePhraseBoundaries.Where(boundary =>
+                boundary.PreviousCueId == cue.CueId && boundary.NextCueId == nextCueId))
+            {
+                boundary.PreviousCueId = right.CueId;
+            }
+        }
         InvalidateVoice(project, cue.CueId);
         await _workspace.SaveAsync(project, cancellationToken);
     }
@@ -213,7 +224,8 @@ public sealed partial class SrtService
         }
 
         cue.StartMilliseconds = positionMilliseconds;
-        project.AudioTracks.RemoveAll(item => item.Role == "VOICE_TIMELINE");
+        cue.VoiceTiming = null;
+        VoiceTimelinePreviewState.MarkStale(project);
         await _workspace.SaveAsync(project, cancellationToken);
     }
 
@@ -262,6 +274,8 @@ public sealed partial class SrtService
     {
         var (track, _, index) = FindCue(project, cueId);
         track.Cues.RemoveAt(index);
+        project.VoicePhraseBoundaries.RemoveAll(boundary =>
+            boundary.PreviousCueId == cueId || boundary.NextCueId == cueId);
         InvalidateVoice(project, cueId);
         await _workspace.SaveAsync(project, cancellationToken);
     }
@@ -369,10 +383,21 @@ public sealed partial class SrtService
         return (string.Join(' ', words[..split]), string.Join(' ', words[split..]));
     }
 
-    private static void InvalidateVoice(ProjectManifest project, Guid cueId) =>
+    private static void InvalidateVoice(ProjectManifest project, Guid cueId)
+    {
+        var cue = project.SubtitleTracks
+            .SelectMany(track => track.Cues)
+            .SingleOrDefault(item => item.CueId == cueId);
+        if (cue is not null)
+        {
+            cue.VoiceTiming = null;
+        }
+
+        VoiceTimelinePreviewState.MarkStale(project);
         project.AudioTracks.RemoveAll(item =>
-            item.Role == "VOICE_TIMELINE"
-            || (item.Role == "VOICE_CUE" && item.CueId == cueId));
+            (item.Role == "VOICE_CUE" && item.CueId == cueId)
+            || (item.Role == "VOICE_PHRASE" && item.CueIds.Contains(cueId)));
+    }
 
     public static string Serialize(
         IReadOnlyList<SubtitleCue> cues,

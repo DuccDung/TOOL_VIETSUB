@@ -41,9 +41,72 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
             .Where(item => item.Role == "VOICE_CUE" && item.CueId.HasValue)
             .GroupBy(item => item.CueId!.Value)
             .ToDictionary(group => group.Key, group => group.Last());
-        var inputs = track.Cues
-            .Where(cue => voiceByCue.ContainsKey(cue.CueId))
-            .Select(cue => new CueInput(cue, voiceByCue[cue.CueId]))
+        var orderedCues = track.Cues
+            .OrderBy(cue => cue.StartMilliseconds)
+            .ThenBy(cue => cue.EndMilliseconds)
+            .ToArray();
+        var cueById = orderedCues.ToDictionary(cue => cue.CueId);
+        var phrasePlans = VoicePhrasePlanner.Plan(
+            _project,
+            orderedCues,
+            _project.Settings.VoicePhraseGapMilliseconds,
+            _project.Settings.VoicePhraseMaximumDurationSeconds);
+        var currentPhrases = phrasePlans
+            .Where(phrase => phrase.Cues.Count > 1)
+            .ToDictionary(phrase => phrase.PhraseId, StringComparer.Ordinal);
+        var phraseInputs = (_project.Settings.VoicePhraseSynthesisEnabled
+                ? _project.AudioTracks
+                : [])
+            .Where(item => item.Role == "VOICE_PHRASE"
+                && item.VoicePhraseId is { } phraseId
+                && currentPhrases.TryGetValue(phraseId, out var phrase)
+                && item.CueIds.SequenceEqual(phrase.Cues.Select(cue => cue.CueId))
+                && string.Equals(
+                    item.ContentFingerprint,
+                    VoiceSynthesisJobExecutor.BuildPhraseFingerprint(_project, phrase),
+                    StringComparison.Ordinal))
+            .GroupBy(item => item.VoicePhraseId!, StringComparer.Ordinal)
+            .Select(group => group.Last())
+            .Select(media => new
+            {
+                Cues = media.CueIds.Select(cueId => cueById[cueId])
+                    .OrderBy(cue => cue.StartMilliseconds)
+                    .ToArray(),
+                Media = media,
+                PhraseId = media.VoicePhraseId,
+            })
+            .ToArray();
+        var phraseCoveredCueIds = phraseInputs
+            .SelectMany(input => input.Cues)
+            .Select(cue => cue.CueId)
+            .ToHashSet();
+        var phrasePlannedCueIds = _project.Settings.VoicePhraseSynthesisEnabled
+            ? currentPhrases
+                .SelectMany(item => item.Value.Cues)
+                .Select(cue => cue.CueId)
+                .ToHashSet()
+            : [];
+        var rawInputs = phraseInputs
+            .Select(input => new RawCueInput(input.Cues, input.Media, input.PhraseId))
+            .Concat(orderedCues
+                .Where(cue => !phraseCoveredCueIds.Contains(cue.CueId)
+                    && !phrasePlannedCueIds.Contains(cue.CueId)
+                    && voiceByCue.ContainsKey(cue.CueId))
+                .Select(cue => new RawCueInput(
+                    [cue],
+                    voiceByCue[cue.CueId],
+                    null)))
+            .OrderBy(input => input.Cues[0].StartMilliseconds)
+            .ThenBy(input => input.Cues[^1].EndMilliseconds)
+            .ToArray();
+        var inputs = rawInputs
+            .Select((input, index) => new CueInput(
+                input.Cues,
+                input.Media,
+                index + 1 < rawInputs.Length
+                    ? rawInputs[index + 1].Cues[0].StartMilliseconds
+                    : null,
+                input.PhraseId))
             .ToArray();
         if (inputs.Length == 0)
         {
@@ -58,9 +121,36 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
                 retryable: false);
         }
 
+        job.VoiceMetrics ??= new VoiceSynthesisJobMetrics
+        {
+            TotalCues = inputs.Sum(input => input.Cues.Count),
+        };
+
         var projectDirectory = _paths.GetProjectDirectory(_project.ProjectId);
         var arguments = new List<string> { "-y", "-v", "error" };
         var filters = new List<string>(inputs.Length + 1);
+        var maximumTempo = VoiceTimelineFitPolicy.NormalizeMaximumTempo(
+            _project.Settings.VoiceTimelineMaximumTempo);
+        var preferredTempo = VoiceTimelineFitPolicy.NormalizePreferredTempo(
+            _project.Settings.VoiceTimelinePreferredTempo,
+            maximumTempo);
+        var projectDuration = Math.Max(0.1, source.Metadata.DurationSeconds);
+        var projectDurationMilliseconds = (long)Math.Round(projectDuration * 1_000);
+        var maximumBorrowMilliseconds = Math.Clamp(
+            _project.Settings.VoiceTimelineMaximumBorrowMilliseconds,
+            0,
+            2_000);
+        var minimumGapMilliseconds = Math.Clamp(
+            _project.Settings.VoiceTimelineMinimumGapMilliseconds,
+            0,
+            500);
+        var reviewRequiredCount = 0;
+        var invalidDurationCount = 0;
+        await reportProgress(new JobProgressUpdate(
+            "SYNC_VOICE",
+            0,
+            0,
+            "Đang kiểm tra thời lượng từng câu trước khi khớp timeline."));
         for (var index = 0; index < inputs.Length; index++)
         {
             var input = inputs[index];
@@ -89,17 +179,92 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
             // Keeping every generated input relative prevents large projects from exceeding
             // the 32,767-character CreateProcess limit.
             arguments.AddRange(["-i", Path.GetRelativePath(projectDirectory, path)]);
-            var targetDuration = Math.Max(0.1, (input.Cue.EndMilliseconds - input.Cue.StartMilliseconds) / 1000d);
-            var sourceDuration = Math.Max(0.01, input.Media.Metadata.DurationSeconds);
-            var tempo = BuildAtempo(sourceDuration / targetDuration);
-            var delay = Math.Max(0, input.Cue.StartMilliseconds);
+            var inputStartMilliseconds = input.Cues[0].StartMilliseconds;
+            var inputEndMilliseconds = input.Cues[^1].EndMilliseconds;
+            var targetDuration = (inputEndMilliseconds - inputStartMilliseconds) / 1000d;
+            var activity = _project.Settings.VoiceTrimSilenceEnabled
+                ? VoiceActivityAnalyzer.Analyze(path, input.Media.Metadata.DurationSeconds)
+                : VoiceActivityAnalysis.UseWholeFile(input.Media.Metadata.DurationSeconds);
+            var nextBoundary = input.NextStartMilliseconds ?? projectDurationMilliseconds;
+            var maximumExtendedEnd = inputEndMilliseconds + maximumBorrowMilliseconds;
+            var safeEnd = Math.Min(maximumExtendedEnd, nextBoundary - minimumGapMilliseconds);
+            safeEnd = Math.Clamp(
+                Math.Max(inputEndMilliseconds, safeEnd),
+                inputEndMilliseconds,
+                Math.Max(inputEndMilliseconds, projectDurationMilliseconds));
+            var borrowedGap = Math.Max(0, safeEnd - inputEndMilliseconds) / 1000d;
+            var effectiveWindow = Math.Max(
+                targetDuration,
+                (safeEnd - inputStartMilliseconds) / 1000d);
+            var timing = VoiceTimelineFitPolicy.Analyze(new VoiceTimelineFitInput(
+                activity.RawDurationSeconds,
+                activity.PlayableDurationSeconds,
+                targetDuration,
+                effectiveWindow,
+                input.Cues.Sum(cue => cue.TranslatedText.Trim().Length),
+                maximumTempo,
+                preferredTempo,
+                activity.LeadingSilenceSeconds,
+                activity.TrailingSilenceSeconds,
+                activity.TrimStartSeconds,
+                activity.TrimEndSeconds,
+                borrowedGap,
+                Math.Clamp(_project.Settings.VoiceSpeed, -3, 3),
+                input.PhraseId));
+            foreach (var cue in input.Cues)
+            {
+                cue.VoiceTiming = timing with { };
+            }
+            if (timing.Status == VoiceTimingStatuses.ReviewRequired)
+            {
+                reviewRequiredCount += input.Cues.Count;
+            }
+            else if (timing.Status == VoiceTimingStatuses.Invalid)
+            {
+                invalidDurationCount += input.Cues.Count;
+            }
+
+            var filterChain = new List<string>();
+            if (activity.IsReliable
+                && (activity.TrimStartSeconds > 0.001
+                    || activity.TrimEndSeconds < activity.RawDurationSeconds - 0.001))
+            {
+                filterChain.Add(FormattableString.Invariant(
+                    $"atrim=start={activity.TrimStartSeconds:0.######}:end={activity.TrimEndSeconds:0.######}"));
+                filterChain.Add("asetpts=PTS-STARTPTS");
+            }
+
+            filterChain.Add("aresample=48000");
+            filterChain.Add("aformat=sample_fmts=fltp:channel_layouts=stereo");
+            if (timing.AppliedTempo is > 1)
+            {
+                filterChain.Add(BuildAtempo(timing.AppliedTempo.Value));
+            }
+
+            filterChain.Add("apad");
+            filterChain.Add(FormattableString.Invariant(
+                $"atrim=0:{Math.Max(0.01, timing.RenderDurationSeconds):0.######}"));
+            var delay = Math.Max(0, inputStartMilliseconds);
+            filterChain.Add($"adelay={delay}:all=1");
             filters.Add(FormattableString.Invariant(
-                $"[{index}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,{tempo},apad,atrim=0:{targetDuration:0.######},adelay={delay}:all=1[v{index}]")
-                .Replace(",,", ",", StringComparison.Ordinal));
+                $"[{index}:a]{string.Join(',', filterChain)}[v{index}]"));
+        }
+
+        await _workspace.SaveAsync(_project, cancellationToken);
+        if (invalidDurationCount > 0)
+        {
+            throw new LocalJobException(
+                "VOICE_DURATION_INVALID",
+                $"Có {invalidDurationCount} câu có thời lượng WAV hoặc phụ đề không hợp lệ. Hãy kiểm tra timeline trước khi thử lại.",
+                retryable: false);
+        }
+
+        if (job.VoiceMetrics is not null)
+        {
+            job.VoiceMetrics.TimingWarningCues = reviewRequiredCount;
         }
 
         var labels = string.Concat(Enumerable.Range(0, inputs.Length).Select(index => $"[v{index}]"));
-        var projectDuration = Math.Max(0.1, source.Metadata.DurationSeconds);
         filters.Add(FormattableString.Invariant(
             $"{labels}amix=inputs={inputs.Length}:duration=longest:normalize=0,alimiter=limit=0.95,apad,atrim=0:{projectDuration:0.######}[voice]") );
         var relativeFilterScript = Path.Combine("temp", $"voice-filter-{job.JobId:N}.txt");
@@ -119,7 +284,7 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
                 "-c:a", "pcm_s16le",
                 relativePartialPath,
             ]);
-            await reportProgress(new JobProgressUpdate("SYNC_VOICE", 0, 0, "Đang khớp giọng Việt với timeline."));
+            await reportProgress(new JobProgressUpdate("SYNC_VOICE", 0, 0, "Đang khớp giọng Việt với timeline ở tốc độ an toàn."));
             await _runner.RunAsync(
                 _ffmpegPath,
                 arguments,
@@ -140,6 +305,7 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
                 FileName = file.Name,
                 SizeBytes = file.Length,
                 Sha256 = hash,
+                IsStale = false,
                 SourceLastWriteAtUtc = file.LastWriteTimeUtc,
                 Metadata = new MediaMetadata
                 {
@@ -164,23 +330,17 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
 
     public static string BuildAtempo(double factor)
     {
-        var stages = new List<double>();
-        var remaining = Math.Clamp(factor, 0.0625, 16);
-        while (remaining > 2)
+        if (!double.IsFinite(factor)
+            || factor < 1
+            || factor > VoiceTimelineFitPolicy.MaximumMaximumAutomaticTempo + 0.000001)
         {
-            stages.Add(2);
-            remaining /= 2;
+            throw new ArgumentOutOfRangeException(
+                nameof(factor),
+                factor,
+                $"Tốc độ khớp timeline phải nằm trong khoảng 1.0x đến {VoiceTimelineFitPolicy.MaximumMaximumAutomaticTempo:0.##}x.");
         }
 
-        while (remaining < 0.5)
-        {
-            stages.Add(0.5);
-            remaining /= 0.5;
-        }
-
-        stages.Add(remaining);
-        return string.Join(',', stages.Select(value =>
-            "atempo=" + value.ToString("0.######", CultureInfo.InvariantCulture)));
+        return "atempo=" + factor.ToString("0.######", CultureInfo.InvariantCulture);
     }
 
     private static async Task<string> CalculateHashAsync(string path, CancellationToken cancellationToken)
@@ -189,5 +349,14 @@ public sealed class VoiceTimelineJobExecutor : ILocalJobExecutor
         return Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant();
     }
 
-    private sealed record CueInput(SubtitleCue Cue, LocalMediaReference Media);
+    private sealed record RawCueInput(
+        IReadOnlyList<SubtitleCue> Cues,
+        LocalMediaReference Media,
+        string? PhraseId);
+
+    private sealed record CueInput(
+        IReadOnlyList<SubtitleCue> Cues,
+        LocalMediaReference Media,
+        long? NextStartMilliseconds,
+        string? PhraseId);
 }

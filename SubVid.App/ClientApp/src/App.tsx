@@ -62,14 +62,20 @@ const defaultVoiceSettings: VoiceSettingsInfo = {
   defaultVoiceId: 'piper:vi-vn-vais1000',
   speakerVoiceIds: {},
   speed: 0,
+  timelineMaximumTempo: 1.2,
+  timelinePreferredTempo: 1.12,
+  timelineMaximumBorrowMilliseconds: 600,
+  trimSilenceEnabled: true,
+  phraseSynthesisEnabled: true,
+  timelineSlowdownEnabled: false,
   fptApiKeyConfigured: false,
   estimatedCharacters: 0,
   voices: [
-    { voiceId: 'piper:vi-vn-vais1000', engine: 'piper', displayName: 'VAIS-1000', gender: 'Nữ', region: 'Việt Nam', style: 'Tự nhiên', modelVersion: 'medium', license: 'MIT', installed: false, isCloud: false, requiresInstall: true },
-    { voiceId: 'vieneu:minh-duc', engine: 'vieneu', displayName: 'Minh Đức', gender: 'Nam', region: 'Bắc', style: 'Tin tức', modelVersion: '3.2.5', license: 'Apache-2.0', installed: false, isCloud: false, requiresInstall: true },
-    { voiceId: 'vieneu:truc-ly', engine: 'vieneu', displayName: 'Trúc Ly', gender: 'Nữ', region: 'Bắc', style: 'Tự nhiên', modelVersion: '3.2.5', license: 'Apache-2.0', installed: false, isCloud: false, requiresInstall: true },
-    { voiceId: 'fpt:banmai', engine: 'fpt', displayName: 'Ban Mai', gender: 'Nữ', region: 'Bắc', style: 'Tự nhiên', modelVersion: 'v5', license: 'FPT.AI Terms', installed: false, isCloud: true, requiresInstall: false },
-    { voiceId: 'fpt:leminh', engine: 'fpt', displayName: 'Lê Minh', gender: 'Nam', region: 'Bắc', style: 'Tự nhiên', modelVersion: 'v5', license: 'FPT.AI Terms', installed: false, isCloud: true, requiresInstall: false },
+    { voiceId: 'piper:vi-vn-vais1000', engine: 'piper', displayName: 'VAIS-1000', gender: 'Nữ', region: 'Việt Nam', style: 'Tự nhiên', modelVersion: 'medium', license: 'MIT', installed: false, isCloud: false, requiresInstall: true, installState: 'MISSING' },
+    { voiceId: 'vieneu:minh-duc', engine: 'vieneu', displayName: 'Minh Đức', gender: 'Nam', region: 'Bắc', style: 'Tin tức', modelVersion: '3.2.5', license: 'Apache-2.0', installed: false, isCloud: false, requiresInstall: true, installState: 'MISSING' },
+    { voiceId: 'vieneu:truc-ly', engine: 'vieneu', displayName: 'Trúc Ly', gender: 'Nữ', region: 'Bắc', style: 'Tự nhiên', modelVersion: '3.2.5', license: 'Apache-2.0', installed: false, isCloud: false, requiresInstall: true, installState: 'MISSING' },
+    { voiceId: 'fpt:banmai', engine: 'fpt', displayName: 'Ban Mai', gender: 'Nữ', region: 'Bắc', style: 'Tự nhiên', modelVersion: 'v5', license: 'FPT.AI Terms', installed: false, isCloud: true, requiresInstall: false, installState: 'ONLINE' },
+    { voiceId: 'fpt:leminh', engine: 'fpt', displayName: 'Lê Minh', gender: 'Nam', region: 'Bắc', style: 'Tự nhiên', modelVersion: 'v5', license: 'FPT.AI Terms', installed: false, isCloud: true, requiresInstall: false, installState: 'ONLINE' },
   ],
 }
 const demoMode = new URLSearchParams(window.location.search).get('demo') === '1'
@@ -264,6 +270,7 @@ const demoProject: ProjectInfo = {
   },
   video: demoVideo,
   voicePlaybackUrl: null,
+  voicePlaybackStale: false,
   subtitles: demoSegments,
   jobs: [],
 }
@@ -401,6 +408,7 @@ function App() {
   const [projectBusy, setProjectBusy] = useState(false)
   const [jobBusy, setJobBusy] = useState(false)
   const [modelDownloadPercent, setModelDownloadPercent] = useState<number | null>(null)
+  const [modelDownloadMessage, setModelDownloadMessage] = useState<string | null>(null)
   const [subtitleBusy, setSubtitleBusy] = useState(false)
   const [projectError, setProjectError] = useState<string | null>(null)
   const [importState, setImportState] = useState<MediaImportState>(emptyImportState)
@@ -419,6 +427,11 @@ function App() {
   )
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
+  const [playbackActive, setPlaybackActive] = useState(false)
+  const [timelineFocusRequest, setTimelineFocusRequest] = useState<{
+    sequence: number
+    timeSeconds: number
+  } | null>(null)
   const [playbackRate, setPlaybackRate] = useState(1)
   const [maximized, setMaximized] = useState(false)
   const [toasts, setToasts] = useState<ToastMessage[]>([])
@@ -434,6 +447,7 @@ function App() {
   const editorLayoutRef = useRef<HTMLElement>(null)
   const workspaceGridRef = useRef<HTMLDivElement>(null)
   const toastSequence = useRef(0)
+  const timingWarningNotifications = useRef(new Set<string>())
   const subtitleStyleSaveTimer = useRef<number | null>(null)
   const audioSettingsSaveTimer = useRef<number | null>(null)
 
@@ -634,6 +648,7 @@ function App() {
     setSelectedSegmentId(demoSegments[0].id)
     setCurrentTime(0)
     setPlaying(false)
+    setPlaybackActive(false)
     notify(
       'Đã nhập video',
       `${nextVideo.fileName} đã sẵn sàng trong trình biên tập UI.`,
@@ -643,6 +658,7 @@ function App() {
 
   const handlePlaybackError = useCallback(() => {
     setPlaying(false)
+    setPlaybackActive(false)
     notify(
       'Không thể phát video',
       'Codec video chưa được WebView2 hỗ trợ. Pipeline local vẫn có thể xử lý bằng FFmpeg.',
@@ -652,6 +668,7 @@ function App() {
 
   const handleVoicePlaybackError = useCallback(() => {
     setPlaying(false)
+    setPlaybackActive(false)
     notify(
       'Không thể phát giọng Việt',
       'Track giọng Việt chưa sẵn sàng hoặc file audio đã thay đổi. Hãy tạo giọng lại.',
@@ -826,12 +843,37 @@ function App() {
             : [...current.jobs, changedJob],
         }) : current)
         setJobBusy(changedJob.status === 'pending' || changedJob.status === 'running')
+        const timingWarningCount = changedJob.voiceMetrics?.timingWarningCues ?? 0
+        if (
+          changedJob.status === 'completed'
+          && changedJob.jobType.startsWith('SYNTHESIZE_VOICE_')
+          && timingWarningCount > 0
+          && !timingWarningNotifications.current.has(changedJob.jobId)
+        ) {
+          timingWarningNotifications.current.add(changedJob.jobId)
+          setActiveNav('subtitle')
+          notify(
+            'Đã tạo giọng, có cảnh báo',
+            `Đã tạo giọng thành công. ${timingWarningCount} cue dài hơn khung phụ đề; hãy mở Cảnh báo thời lượng để kiểm tra.`,
+            'warning',
+          )
+        }
         if (changedJob.status === 'failed' && isCloudVoiceApiError(changedJob.errorCode ?? '')) {
           setApiError({
             code: changedJob.errorCode ?? 'FPT_PROVIDER_ERROR',
             message: changedJob.errorMessage ?? 'Không thể hoàn tất yêu cầu tạo giọng FPT.AI.',
             provider: 'FPT.AI',
           })
+        }
+        if (changedJob.status === 'failed' && ['VOICE_TIMING_REVIEW_REQUIRED', 'VOICE_DURATION_INVALID'].includes(changedJob.errorCode ?? '')) {
+          setActiveNav('subtitle')
+          notify(
+            changedJob.errorCode === 'VOICE_DURATION_INVALID'
+              ? 'Timeline có thời lượng không hợp lệ'
+              : 'Cần kiểm duyệt thời lượng giọng',
+            changedJob.errorMessage ?? 'Một số câu quá dài so với timeline. Hãy mở bộ lọc Cảnh báo thời lượng để kiểm tra.',
+            'warning',
+          )
         }
       }
 
@@ -842,10 +884,14 @@ function App() {
       if (message.type === 'model:download:progress'
         && typeof message.progress === 'object'
         && message.progress !== null) {
-        const progress = message.progress as { percent?: number }
+        const progress = message.progress as { percent?: number, fileName?: string }
         const percent = Math.max(0, Math.min(100, Number(progress.percent ?? 0)))
         setModelDownloadPercent(percent)
-        if (percent >= 100) setModelDownloadPercent(null)
+        setModelDownloadMessage(`Đang tải ${String(progress.fileName ?? 'model giọng đọc')}.`)
+        if (percent >= 100) {
+          setModelDownloadPercent(null)
+          setModelDownloadMessage(null)
+        }
       }
 
       if (message.type === 'runtime:install:progress'
@@ -860,7 +906,11 @@ function App() {
           })
         } else {
           setModelDownloadPercent(percent)
-          if (percent >= 100) setModelDownloadPercent(null)
+          setModelDownloadMessage(String(progress.message ?? 'Đang chuẩn bị bộ giọng local.'))
+          if (percent >= 100) {
+            setModelDownloadPercent(null)
+            setModelDownloadMessage(null)
+          }
         }
       }
 
@@ -915,6 +965,7 @@ function App() {
       if (message.type === 'voice:model:installed') {
         setProjectBusy(false)
         setModelDownloadPercent(null)
+        setModelDownloadMessage(null)
         notify('Đã cài bộ giọng', 'Model local đã sẵn sàng để tạo giọng.', 'success')
       }
 
@@ -968,6 +1019,7 @@ function App() {
         setProjectBusy(false)
         setJobBusy(false)
         setModelDownloadPercent(null)
+        setModelDownloadMessage(null)
         setSubtitleBusy(false)
         setImportState(emptyImportState)
         setVoicePreviewBusy(false)
@@ -1071,14 +1123,25 @@ function App() {
       setCurrentTime((time) => {
         if (time >= video.durationSeconds) {
           setPlaying(false)
-          return 0
+          setPlaybackActive(false)
+          return video.durationSeconds
         }
-        return Math.min(video.durationSeconds, time + 0.1)
+        return Math.min(video.durationSeconds, time + 0.1 * playbackRate)
       })
     }, 100)
 
     return () => window.clearInterval(timer)
-  }, [playing, video])
+  }, [playbackRate, playing, video])
+
+  const videoPlaybackIdentity = video
+    ? `${currentProject?.projectId ?? 'browser'}:${video.sha256 ?? video.fileName}:${video.playbackUrl ?? ''}`
+    : ''
+
+  useEffect(() => {
+    setPlaying(false)
+    setPlaybackActive(false)
+    setCurrentTime(0)
+  }, [videoPlaybackIdentity])
 
   useEffect(() => {
     const source = video?.playbackUrl
@@ -1118,8 +1181,22 @@ function App() {
       notify('Chưa có video', 'Hãy nhập video trước khi sử dụng điều khiển phát.', 'warning')
       return
     }
-    setPlaying((value) => !value)
+    setPlaying((value) => {
+      if (value) setPlaybackActive(false)
+      return !value
+    })
   }
+
+  const handlePlaybackStateChange = useCallback((state: 'playing' | 'paused' | 'waiting') => {
+    if (state === 'playing') {
+      setPlaybackActive(true)
+      setPlaying(true)
+      return
+    }
+
+    setPlaybackActive(false)
+    if (state === 'paused') setPlaying(false)
+  }, [])
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -1269,8 +1346,8 @@ function App() {
     vietnameseVoiceVolumePercent: currentProject?.settings.vietnameseVoiceVolumePercent ?? 100,
   }
   const sourceAudioAvailable = Boolean(video && video.hasAudio !== false)
-  const voiceTrackAvailable = segments.some((segment) => segment.hasVoice)
-  const voicePreviewAvailable = Boolean(currentProject?.voicePlaybackUrl && voiceTrackAvailable)
+  const voicePreviewAvailable = Boolean(currentProject?.voicePlaybackUrl)
+  const voiceTrackAvailable = voicePreviewAvailable && !currentProject?.voicePlaybackStale
 
   const updateAudioSettings = (next: ProjectAudioSettings, immediate = false) => {
     const normalized: ProjectAudioSettings = {
@@ -1326,7 +1403,10 @@ function App() {
     setSegments((current) => current.map(updateLocalSegment))
     setCurrentProject((current) => current ? ({
       ...current,
-      voicePlaybackUrl: null,
+      voicePlaybackStale: current.voicePlaybackStale
+        || Boolean(current.voicePlaybackUrl && current.subtitles.some((segment) => (
+          segment.cueId === cueId && segment.translated.trim() !== translated.trim()
+        ))),
       subtitles: current.subtitles.map(updateLocalSegment),
     }) : current)
     notify(
@@ -1359,6 +1439,8 @@ function App() {
 
   const installVoice = (voiceId: string) => {
     setProjectBusy(true)
+    setModelDownloadPercent(0)
+    setModelDownloadMessage('Đang kiểm tra bộ giọng đã có trên máy.')
     if (hasNativeHost()) {
       postToHost('voice:model:install', { voiceId })
       return
@@ -1372,13 +1454,15 @@ function App() {
           ...current.settings.voice,
           voices: current.settings.voice.voices.map((voice) => (
             !voice.isCloud && voice.engine === (voiceId.startsWith('vieneu:') ? 'vieneu' : 'piper')
-              ? { ...voice, installed: true }
+              ? { ...voice, installed: true, installState: 'READY' }
               : voice
           )),
         },
       },
     }) : current)
     setProjectBusy(false)
+    setModelDownloadPercent(null)
+    setModelDownloadMessage(null)
   }
 
   const openVoiceSelection = () => {
@@ -1390,12 +1474,17 @@ function App() {
     setVoiceSelectionOpen(true)
   }
 
-  const startVoiceSynthesis = (voiceId: string, speed: number, apiKey?: string) => {
+  const startVoiceSynthesis = (
+    voiceId: string,
+    speed: number,
+    apiKey?: string,
+    forcePhraseRegeneration = false,
+  ) => {
     setVoiceSelectionOpen(false)
     setVoicePreviewDataUrl(null)
     setJobBusy(true)
     if (hasNativeHost()) {
-      postToHost('job:voice:synthesize', { voiceId, speed, apiKey })
+      postToHost('job:voice:synthesize', { voiceId, speed, apiKey, forcePhraseRegeneration })
       return
     }
 
@@ -1466,7 +1555,7 @@ function App() {
     setSegments((current) => current.map(update))
     setCurrentProject((current) => current ? ({
       ...current,
-      voicePlaybackUrl: null,
+      voicePlaybackStale: current.voicePlaybackStale || Boolean(current.voicePlaybackUrl),
       subtitles: current.subtitles.map(update),
     }) : current)
   }
@@ -1548,6 +1637,14 @@ function App() {
         }}
         onOpenVideo={openVideo}
         onExportVideo={() => {
+          if (audioSettings.vietnameseVoiceEnabled && currentProject?.voicePlaybackStale) {
+            notify(
+              'Giọng Việt cần tạo lại',
+              'Bạn vẫn có thể nghe bản cũ để kiểm tra, nhưng cần tạo giọng lại trước khi xuất video.',
+              'warning',
+            )
+            return
+          }
           if ((!sourceAudioAvailable || !audioSettings.originalAudioEnabled)
             && (!voiceTrackAvailable || !audioSettings.vietnameseVoiceEnabled)) {
             notify(
@@ -1599,6 +1696,7 @@ function App() {
           segments={segments}
           busy={projectBusy || subtitleBusy || jobBusy}
           downloadPercent={modelDownloadPercent}
+          downloadMessage={modelDownloadMessage}
           storage={currentProject?.aiStorage ?? null}
           onSave={updateVoiceSettings}
           onSaveFptCredential={updateFptVoiceCredential}
@@ -1740,7 +1838,11 @@ function App() {
             videoTransform={videoTransform}
             onTogglePlay={togglePlayback}
             onTimeUpdate={setCurrentTime}
-            onPlaybackEnded={() => setPlaying(false)}
+            onPlaybackStateChange={handlePlaybackStateChange}
+            onPlaybackEnded={() => {
+              setPlaybackActive(false)
+              setPlaying(false)
+            }}
             onPlaybackError={handlePlaybackError}
             onVoicePlaybackError={handleVoicePlaybackError}
             onVietnameseSubtitlesEnabledChange={updateVietnameseSubtitlesEnabled}
@@ -1765,7 +1867,13 @@ function App() {
             onSelect={(id) => {
               setSelectedSegmentId(id)
               const segment = segments.find((item) => item.id === id)
-              if (segment) setCurrentTime(segment.start)
+              if (segment) {
+                setCurrentTime(segment.start)
+                setTimelineFocusRequest((current) => ({
+                  sequence: (current?.sequence ?? 0) + 1,
+                  timeSeconds: segment.start,
+                }))
+              }
             }}
             busy={subtitleBusy || jobBusy}
             onImportSrt={() => {
@@ -1805,6 +1913,7 @@ function App() {
           flipVertical={videoTransform.flipVertical}
           segments={segments}
           playing={playing}
+          playbackActive={video?.playbackUrl ? playbackActive : playing}
           currentTime={currentTime}
           playbackRate={playbackRate}
           sourceAudioEnabled={audioSettings.originalAudioEnabled}
@@ -1812,8 +1921,10 @@ function App() {
           sourceAudioAvailable={sourceAudioAvailable}
           voiceAudioEnabled={audioSettings.vietnameseVoiceEnabled}
           voiceVolume={audioSettings.vietnameseVoiceVolumePercent}
-          voiceAudioAvailable={voiceTrackAvailable}
+          voiceAudioAvailable={voicePreviewAvailable}
+          voiceAudioStale={currentProject?.voicePlaybackStale ?? false}
           selectedId={selectedSegmentId}
+          focusRequest={timelineFocusRequest}
           busy={subtitleBusy || jobBusy}
           onTogglePlay={togglePlayback}
           onSeek={setCurrentTime}
@@ -1836,6 +1947,14 @@ function App() {
           })}
           onSelectSegment={setSelectedSegmentId}
           onUpdateSegment={updateSubtitleSegment}
+          onUpdateVoiceBoundary={(previousCueId, nextCueId, mode) => {
+            setSubtitleBusy(true)
+            postToHost('timeline:voice-boundary:update', {
+              previousCueId,
+              nextCueId,
+              mode,
+            })
+          }}
           onSplitCue={(id, positionSeconds) => {
             const segment = segments.find((item) => item.id === id)
             if (!segment) return
@@ -1968,6 +2087,7 @@ function App() {
         previewBusy={voicePreviewBusy}
         previewAudioDataUrl={voicePreviewDataUrl}
         downloadPercent={modelDownloadPercent}
+        downloadMessage={modelDownloadMessage}
         onClose={() => {
           if (!projectBusy && !jobBusy && !voicePreviewBusy) {
             setVoiceSelectionOpen(false)

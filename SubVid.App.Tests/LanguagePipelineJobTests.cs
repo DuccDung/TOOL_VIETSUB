@@ -342,16 +342,18 @@ public sealed class LanguagePipelineJobTests : IDisposable
 
         await executor.ExecuteAsync(job, _ => ValueTask.CompletedTask, CancellationToken.None);
 
-        var voices = project.AudioTracks.Where(track => track.Role == "VOICE_CUE").ToArray();
-        Assert.Equal(2, voices.Length);
-        Assert.All(voices, voice =>
-        {
-            Assert.NotNull(voice.CueId);
-            Assert.False(string.IsNullOrWhiteSpace(voice.ContentFingerprint));
-            Assert.True(voice.Metadata.DurationSeconds > 0.9);
-            Assert.Equal(16_000, voice.Metadata.AudioSampleRate);
-            Assert.True(File.Exists(paths.GetProjectPath(project.ProjectId, voice.WorkspaceRelativePath!)));
-        });
+        var voice = Assert.Single(project.AudioTracks, track => track.Role == "VOICE_PHRASE");
+        Assert.Null(voice.CueId);
+        Assert.Equal(cues.Select(cue => cue.CueId), voice.CueIds);
+        Assert.False(string.IsNullOrWhiteSpace(voice.VoicePhraseId));
+        Assert.False(string.IsNullOrWhiteSpace(voice.ContentFingerprint));
+        Assert.True(voice.Metadata.DurationSeconds > 0.9);
+        Assert.Equal(16_000, voice.Metadata.AudioSampleRate);
+        Assert.True(File.Exists(paths.GetProjectPath(project.ProjectId, voice.WorkspaceRelativePath!)));
+        var phraseRequest = Assert.Single(synthesizer.Requests);
+        Assert.Equal("Một Hai", phraseRequest.Text);
+        Assert.NotNull(phraseRequest.PhraseId);
+        Assert.Equal(cues.Select(cue => cue.CueId), phraseRequest.CueIds);
         Assert.Empty(Directory.EnumerateFiles(paths.GetProjectPath(project.ProjectId, "temp"), "*.partial.wav"));
 
         var cacheJob = new LocalJob
@@ -359,7 +361,56 @@ public sealed class LanguagePipelineJobTests : IDisposable
             Steps = [new LocalJobStep { Code = "SYNTHESIZE_VOICE" }],
         };
         await executor.ExecuteAsync(cacheJob, _ => ValueTask.CompletedTask, CancellationToken.None);
+        Assert.Equal(1, synthesizer.SynthesizedItems);
+
+        var forceJob = new LocalJob
+        {
+            Steps = [new LocalJobStep { Code = "SYNTHESIZE_VOICE" }],
+            Parameters = new Dictionary<string, string>
+            {
+                [VoiceSynthesisJobExecutor.ForcePhraseRegenerationParameter] = bool.TrueString,
+            },
+        };
+        await executor.ExecuteAsync(forceJob, _ => ValueTask.CompletedTask, CancellationToken.None);
         Assert.Equal(2, synthesizer.SynthesizedItems);
+        Assert.Single(project.AudioTracks, track => track.Role == "VOICE_PHRASE");
+    }
+
+    [Fact]
+    public async Task VoiceSynthesis_WhenPhraseModeIsEnabled_ReplacesLegacyCueCacheWithPhraseAudio()
+    {
+        var paths = new AppPaths(_root);
+        var workspace = new ProjectWorkspaceService(paths);
+        var project = await workspace.CreateAsync(Guid.NewGuid(), "Phrase cache migration");
+        project.Settings.VoicePhraseSynthesisEnabled = false;
+        var cues = new[]
+        {
+            new SubtitleCue { StartMilliseconds = 0, EndMilliseconds = 1_000, TranslatedText = "Một" },
+            new SubtitleCue { StartMilliseconds = 1_100, EndMilliseconds = 2_000, TranslatedText = "Hai" },
+        };
+        project.SubtitleTracks.Add(new SubtitleDocument { Cues = cues.ToList() });
+        var synthesizer = new FakeSynthesizer();
+        var executor = new VoiceSynthesisJobExecutor(paths, workspace, project, synthesizer);
+
+        await executor.ExecuteAsync(
+            new LocalJob { Steps = [new LocalJobStep { Code = "SYNTHESIZE_VOICE" }] },
+            _ => ValueTask.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(2, project.AudioTracks.Count(track => track.Role == "VOICE_CUE"));
+
+        project.Settings.VoicePhraseSynthesisEnabled = true;
+        await executor.ExecuteAsync(
+            new LocalJob { Steps = [new LocalJobStep { Code = "SYNTHESIZE_VOICE" }] },
+            _ => ValueTask.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(3, synthesizer.SynthesizedItems);
+        var request = synthesizer.Requests[^1];
+        Assert.Equal("Một Hai", request.Text);
+        Assert.NotNull(request.PhraseId);
+        Assert.DoesNotContain(project.AudioTracks, track => track.Role == "VOICE_CUE");
+        Assert.Single(project.AudioTracks, track => track.Role == "VOICE_PHRASE");
     }
 
     [Fact]
@@ -369,6 +420,7 @@ public sealed class LanguagePipelineJobTests : IDisposable
         var workspace = new ProjectWorkspaceService(paths);
         var project = await workspace.CreateAsync(Guid.NewGuid(), "Incremental FPT voice test");
         project.Settings.VoiceId = "fpt:banmai";
+        project.Settings.VoicePhraseSynthesisEnabled = false;
         var cues = new[]
         {
             new SubtitleCue { StartMilliseconds = 0, EndMilliseconds = 1000, OriginalText = "One", TranslatedText = "Một" },

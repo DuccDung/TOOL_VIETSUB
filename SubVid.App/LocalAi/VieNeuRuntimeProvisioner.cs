@@ -7,7 +7,7 @@ namespace SubVid.App.LocalAi;
 
 public sealed class VieNeuRuntimeProvisioner : IDisposable
 {
-    private const string RuntimeVersion = "vieneu-3.2.5-2026.08.15.1";
+    internal const string RuntimeVersion = "vieneu-3.2.5-2026.08.15.1";
     private const long UvArchiveSize = 19_013_455;
     private const string UvArchiveSha256 = "b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e";
     private const long UvExecutableSize = 48_024_064;
@@ -17,10 +17,22 @@ public sealed class VieNeuRuntimeProvisioner : IDisposable
     private readonly AppPaths _paths;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly HttpClient _httpClient = new() { Timeout = Timeout.InfiniteTimeSpan };
+    private readonly Func<string, TimeSpan, bool> _runtimeProbe;
+    private readonly object _probeSync = new();
+    private bool _existingRuntimeProbed;
+    private bool _existingRuntimeValid;
 
     public VieNeuRuntimeProvisioner(AppPaths paths)
+        : this(paths, ProbeRequiredModules)
+    {
+    }
+
+    internal VieNeuRuntimeProvisioner(
+        AppPaths paths,
+        Func<string, TimeSpan, bool> runtimeProbe)
     {
         _paths = paths;
+        _runtimeProbe = runtimeProbe;
         _httpClient.DefaultRequestHeaders.UserAgent.TryParseAdd("SubVid-App/1.0");
     }
 
@@ -30,9 +42,25 @@ public sealed class VieNeuRuntimeProvisioner : IDisposable
         "Scripts",
         "python.exe");
 
-    private string MarkerPath => Path.Combine(
+    internal string MarkerPath => Path.Combine(
         _paths.VieNeuRuntimeDirectory,
         ".subvid-vieneu-runtime-version");
+
+    public bool HasExistingRuntime
+    {
+        get
+        {
+            try
+            {
+                return File.Exists(PythonPath)
+                    || Directory.EnumerateFileSystemEntries(_paths.VieNeuRuntimeDirectory).Any();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+    }
 
     public bool IsReady
     {
@@ -40,15 +68,39 @@ public sealed class VieNeuRuntimeProvisioner : IDisposable
         {
             try
             {
-                return File.Exists(PythonPath)
-                    && File.Exists(MarkerPath)
-                    && string.Equals(
-                        File.ReadAllText(MarkerPath).Trim(),
-                        RuntimeVersion,
-                        StringComparison.Ordinal);
+                if (!File.Exists(PythonPath))
+                {
+                    return false;
+                }
+
+                if (IsRuntimeVersionCurrent())
+                {
+                    return true;
+                }
+
+                if (!HasValidExistingRuntime())
+                {
+                    return false;
+                }
+
+                WriteRuntimeVersionMarker();
+                VoiceInstallLog.Write(
+                    _paths,
+                    LocalVoiceEngines.VieNeu,
+                    null,
+                    "RUNTIME_ADOPTED",
+                    "Runtime VieNeu cũ đã được xác thực và nhận lại mà không cài lại dependency.");
+                return true;
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
+                VoiceInstallLog.Write(
+                    _paths,
+                    LocalVoiceEngines.VieNeu,
+                    null,
+                    "RUNTIME_ADOPTION_FAILED",
+                    "Runtime VieNeu hợp lệ nhưng không thể cập nhật marker phiên bản.",
+                    exception);
                 return false;
             }
         }
@@ -58,23 +110,73 @@ public sealed class VieNeuRuntimeProvisioner : IDisposable
         IProgress<LocalRuntimeProgress>? progress,
         CancellationToken cancellationToken)
     {
-        if (IsReady) return;
+        if (File.Exists(PythonPath) && IsRuntimeVersionCurrent())
+        {
+            return;
+        }
+
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (IsReady) return;
+            progress?.Report(new LocalRuntimeProgress(
+                "VIENEU_CHECK",
+                1,
+                "Đang kiểm tra runtime VieNeu đã có trên máy."));
+            if (IsRuntimeVersionCurrent() && File.Exists(PythonPath))
+            {
+                return;
+            }
+
+            if (HasValidExistingRuntime(forceProbe: true))
+            {
+                try
+                {
+                    WriteRuntimeVersionMarker();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    throw new LocalModelException(
+                        "VIENEU_MARKER_WRITE_FAILED",
+                        "Runtime VieNeu đã hợp lệ nhưng ứng dụng không thể cập nhật trạng thái cài đặt trong thư mục AI.",
+                        exception);
+                }
+
+                progress?.Report(new LocalRuntimeProgress(
+                    "VIENEU_RUNTIME_ADOPTED",
+                    100,
+                    "Đã nhận lại runtime VieNeu hiện có, không cần cài lại."));
+                VoiceInstallLog.Write(
+                    _paths,
+                    LocalVoiceEngines.VieNeu,
+                    null,
+                    "RUNTIME_ADOPTED",
+                    "Runtime VieNeu cũ đã được xác thực và nhận lại mà không cài lại dependency.");
+                return;
+            }
+
             EnsureDiskSpace();
             Directory.CreateDirectory(_paths.VieNeuRuntimeDirectory);
             var uvPath = await EnsureUvAsync(progress, cancellationToken);
 
-            progress?.Report(new LocalRuntimeProgress(
-                "VIENEU_PYTHON",
-                12,
-                $"Đang tạo runtime VieNeu tại {_paths.VieNeuRuntimeDirectory}."));
-            await RunUvAsync(
-                uvPath,
-                ["venv", "--python", "3.11", "--managed-python", Path.Combine(_paths.VieNeuRuntimeDirectory, ".venv")],
-                cancellationToken);
+            if (!File.Exists(PythonPath))
+            {
+                progress?.Report(new LocalRuntimeProgress(
+                    "VIENEU_PYTHON",
+                    12,
+                    $"Đang tạo runtime VieNeu tại {_paths.VieNeuRuntimeDirectory}."));
+                await RunUvAsync(
+                    uvPath,
+                    ["venv", "--python", "3.11", "--managed-python", Path.Combine(_paths.VieNeuRuntimeDirectory, ".venv")],
+                    cancellationToken);
+            }
+            else
+            {
+                progress?.Report(new LocalRuntimeProgress(
+                    "VIENEU_REPAIR",
+                    12,
+                    "Đã tìm thấy runtime VieNeu nhưng dependency chưa hợp lệ; đang sửa cài đặt hiện có."));
+            }
+
             progress?.Report(new LocalRuntimeProgress(
                 "VIENEU_PACKAGES",
                 35,
@@ -95,7 +197,12 @@ public sealed class VieNeuRuntimeProvisioner : IDisposable
                 82,
                 "Đang kiểm tra runtime VieNeu độc lập."));
             await ValidateAsync(cancellationToken);
-            await File.WriteAllTextAsync(MarkerPath, RuntimeVersion, cancellationToken);
+            await WriteRuntimeVersionMarkerAsync(cancellationToken);
+            lock (_probeSync)
+            {
+                _existingRuntimeProbed = true;
+                _existingRuntimeValid = true;
+            }
             progress?.Report(new LocalRuntimeProgress(
                 "VIENEU_RUNTIME_READY",
                 100,
@@ -279,6 +386,90 @@ public sealed class VieNeuRuntimeProvisioner : IDisposable
             throw new LocalModelException(
                 "VIENEU_RUNTIME_INSTALL_FAILED",
                 "Runtime VieNeu chưa hợp lệ: " + LastLine(error));
+        }
+    }
+
+    private bool IsRuntimeVersionCurrent() => File.Exists(MarkerPath)
+        && string.Equals(
+            File.ReadAllText(MarkerPath).Trim(),
+            RuntimeVersion,
+            StringComparison.Ordinal);
+
+    private bool HasValidExistingRuntime(bool forceProbe = false)
+    {
+        if (!File.Exists(PythonPath))
+        {
+            return false;
+        }
+
+        lock (_probeSync)
+        {
+            if (_existingRuntimeProbed && !forceProbe)
+            {
+                return _existingRuntimeValid;
+            }
+
+            _existingRuntimeValid = _runtimeProbe(PythonPath, TimeSpan.FromSeconds(15));
+            _existingRuntimeProbed = true;
+            return _existingRuntimeValid;
+        }
+    }
+
+    private void WriteRuntimeVersionMarker()
+    {
+        Directory.CreateDirectory(_paths.VieNeuRuntimeDirectory);
+        var temporaryPath = MarkerPath + ".tmp";
+        try
+        {
+            File.WriteAllText(temporaryPath, RuntimeVersion);
+            File.Move(temporaryPath, MarkerPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+    }
+
+    private async Task WriteRuntimeVersionMarkerAsync(CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(_paths.VieNeuRuntimeDirectory);
+        var temporaryPath = MarkerPath + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporaryPath, RuntimeVersion, cancellationToken);
+            File.Move(temporaryPath, MarkerPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+    }
+
+    private static bool ProbeRequiredModules(string pythonPath, TimeSpan timeout)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = pythonPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("-I");
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("import vieneu, perth, soundfile, onnxruntime");
+            using var process = Process.Start(startInfo);
+            if (process is null || !process.WaitForExit((int)Math.Clamp(timeout.TotalMilliseconds, 1, int.MaxValue)))
+            {
+                if (process is { HasExited: false }) process.Kill(entireProcessTree: true);
+                return false;
+            }
+
+            return process.ExitCode == 0;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return false;
         }
     }
 

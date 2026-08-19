@@ -144,6 +144,9 @@ export function SettingsPanel({
     }
     if (displayJob.status === 'paused') return 'Đã tạm dừng'
     if (displayJob.status === 'interrupted') return 'Bị gián đoạn'
+    if (displayJob.status === 'failed' && displayJob.errorCode === 'VOICE_TIMING_REVIEW_REQUIRED') {
+      return 'Cần kiểm duyệt thời lượng'
+    }
     if (displayJob.status === 'failed') return 'Xử lý thất bại'
     if (displayJob.status === 'cancelled') return 'Đã hủy công việc'
     if (displayJob.status === 'pending') return 'Đang chờ xử lý'
@@ -414,13 +417,17 @@ export function SettingsPanel({
                     : ''}
                 </span>
               ) : null}
-              {displayJob.voiceMetrics && displayJob.jobType === 'SYNTHESIZE_VOICE_CLOUD' ? (
+              {displayJob.voiceMetrics && displayJob.jobType.startsWith('SYNTHESIZE_VOICE_') ? (
                 <span>
-                  {formatTokenCount(displayJob.voiceMetrics.submittedCharacters)} ký tự đã gửi
-                  {' · '}{displayJob.voiceMetrics.apiRequests} request
-                  {' · '}{displayJob.voiceMetrics.completedCues}/{displayJob.voiceMetrics.totalCues} cue
+                  {displayJob.jobType === 'SYNTHESIZE_VOICE_CLOUD'
+                    ? `${formatTokenCount(displayJob.voiceMetrics.submittedCharacters)} ký tự đã gửi · ${displayJob.voiceMetrics.apiRequests} request · `
+                    : ''}
+                  {displayJob.voiceMetrics.completedCues}/{displayJob.voiceMetrics.totalCues} cue
                   {displayJob.voiceMetrics.cacheHitCues > 0
                     ? ` · ${displayJob.voiceMetrics.cacheHitCues} cache hit`
+                    : ''}
+                  {(displayJob.voiceMetrics.timingWarningCues ?? 0) > 0
+                    ? ` · cảnh báo thời lượng ${displayJob.voiceMetrics.timingWarningCues}`
                     : ''}
                 </span>
               ) : null}
@@ -479,8 +486,11 @@ export function SettingsPanel({
               <button type="button" title="Hủy" aria-label="Hủy công việc" disabled={jobBusy} onClick={() => onCancelJob(displayJob.jobId)}><Square size={14} /></button>
             </>
           ) : null}
-          {displayJob?.status === 'failed' ? (
+          {displayJob?.status === 'failed' && !['VOICE_TIMING_REVIEW_REQUIRED', 'VOICE_DURATION_INVALID'].includes(displayJob.errorCode ?? '') ? (
             <button type="button" className="prepare-audio-button" disabled={jobBusy} onClick={() => onRetryJob(displayJob.jobId)}><RotateCcw size={15} /> Thử lại</button>
+          ) : null}
+          {displayJob?.status === 'failed' && ['VOICE_TIMING_REVIEW_REQUIRED', 'VOICE_DURATION_INVALID'].includes(displayJob.errorCode ?? '') ? (
+            <span className="voice-review-required-action">Sửa các câu được đánh dấu rồi tạo giọng lại</span>
           ) : null}
         </div>
       </footer>
