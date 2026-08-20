@@ -2095,6 +2095,119 @@ body.marketing-body {
     linear-gradient(145deg, #4b0a43 0%, #2c082d 44%, #17051d 100%);
   font-family: Inter,"Segoe UI",sans-serif;
 }
+
+/* Cloud key allocation V7 */
+.admin-key-vault-stats { margin-bottom: 16px; }
+.admin-key-vault-filters {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) 190px 170px auto auto;
+    gap: 10px;
+    align-items: end;
+    margin: 0 0 16px;
+    padding: 14px;
+    border: 1px solid var(--admin-border, #2d333b);
+    background: var(--admin-panel, #15191e);
+}
+.admin-key-vault-filters label,
+.admin-allocation-form label { display: grid; gap: 7px; }
+.admin-key-vault-filters label > span,
+.admin-allocation-form label > span {
+    color: #aeb7c2;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+.admin-key-vault-filters input,
+.admin-key-vault-filters select,
+.admin-allocation-form input,
+.admin-allocation-form select {
+    min-height: 42px;
+    padding: 0 12px;
+    border: 1px solid #39414b;
+    border-radius: 0;
+    background: #0c1014;
+    color: #eef2f6;
+}
+.admin-key-vault-filters button,
+.admin-key-vault-filters > a {
+    min-height: 42px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 16px;
+    border: 1px solid #3a9f76;
+    border-radius: 0;
+    background: #2d8f69;
+    color: #fff;
+    font-weight: 700;
+    text-decoration: none;
+}
+.admin-key-vault-filters > a { border-color: #39414b; background: transparent; }
+.admin-allocation-modal .admin-provider-modal__surface { width: min(620px, calc(100vw - 28px)); }
+.admin-allocation-form { display: grid; gap: 14px; padding: 20px; }
+.admin-allocation-form [hidden],
+.admin-credential-form [hidden] { display: none !important; }
+.admin-key-vault-pagination { padding: 14px 18px; border-top: 1px solid #2b323a; }
+.admin-quota-reset-form {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    margin: 0 18px 18px; padding: 11px 12px; border: 1px solid rgba(255,255,255,.12);
+    background: rgba(0,0,0,.14); color: #b8a5b3; font-size: 10px;
+}
+.admin-quota-reset-form button {
+    min-height: 34px; border: 1px solid rgba(255,255,255,.18); border-radius: 0;
+    background: transparent; color: #eee2eb; padding: 0 12px; cursor: pointer;
+}
+.admin-quota-reset-form button:disabled { opacity: .45; cursor: default; }
+@media (max-width: 900px) {
+    .admin-key-vault-filters { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 560px) {
+    .admin-key-vault-filters { grid-template-columns: 1fr; }
+}
+.admin-plan-settings-list { display: grid; gap: 18px; }
+.admin-plan-base-form {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(120px, 1fr));
+    gap: 12px;
+    padding: 18px;
+    border-bottom: 1px solid rgba(255,255,255,.1);
+}
+.admin-plan-base-form label,
+.admin-plan-policy-row label { display: grid; gap: 6px; min-width: 0; }
+.admin-plan-base-form label > span,
+.admin-plan-policy-row label > span { color: #b99caf; font-size: 9px; font-weight: 750; text-transform: uppercase; }
+.admin-plan-base-form input,
+.admin-plan-base-form textarea,
+.admin-plan-policy-row input,
+.admin-plan-policy-row select {
+    width: 100%; min-height: 40px; border: 1px solid rgba(255,255,255,.16); border-radius: 0;
+    background: rgba(10,7,12,.58); color: #fff; padding: 9px 11px; font: inherit;
+}
+.admin-plan-base-form .is-wide { grid-column: 1 / -2; }
+.admin-plan-base-form button,
+.admin-plan-policy-row button {
+    min-height: 40px; align-self: end; border: 1px solid #44bc8a; border-radius: 0;
+    background: #2d956c; color: #fff; padding: 0 15px; font-weight: 750; cursor: pointer;
+}
+.admin-plan-check { display: flex !important; align-items: center; align-self: end; min-height: 40px; grid-template-columns: auto 1fr; }
+.admin-plan-check input { width: 16px; min-height: 16px; }
+.admin-plan-policy-list { display: grid; }
+.admin-plan-policy-row {
+    display: grid; grid-template-columns: minmax(190px,1.1fr) 150px 160px minmax(220px,1.3fr) 155px 95px auto;
+    gap: 12px; align-items: end; padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.admin-plan-policy-row:last-child { border-bottom: 0; }
+.admin-plan-policy-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.admin-plan-policy-name > div { display: grid; min-width: 0; }
+.admin-plan-policy-name small { overflow: hidden; color: #9a8293; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1180px) {
+    .admin-plan-base-form { grid-template-columns: repeat(3,1fr); }
+    .admin-plan-policy-row { grid-template-columns: repeat(3,1fr); }
+    .admin-plan-base-form .is-wide { grid-column: 1 / -1; }
+}
+@media (max-width: 700px) {
+    .admin-plan-base-form,.admin-plan-policy-row { grid-template-columns: 1fr; }
+}
 .admin-app .admin-ambient { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
 .admin-app .admin-ambient i { position: absolute; width: 34vw; height: 34vw; border-radius: 50%; filter: blur(90px); opacity: .16; }
 .admin-app .admin-ambient i:nth-child(1) { left: 15%; top: -20%; background: #ff7aac; }
@@ -2901,4 +3014,91 @@ body.marketing-body:has(.admin-denied) { background:#08090b; }
   .admin-app .admin-provider-modal__surface > header { min-height:88px; padding:16px; }
   .admin-app .admin-provider-options { grid-template-columns:1fr; padding:14px; }
   .admin-app .admin-provider-options > button { min-height:94px; }
+}
+
+/* Cloud action feedback is modal so a postback never pulls the operator back to a page-top alert. */
+.admin-app .admin-notification-modal { width:min(510px,calc(100vw - 32px)); max-width:none; border:0; border-radius:0; background:transparent; color:#eef2f0; padding:0; box-shadow:0 34px 100px rgba(0,0,0,.76); }
+.admin-app .admin-notification-modal::backdrop { background:rgba(0,0,0,.78); backdrop-filter:blur(5px); }
+.admin-app .admin-notification-modal__surface { display:grid; grid-template-columns:48px minmax(0,1fr) 36px; gap:16px; border:1px solid #3a3e43; border-radius:0; background:linear-gradient(145deg,#1a1c20,#111315); padding:24px; box-shadow:inset 0 1px rgba(255,255,255,.04); }
+.admin-app .admin-notification-modal__surface.is-success { border-color:rgba(104,220,160,.5); }
+.admin-app .admin-notification-modal__surface.is-error { border-color:rgba(245,130,145,.5); }
+.admin-app .admin-notification-modal__icon { display:grid; width:48px; height:48px; place-items:center; border:1px solid rgba(104,220,160,.3); border-radius:0; background:#173527; color:#92e9b9; }
+.admin-app .admin-notification-modal__surface.is-error .admin-notification-modal__icon { border-color:rgba(245,130,145,.3); background:#3a1e24; color:#ffb0bb; }
+.admin-app .admin-notification-modal__icon .admin-icon { width:25px; height:25px; }
+.admin-app .admin-notification-modal__content { display:grid; align-content:start; gap:5px; min-width:0; }
+.admin-app .admin-notification-modal__content small { color:#8ce1b3; font-size:8px; font-weight:800; letter-spacing:.14em; }
+.admin-app .admin-notification-modal__surface.is-error .admin-notification-modal__content small { color:#ffafb9; }
+.admin-app .admin-notification-modal__content h2 { margin:0; color:#f4f6f5; font-size:18px; letter-spacing:-.025em; }
+.admin-app .admin-notification-modal__content p { margin:0; color:#b6bec5; font-size:11px; line-height:1.55; }
+.admin-app .admin-notification-modal__surface > button { display:grid; width:36px; height:36px; place-items:center; border:1px solid #40454a; border-radius:0; background:#1b1e22; color:#c8d0d7; cursor:pointer; }
+.admin-app .admin-notification-modal__surface > button:hover { border-color:#6bd9a0; background:#203328; color:#b8efd0; }
+.admin-app .admin-notification-modal__surface > button .admin-icon { width:18px; height:18px; }
+.admin-app .admin-notification-modal__actions { grid-column:2/4; display:flex; justify-content:flex-end; margin-top:4px; }
+.admin-app .admin-notification-modal__actions button { min-width:116px; height:38px; border:1px solid rgba(102,218,159,.5); border-radius:0; background:linear-gradient(110deg,#247852,#39a56f); color:#f4f8f5; font:inherit; font-size:11px; font-weight:800; cursor:pointer; }
+.admin-app .admin-notification-modal__surface.is-error .admin-notification-modal__actions button { border-color:rgba(245,130,145,.5); background:#4a2026; }
+.admin-app .admin-notification-modal__errors { color:#ffb0bb; font-size:11px; line-height:1.55; }
+.admin-app .admin-notification-modal__errors ul { margin:0; padding-left:18px; }
+@media (max-width:520px) {
+  .admin-app .admin-notification-modal { width:calc(100vw - 20px); }
+  .admin-app .admin-notification-modal__surface { grid-template-columns:42px minmax(0,1fr) 32px; gap:12px; padding:18px; }
+  .admin-app .admin-notification-modal__icon { width:42px; height:42px; }
+  .admin-app .admin-notification-modal__actions { grid-column:1/-1; }
+}
+
+/* API credentials live in a dedicated vault page instead of expanding the Cloud dashboard. */
+.admin-app .admin-key-vault-link,
+.admin-app .admin-key-vault-add,
+.admin-app .admin-key-vault-back { display:inline-flex; min-height:40px; align-items:center; justify-content:center; gap:8px; border:1px solid #3d4549; border-radius:0; background:#1a1d20; color:#cbd3d8; padding:0 14px; font-size:10px; font-weight:800; text-decoration:none; }
+.admin-app .admin-key-vault-link,
+.admin-app .admin-key-vault-add { border-color:rgba(102,218,159,.5); background:linear-gradient(110deg,#247852,#39a56f); color:#fff; }
+.admin-app .admin-key-vault-link:hover,
+.admin-app .admin-key-vault-add:hover { border-color:#77e2aa; background:linear-gradient(110deg,#2d9060,#43b47c); color:#fff; }
+.admin-app .admin-key-vault-back:hover { border-color:#67d99f; color:#b4efd0; }
+.admin-app .admin-key-vault-link .admin-icon,
+.admin-app .admin-key-vault-add .admin-icon { width:16px; height:16px; }
+.admin-app .admin-key-vault-heading__actions { display:flex; align-items:center; justify-content:flex-end; gap:9px; }
+.admin-app .admin-key-vault-card { width:100%; }
+.admin-app .admin-key-vault-card .admin-key-list { border-top:1px solid #30343a; }
+.admin-app .admin-key-vault-card .admin-row-actions { display:flex; align-items:center; justify-content:flex-end; gap:7px; min-width:max-content; }
+.admin-app .admin-key-vault-card .admin-row-actions form { display:flex; align-items:center; margin:0; }
+.admin-app .admin-key-vault-card .admin-row-actions :is(a,button) { display:inline-flex; width:auto; min-width:50px; height:34px; min-height:34px; align-items:center; justify-content:center; border-radius:0; padding:0 10px; font:inherit; font-size:10px; font-weight:750; line-height:1; white-space:nowrap; }
+@media (max-width:640px) {
+  .admin-app .admin-key-vault-heading__actions { width:100%; align-items:stretch; flex-direction:column-reverse; }
+  .admin-app .admin-key-vault-heading__actions a { width:100%; min-height:44px; }
+  .admin-app .admin-key-vault-card .admin-row-actions { width:100%; justify-content:flex-start; }
+}
+
+/* Production E2E purchase console. All controls follow the square admin theme. */
+.admin-app .admin-purchase-test-heading { align-items:flex-end; }
+.admin-app .admin-purchase-test-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; }
+.admin-app .admin-purchase-test-actions form { margin:0; }
+.admin-app .admin-purchase-test-actions button { min-height:44px; border-radius:0; padding:0 18px; font:inherit; font-size:11px; font-weight:800; cursor:pointer; }
+.admin-app .admin-purchase-safety-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0 0 18px; }
+.admin-app .admin-purchase-safety-grid article { display:grid; grid-template-columns:42px minmax(0,1fr); gap:13px; min-height:112px; border:1px solid #33383d; border-radius:0; background:linear-gradient(145deg,#191c1f,#121416); padding:18px; }
+.admin-app .admin-purchase-safety-grid article > span { display:grid; width:42px; height:42px; place-items:center; border:1px solid rgba(103,217,159,.35); border-radius:0; background:#173527; color:#91e8b8; font-size:11px; font-weight:800; }
+.admin-app .admin-purchase-safety-grid strong { display:block; margin:1px 0 6px; color:#edf2ef; font-size:12px; }
+.admin-app .admin-purchase-safety-grid p { margin:0; color:#9099a1; font-size:10px; line-height:1.55; }
+.admin-app .admin-purchase-safety-grid code { color:#94e5ba; font:inherit; font-weight:700; }
+.admin-app .admin-purchase-runs { border-radius:0; }
+.admin-app .admin-purchase-table { min-width:1320px; }
+.admin-app .admin-purchase-table tr.is-highlighted td { background:rgba(72,181,124,.095); }
+.admin-app .admin-purchase-table td { vertical-align:top; }
+.admin-app .admin-purchase-table td > strong,.admin-app .admin-purchase-table td > small,.admin-app .admin-purchase-table td > a { display:block; }
+.admin-app .admin-purchase-table td > strong { max-width:280px; overflow:hidden; color:#e7ece9; font-size:10px; text-overflow:ellipsis; }
+.admin-app .admin-purchase-table td > small { max-width:300px; overflow:hidden; margin-top:5px; color:#879199; font-size:8px; text-overflow:ellipsis; }
+.admin-app .admin-purchase-table td > a { width:max-content; margin-top:7px; color:#86dfad; font-size:9px; font-weight:700; text-decoration:none; }
+.admin-app .admin-purchase-table td > a:hover { color:#c3f3d7; text-decoration:underline; }
+.admin-app .admin-purchase-table td form { margin-top:9px; }
+.admin-app .admin-purchase-table td form button { min-height:32px; border:1px solid #4a6656; border-radius:0; background:#1c3829; color:#aeeac7; padding:0 10px; font:inherit; font-size:8px; font-weight:800; cursor:pointer; }
+.admin-app .admin-purchase-table td form button:hover { border-color:#70daa2; background:#254b36; color:#e7fff1; }
+.admin-app .admin-pagination { display:flex; flex-wrap:wrap; gap:6px; padding:16px 18px 18px; border-top:1px solid #30363a; }
+.admin-app .admin-pagination a { display:grid; min-width:34px; height:32px; place-items:center; border:1px solid #3b4247; border-radius:0; background:#181c1f; color:#9ea8ae; font-size:9px; font-weight:800; text-decoration:none; }
+.admin-app .admin-pagination a:hover,.admin-app .admin-pagination a.is-active { border-color:#54ca8e; background:#213d2e; color:#c5f4d9; }
+.admin-app .admin-user-status.is-pending { background:#3d321c; color:#efd08b; }
+.admin-app .admin-user-status.is-paid { background:#173b2a; color:#94e5b9; }
+.admin-app .admin-user-status.is-failed,.admin-app .admin-user-status.is-cancelled { background:#422127; color:#ffb1bd; }
+@media (max-width:980px) {
+  .admin-app .admin-purchase-test-heading { align-items:stretch; }
+  .admin-app .admin-purchase-test-actions { justify-content:flex-start; }
+  .admin-app .admin-purchase-safety-grid { grid-template-columns:1fr; }
 }

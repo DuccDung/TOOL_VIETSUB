@@ -1,0 +1,103 @@
+@page
+@model SubVid.Server.Pages.Admin.PurchaseTestsModel
+@{
+    Layout = "_AdminLayout";
+    ViewData["Title"] = "Test mua gói";
+    var hasNotification = !string.IsNullOrWhiteSpace(Model.NotificationMessage);
+    var notificationSuccess = Model.NotificationKind == "success";
+}
+
+<section class="admin-light-heading admin-purchase-test-heading">
+    <div>
+        <span>PRODUCTION E2E · ADMIN ONLY</span>
+        <h1>Kiểm thử người dùng mua gói</h1>
+        <p>Tạo dữ liệu thật trong database hiện tại, thanh toán bằng gateway giả và kích hoạt đúng policy của gói PRO.</p>
+    </div>
+    <div class="admin-purchase-test-actions">
+        <form method="post" asp-page-handler="Create">
+            <button class="admin-secondary-button" type="submit" data-confirm="Tạo một user E2E, subscription FREE, đơn PENDING và API key giả trong database hiện tại?">
+                Tạo đơn PENDING
+            </button>
+        </form>
+        <form method="post" asp-page-handler="RunFullFlow">
+            <button class="admin-primary-button" type="submit" data-confirm="Chạy trọn flow mua PRO trên database hiện tại? Dữ liệu E2E sẽ được giữ lại để kiểm tra trực quan.">
+                Chạy trọn flow PRO
+            </button>
+        </form>
+    </div>
+</section>
+
+@if (hasNotification)
+{
+    <dialog class="admin-notification-modal" data-purchase-notification>
+        <div class="admin-notification-modal__surface @(notificationSuccess ? "is-success" : "is-error")">
+            <span class="admin-notification-modal__icon"><svg class="admin-icon"><use href="@(notificationSuccess ? "#admin-icon-check" : "#admin-icon-alert")"></use></svg></span>
+            <div class="admin-notification-modal__content">
+                <small>KIỂM THỬ MUA GÓI</small>
+                <h2>@(notificationSuccess ? "Đã hoàn tất thao tác" : "Flow không thể hoàn tất")</h2>
+                <p>@Model.NotificationMessage</p>
+            </div>
+            <button type="button" data-purchase-notification-close aria-label="Đóng"><svg class="admin-icon"><use href="#admin-icon-close"></use></svg></button>
+            <div class="admin-notification-modal__actions"><button type="button" data-purchase-notification-close>Đã hiểu</button></div>
+        </div>
+    </dialog>
+}
+
+<section class="admin-purchase-safety-grid">
+    <article><span>01</span><div><strong>Dữ liệu thật, nhận diện rõ</strong><p>Mọi user, đơn và key đều mang tiền tố <code>E2E_PURCHASE_</code> cùng Run ID.</p></div></article>
+    <article><span>02</span><div><strong>Không gọi provider thật</strong><p>API key giả được mã hóa nhưng luôn giữ trạng thái <code>DISABLED · UNASSIGNED</code>.</p></div></article>
+    <article><span>03</span><div><strong>Webhook idempotent</strong><p>Gửi lại cùng sự kiện không tạo đơn, subscription hoặc lịch sử thanh toán trùng.</p></div></article>
+</section>
+
+<section class="admin-light-card admin-purchase-runs">
+    <header>
+        <div><span class="admin-card-icon is-emerald"><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg></span><div><h2>20 lượt kiểm thử gần nhất</h2><p>Mỗi hàng là một flow độc lập và có thể đối chiếu trực tiếp trong User, Gói thuê và Kho Key.</p></div></div>
+        <span class="admin-count-pill">@Model.Runs.Count flow</span>
+    </header>
+    <div class="admin-table-wrap">
+        <table class="admin-modern-table admin-purchase-table">
+            <thead><tr><th>Run / người dùng</th><th>Đơn hàng</th><th>Gói</th><th>Thanh toán</th><th>API key giả</th><th>Đối chiếu</th></tr></thead>
+            <tbody>
+            @if (Model.Runs.Count == 0)
+            {
+                <tr><td colspan="6"><div class="admin-table-empty">Chưa có dữ liệu E2E. Bấm “Chạy trọn flow PRO” để tạo lượt đầu tiên.</div></td></tr>
+            }
+            @foreach (var run in Model.Runs)
+            {
+                <tr class="@(Model.Highlight == run.OrderId ? "is-highlighted" : null)">
+                    <td><strong>@run.RunId</strong><small>@run.Email</small><small>@run.CreatedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss")</small></td>
+                    <td><strong>@run.OrderNumber</strong><span class="admin-user-status is-@run.OrderStatus.ToLowerInvariant()">@run.OrderStatus</span><small>@run.PriceAmount.ToString("N0") @run.CurrencyCode · @run.BillingPeriodDays ngày</small></td>
+                    <td><strong>@run.PurchasedPlanName</strong><small>Mua: @run.PurchasedPlanCode · Hiện tại: @run.ActivePlanCode</small><small>Subscription: @(run.ActivatedSubscriptionId?.ToString() ?? "Chưa kích hoạt")</small></td>
+                    <td>
+                        <strong>@run.WebhookCount webhook</strong>
+                        <small>@(run.PaidAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss") ?? "Đang chờ thanh toán")</small>
+                        @if (run.OrderStatus == "PENDING")
+                        {
+                            <form method="post" asp-page-handler="Pay"><input name="orderId" type="hidden" value="@run.OrderId" /><button type="submit" data-confirm="Xác nhận FAKE_PAYMENT_SUCCEEDED cho đơn này?">Xác nhận thanh toán</button></form>
+                        }
+                        else if (run.OrderStatus == "PAID")
+                        {
+                            <form method="post" asp-page-handler="Replay"><input name="orderId" type="hidden" value="@run.OrderId" /><button type="submit">Gửi lại webhook</button></form>
+                        }
+                    </td>
+                    <td><strong>@run.FakeCredentialStatus · @run.FakeCredentialAllocationMode</strong><small>@run.FakeCredentialName</small><a asp-page="/Admin/CloudKeys" asp-route-search="@run.RunId">Mở trong Kho Key</a></td>
+                    <td><a asp-page="/Admin/Users/Detail" asp-route-id="@run.UserId">Hồ sơ user</a><a asp-page="/Admin/Subscriptions" asp-route-email="@run.Email">Gói thuê</a><small>Order ID: @run.OrderId</small></td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+@section Scripts {
+    <script>
+        (() => {
+            const modal = document.querySelector('[data-purchase-notification]');
+            if (modal instanceof HTMLDialogElement) {
+                document.querySelectorAll('[data-purchase-notification-close]').forEach(button => button.addEventListener('click', () => modal.close()));
+                modal.addEventListener('click', event => { if (event.target === modal) modal.close(); });
+                requestAnimationFrame(() => modal.showModal());
+            }
+        })();
+    </script>
+}

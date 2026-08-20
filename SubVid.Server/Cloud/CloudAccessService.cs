@@ -1,5 +1,6 @@
 using System.Data;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using SubVid.Server.Auth;
@@ -123,6 +124,32 @@ public sealed partial class CloudAccessService(
                 "Gói hiện tại không hỗ trợ dịch thuật Cloud.");
         }
 
+        var policy = await database.ServicePlanCloudPolicies
+            .AsNoTracking()
+            .Where(item => item.Plan.PlanCode == entitlements.Plan.Code
+                && item.ProviderCode == providerCode
+                && item.Plan.IsActive
+                && item.IsActive)
+            .Select(item => new CloudPlanPolicy(
+                item.PlanId,
+                item.AllocationMode,
+                item.AllowedModelsJson,
+                item.AllowSharedFallback))
+            .SingleOrDefaultAsync(cancellationToken);
+        if (policy is null)
+        {
+            return CloudAccessResult<CloudAuthorizationResponse>.Failure(
+                "CLOUD_PROVIDER_NOT_INCLUDED",
+                $"Gói {entitlements.Plan.DisplayName} không hỗ trợ nhà cung cấp {providerCode}.");
+        }
+
+        if (!IsModelAllowed(policy.AllowedModelsJson, modelId))
+        {
+            return CloudAccessResult<CloudAuthorizationResponse>.Failure(
+                "CLOUD_MODEL_NOT_INCLUDED",
+                $"Model {modelId} không nằm trong quyền lợi của gói {entitlements.Plan.DisplayName}.");
+        }
+
         var unitCode = ResolveUnitCode(operationCode);
         var balance = await GetBalanceCoreAsync(userId, unitCode, periodStart, nowUtc, cancellationToken);
         if (balance.MonthlyLimit <= 0)
@@ -139,11 +166,19 @@ public sealed partial class CloudAccessService(
                 $"Tài khoản chỉ còn {balance.RemainingUnits:N0} token Cloud khả dụng.");
         }
 
+        var allowShared = policy.AllocationMode == CloudCredentialAllocationModes.Shared
+            || policy.AllowSharedFallback;
         var credential = await database.CloudProviderCredentials
             .Where(item => item.ProviderCode == providerCode
                 && item.StatusCode == "ACTIVE"
-                && (item.AssignedUserId == userId || item.AssignedUserId == null))
-            .OrderByDescending(item => item.AssignedUserId == userId)
+                && ((item.AllocationMode == CloudCredentialAllocationModes.Dedicated
+                        && item.AssignedUserId == userId)
+                    || (allowShared
+                        && item.AllocationMode == CloudCredentialAllocationModes.Shared
+                        && item.PoolId != null
+                        && item.Pool!.StatusCode == CloudKeyPoolStatuses.Active
+                        && item.Pool.PlanLinks.Any(link => link.PlanId == policy.PlanId))))
+            .OrderByDescending(item => item.AllocationMode == CloudCredentialAllocationModes.Dedicated)
             .ThenBy(item => item.Priority)
             .ThenBy(item => item.LastIssuedAtUtc)
             .FirstOrDefaultAsync(cancellationToken);
@@ -381,10 +416,13 @@ public sealed partial class CloudAccessService(
         CancellationToken cancellationToken)
     {
         var periodEnd = periodStart.AddMonths(1);
-        var limit = await database.CloudQuotaLimits.AsNoTracking()
+        var customLimit = await database.CloudQuotaLimits.AsNoTracking()
             .Where(item => item.UserId == userId && item.UnitCode == unitCode)
             .Select(item => (decimal?)item.MonthlyLimit)
-            .SingleOrDefaultAsync(cancellationToken) ?? 0;
+            .SingleOrDefaultAsync(cancellationToken);
+        var limit = customLimit ?? (unitCode == CloudUsageUnits.LlmToken
+            ? await GetPlanTokenLimitAsync(userId, nowUtc, cancellationToken)
+            : 0);
         var used = await database.CloudUsageLedger.AsNoTracking()
             .Where(item => item.UserId == userId
                 && item.UnitCode == unitCode
@@ -492,6 +530,54 @@ public sealed partial class CloudAccessService(
     }
 
     private static long DecimalToLong(decimal value) => decimal.ToInt64(decimal.Truncate(value));
+
+    private async Task<decimal> GetPlanTokenLimitAsync(
+        Guid userId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken)
+    {
+        var planId = await database.UserSubscriptions.AsNoTracking()
+            .Where(item => item.UserId == userId
+                && item.StatusCode == "ACTIVE"
+                && item.StartsAtUtc <= nowUtc
+                && (item.EndsAtUtc == null || item.EndsAtUtc > nowUtc)
+                && item.Plan.IsActive)
+            .OrderByDescending(item => item.StartsAtUtc)
+            .Select(item => (Guid?)item.PlanId)
+            .FirstOrDefaultAsync(cancellationToken)
+            ?? await database.ServicePlans.AsNoTracking()
+                .Where(item => item.PlanCode == "FREE" && item.IsActive)
+                .Select(item => (Guid?)item.PlanId)
+                .SingleOrDefaultAsync(cancellationToken);
+        if (planId is null)
+        {
+            return 0;
+        }
+
+        return await database.ServicePlanCloudPolicies.AsNoTracking()
+            .Where(item => item.PlanId == planId.Value && item.IsActive)
+            .MaxAsync(item => (decimal?)item.MonthlyTokenLimit, cancellationToken) ?? 0;
+    }
+
+    private static bool IsModelAllowed(string allowedModelsJson, string modelId)
+    {
+        try
+        {
+            var allowed = JsonSerializer.Deserialize<string[]>(allowedModelsJson) ?? [];
+            return allowed.Any(item => item == "*"
+                || string.Equals(item, modelId, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private sealed record CloudPlanPolicy(
+        Guid PlanId,
+        string AllocationMode,
+        string AllowedModelsJson,
+        bool AllowSharedFallback);
 
     [GeneratedRegex("^[A-Za-z0-9._:/-]+$", RegexOptions.CultureInvariant)]
     private static partial Regex ModelIdRegex();

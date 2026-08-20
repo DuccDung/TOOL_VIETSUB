@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using SubVid.Server.Cloud;
 using SubVid.Server.Data;
 using SubVid.Server.Models;
 
@@ -20,7 +21,14 @@ public sealed class AdminSubscriptionService(SubVidDbContext database)
                 item.DisplayName,
                 item.Description,
                 item.MonthlyQuotaMinutes,
-                item.MaxVideoMinutes))
+                item.MaxVideoMinutes,
+                item.PriceAmount,
+                item.CurrencyCode,
+                item.BillingPeriodDays,
+                item.CloudPolicies.Where(policy => policy.IsActive)
+                    .Max(policy => (decimal?)policy.MonthlyTokenLimit),
+                item.CloudPolicies.Any(policy => policy.IsActive
+                    && policy.AllocationMode == CloudCredentialAllocationModes.Dedicated)))
             .ToArrayAsync(cancellationToken);
 
     public async Task<AdminSubscriptionAccount?> FindByEmailAsync(
@@ -67,7 +75,8 @@ public sealed class AdminSubscriptionService(SubVidDbContext database)
             subscription?.EndsAtUtc,
             user.MonthlyQuotaMinutes ?? plan.MonthlyQuotaMinutes,
             user.MonthlyQuotaMinutes,
-            plan.MaxVideoMinutes);
+            plan.MaxVideoMinutes,
+            []);
     }
 
     public async Task<AdminSubscriptionAccount> ChangePlanAsync(
@@ -145,6 +154,14 @@ public sealed class AdminSubscriptionService(SubVidDbContext database)
         });
         user.UpdatedAtUtc = nowUtc;
 
+        var allocation = await new CloudCredentialAllocationService(database)
+            .SynchronizeForPlanAsync(
+                user.UserId,
+                plan.PlanId,
+                actorAdminId,
+                $"Đồng bộ API key khi kích hoạt gói {plan.PlanCode}.",
+                cancellationToken);
+
         database.SecurityAuditLogs.Add(new SecurityAuditLog
         {
             UserId = user.UserId,
@@ -160,6 +177,9 @@ public sealed class AdminSubscriptionService(SubVidDbContext database)
                 durationDays,
                 startsAtUtc = nowUtc,
                 endsAtUtc,
+                allocatedCredentialIds = allocation.AllocatedCredentialIds,
+                releasedCredentialIds = allocation.ReleasedCredentialIds,
+                unavailableProviders = allocation.UnavailableProviders,
             }),
             CreatedAtUtc = nowUtc,
         });
@@ -167,8 +187,9 @@ public sealed class AdminSubscriptionService(SubVidDbContext database)
         await database.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        return await FindByEmailAsync(user.Email, cancellationToken)
+        var updated = await FindByEmailAsync(user.Email, cancellationToken)
             ?? throw new InvalidOperationException("Không thể tải lại tài khoản vừa cập nhật.");
+        return updated with { UnavailableCredentialProviders = allocation.UnavailableProviders };
     }
 }
 
@@ -177,7 +198,12 @@ public sealed record AdminPlanOption(
     string DisplayName,
     string? Description,
     decimal? MonthlyQuotaMinutes,
-    decimal? MaxVideoMinutes);
+    decimal? MaxVideoMinutes,
+    decimal PriceAmount,
+    string CurrencyCode,
+    int BillingPeriodDays,
+    decimal? MonthlyTokenLimit,
+    bool UsesDedicatedKeys);
 
 public sealed record AdminSubscriptionAccount(
     Guid UserId,
@@ -191,4 +217,5 @@ public sealed record AdminSubscriptionAccount(
     DateTime? EndsAtUtc,
     decimal? EffectiveMonthlyQuotaMinutes,
     decimal? CustomMonthlyQuotaMinutes,
-    decimal? MaxVideoMinutes);
+    decimal? MaxVideoMinutes,
+    IReadOnlyList<string> UnavailableCredentialProviders);

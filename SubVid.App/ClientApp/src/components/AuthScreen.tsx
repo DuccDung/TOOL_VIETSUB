@@ -8,6 +8,7 @@ import {
 } from 'react'
 import {
   ArrowLeft,
+  ArrowRight,
   Check,
   Clock3,
   Eye,
@@ -45,6 +46,7 @@ type AuthScreenProps = {
 }
 
 const emptyOtp = ['', '', '', '', '', '']
+const pipelineSteps = ['Video', 'Phụ đề', 'Giọng Việt', 'Xuất bản']
 
 function formatCountdown(totalSeconds: number) {
   const minutes = Math.floor(totalSeconds / 60)
@@ -73,9 +75,20 @@ export function AuthScreen({
   const [otpDigits, setOtpDigits] = useState<string[]>(emptyOtp)
   const [localError, setLocalError] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now())
+  const [pipelineFrame, setPipelineFrame] = useState(0)
   const otpRefs = useRef<Array<HTMLInputElement | null>>([])
   const challenge = registrationState.challenge
   const isLoginLoading = mode === 'login' && authState.status === 'loading'
+  const activePipelineStep = pipelineFrame % pipelineSteps.length
+  const pipelineCycle = Math.floor(pipelineFrame / pipelineSteps.length)
+
+  useEffect(() => {
+    const pipelineTimer = window.setInterval(() => {
+      setPipelineFrame((currentFrame) => currentFrame + 1)
+    }, 1_400)
+
+    return () => window.clearInterval(pipelineTimer)
+  }, [])
 
   useEffect(() => {
     if (!challenge) return
@@ -236,7 +249,16 @@ export function AuthScreen({
           </div>
 
           <div className="auth-pipeline" aria-label="Quy trình xử lý">
-            <span>Video</span><i /><span>Phụ đề</span><i /><span>Giọng Việt</span><i /><span>Xuất bản</span>
+            {pipelineSteps.map((step, index) => (
+              <div className="auth-pipeline__part" key={`${step}-${pipelineCycle}`}>
+                <span className={index === activePipelineStep ? 'is-active' : index < activePipelineStep ? 'is-complete' : ''}>
+                  {step}
+                </span>
+                {index < pipelineSteps.length - 1 ? (
+                  <i className={index <= activePipelineStep ? 'is-active' : ''} aria-hidden="true" />
+                ) : null}
+              </div>
+            ))}
           </div>
         </section>
 
@@ -293,7 +315,7 @@ export function AuthScreen({
 
               <button className="auth-submit" type="submit" disabled={registrationState.busy || expiresIn === 0}>
                 <span>{registrationState.busy ? busyLabel : 'Xác nhận và vào Studio'}</span>
-                {registrationState.busy ? <LoaderCircle size={16} className="spin" /> : <span>→</span>}
+                {registrationState.busy ? <LoaderCircle size={16} className="spin" /> : <ArrowRight size={20} strokeWidth={2.2} />}
               </button>
 
               <div className="otp-actions">
@@ -314,7 +336,7 @@ export function AuthScreen({
               <AuthEmailField email={email} onChange={setEmail} />
               <AuthPasswordField password={password} showPassword={showPassword} autoComplete="current-password" onChange={setPassword} onToggle={() => setShowPassword((value) => !value)} />
               <div className="auth-device-note"><ShieldCheck size={15} /> Phiên đăng nhập được mã hóa và chỉ dùng được trên thiết bị này.</div>
-              <button className="auth-submit" type="submit"><span>Đăng nhập vào Studio</span><span>→</span></button>
+              <button className="auth-submit" type="submit"><span>Đăng nhập vào Studio</span><ArrowRight size={20} strokeWidth={2.2} /></button>
               {authState.status === 'error' ? <button className="auth-retry" type="button" onClick={onRetry}><RefreshCw size={14} /> Thử kết nối lại</button> : null}
             </form>
           ) : (
@@ -329,12 +351,11 @@ export function AuthScreen({
               <div className="auth-device-note"><ShieldCheck size={15} /> OTP hết hạn sau 5 phút. Mật khẩu không được gửi qua email.</div>
               <button className="auth-submit" type="submit" disabled={registrationState.busy}>
                 <span>{registrationState.busy ? busyLabel : 'Gửi mã xác nhận'}</span>
-                {registrationState.busy ? <LoaderCircle size={16} className="spin" /> : <span>→</span>}
+                {registrationState.busy ? <LoaderCircle size={16} className="spin" /> : <ArrowRight size={20} strokeWidth={2.2} />}
               </button>
             </form>
           )}
 
-          <footer className="auth-card__footer"><span><span className="status-dot" /> Server bảo mật qua HTTPS</span><small>V1.0.0</small></footer>
         </section>
       </main>
     </div>

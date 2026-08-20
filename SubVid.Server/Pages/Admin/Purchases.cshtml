@@ -1,0 +1,59 @@
+@page
+@model SubVid.Server.Pages.Admin.PurchasesModel
+@{
+    Layout = "_AdminLayout";
+    ViewData["Title"] = "Thanh toán gói";
+}
+
+<section class="admin-light-heading">
+    <div>
+        <span>PAYMENT RECONCILIATION</span>
+        <h1>Đơn hàng và thanh toán gói</h1>
+        <p>Đối chiếu đơn SubVid, giao dịch SePay, webhook và subscription được kích hoạt. Secret không được hiển thị tại đây.</p>
+    </div>
+    <a class="admin-key-vault-add" asp-page="/Admin/PurchaseTests"><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg><span>Mở flow FAKE_ADMIN</span></a>
+</section>
+
+<section class="admin-light-card">
+    <form method="get" class="admin-plan-base-form">
+        <label class="is-wide"><span>Tìm kiếm</span><input name="search" value="@Model.Search" placeholder="Mã đơn, email hoặc mã gói" /></label>
+        <label><span>Trạng thái đơn</span><select name="status"><option value="">Tất cả</option><option value="PENDING" selected="@(Model.Status == "PENDING" ? "selected" : null)">PENDING</option><option value="PAID" selected="@(Model.Status == "PAID" ? "selected" : null)">PAID</option><option value="FAILED" selected="@(Model.Status == "FAILED" ? "selected" : null)">FAILED</option><option value="CANCELLED" selected="@(Model.Status == "CANCELLED" ? "selected" : null)">CANCELLED</option><option value="REFUNDED" selected="@(Model.Status == "REFUNDED" ? "selected" : null)">REFUNDED</option></select></label>
+        <label><span>Provider</span><select name="provider"><option value="">Tất cả</option><option value="SEPAY" selected="@(Model.Provider == "SEPAY" ? "selected" : null)">SEPAY</option><option value="FAKE_ADMIN" selected="@(Model.Provider == "FAKE_ADMIN" ? "selected" : null)">FAKE_ADMIN</option></select></label>
+        <button type="submit">Lọc dữ liệu</button>
+    </form>
+</section>
+
+<section class="admin-light-card admin-purchase-runs">
+    <header><div><span class="admin-card-icon is-emerald"><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg></span><div><h2>@Model.Result.TotalCount đơn hàng</h2><p>Trang @Model.Result.Page / @Math.Max(1, Model.Result.TotalPages)</p></div></div></header>
+    <div class="admin-table-wrap">
+        <table class="admin-modern-table admin-purchase-table">
+            <thead><tr><th>Đơn / người dùng</th><th>Gói / số tiền</th><th>Thanh toán</th><th>Webhook</th><th>Subscription</th><th>Thời gian</th></tr></thead>
+            <tbody>
+            @if (Model.Result.Items.Count == 0)
+            {
+                <tr><td colspan="6"><div class="admin-table-empty">Không có đơn phù hợp bộ lọc.</div></td></tr>
+            }
+            @foreach (var item in Model.Result.Items)
+            {
+                <tr>
+                    <td><strong>@item.OrderNumber</strong><small>@item.UserEmail</small><small>@item.OrderId</small></td>
+                    <td><strong>@item.PlanName</strong><small>@item.PlanCode · @item.Amount.ToString("N0") @item.Currency</small></td>
+                    <td><strong>@item.Provider · @(item.PaymentStatus ?? item.OrderStatus)</strong><small>@(item.TransactionCode ?? "Chưa có mã")</small><small>@(item.ProviderTransactionId ?? "Chưa có provider transaction")</small></td>
+                    <td><strong>@item.WebhookCount sự kiện</strong><small>@(item.LatestWebhookResult ?? "Chưa nhận webhook")</small></td>
+                    <td><strong>@item.OrderStatus</strong><small>@(item.ActivatedSubscriptionId?.ToString() ?? "Chưa kích hoạt")</small></td>
+                    <td><strong>@item.CreatedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</strong><small>Hết QR: @(item.ExpiresAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "—")</small><small>Đã trả: @(item.PaidAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "—")</small></td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+    @if (Model.Result.TotalPages > 1)
+    {
+        <nav class="admin-pagination" aria-label="Phân trang đơn hàng">
+            @for (var pageNumber = 1; pageNumber <= Model.Result.TotalPages; pageNumber++)
+            {
+                <a class="@(pageNumber == Model.Result.Page ? "is-active" : null)" asp-page="/Admin/Purchases" asp-route-pageNumber="@pageNumber" asp-route-search="@Model.Search" asp-route-status="@Model.Status" asp-route-provider="@Model.Provider">@pageNumber</a>
+            }
+        </nav>
+    }
+</section>

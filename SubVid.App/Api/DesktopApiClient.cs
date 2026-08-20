@@ -108,6 +108,35 @@ public sealed class DesktopApiClient : IDisposable
             authenticated: true,
             cancellationToken);
 
+    public Task<IReadOnlyList<PlanCatalogItemResponse>> GetPlansAsync(
+        CancellationToken cancellationToken) =>
+        SendAsync<IReadOnlyList<PlanCatalogItemResponse>>(
+            HttpMethod.Get,
+            "api/v1/account/plans",
+            body: null,
+            authenticated: true,
+            cancellationToken);
+
+    public Task<PurchaseCheckoutResponse> CreatePurchaseCheckoutAsync(
+        CreatePurchaseCheckoutApiRequest request,
+        CancellationToken cancellationToken) =>
+        SendAsync<PurchaseCheckoutResponse>(
+            HttpMethod.Post,
+            "api/v1/purchases/checkout",
+            request,
+            authenticated: true,
+            cancellationToken);
+
+    public Task<PurchaseCheckoutResponse> GetPurchaseCheckoutStatusAsync(
+        string orderNumber,
+        CancellationToken cancellationToken) =>
+        SendAsync<PurchaseCheckoutResponse>(
+            HttpMethod.Get,
+            $"api/v1/purchases/{Uri.EscapeDataString(orderNumber)}/status",
+            body: null,
+            authenticated: true,
+            cancellationToken);
+
     public Task<UsageHistoryResponse> GetUsageHistoryAsync(
         int page,
         int pageSize,

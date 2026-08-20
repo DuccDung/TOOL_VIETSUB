@@ -14,7 +14,7 @@ public sealed class SubscriptionsModel(AdminSubscriptionService subscriptionServ
 {
     [BindProperty(SupportsGet = true)]
     [StringLength(320)]
-    public string Email { get; set; } = string.Empty;
+    public string? Email { get; set; }
 
     [BindProperty]
     public string PlanCode { get; set; } = string.Empty;
@@ -47,7 +47,7 @@ public sealed class SubscriptionsModel(AdminSubscriptionService subscriptionServ
             return Page();
         }
 
-        return RedirectToPage(new { email = Email.Trim() });
+        return RedirectToPage(new { email = Email!.Trim() });
     }
 
     public async Task<IActionResult> OnPostUpgradeAsync(CancellationToken cancellationToken)
@@ -81,12 +81,14 @@ public sealed class SubscriptionsModel(AdminSubscriptionService subscriptionServ
         {
             var updated = await subscriptionService.ChangePlanAsync(
                 actorAdminId,
-                Email,
+                Email!,
                 PlanCode,
                 NoExpiry ? null : DurationDays,
                 HttpContext.Connection.RemoteIpAddress?.ToString(),
                 cancellationToken);
-            SuccessMessage = $"Đã kích hoạt gói {updated.PlanDisplayName} cho {updated.Email}.";
+            SuccessMessage = updated.UnavailableCredentialProviders.Count == 0
+                ? $"Đã kích hoạt gói {updated.PlanDisplayName} cho {updated.Email}."
+                : $"Đã kích hoạt gói {updated.PlanDisplayName}, nhưng đang thiếu key: {string.Join(", ", updated.UnavailableCredentialProviders)}.";
             return RedirectToPage(new { email = updated.Email });
         }
         catch (UnauthorizedAccessException)

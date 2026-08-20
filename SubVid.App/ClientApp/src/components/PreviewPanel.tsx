@@ -992,6 +992,7 @@ export function PreviewPanel({
                   onPointerDown={revealPlayControl}
                 >
                 <video
+                  key={video.sha256 || video.playbackUrl}
                   ref={playerRef}
                   className="preview-video"
                   style={{

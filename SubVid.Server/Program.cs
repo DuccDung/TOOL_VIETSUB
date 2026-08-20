@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -16,6 +17,7 @@ using SubVid.Server.Cloud;
 using SubVid.Server.Contracts;
 using SubVid.Server.Data;
 using SubVid.Server.Models;
+using SubVid.Server.Purchases;
 using SubVid.Server.Registration;
 using SubVid.Server.Usage;
 
@@ -23,6 +25,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 ConfigureJwtSigningKey(builder);
 ConfigureRegistrationSecrets(builder);
+ConfigureSepaySecrets(builder);
 var jwtOptions = builder.Configuration
     .GetSection(JwtOptions.SectionName)
     .Get<JwtOptions>()
@@ -85,6 +88,20 @@ builder.Services.AddOptions<CloudAccessOptions>()
     .Bind(builder.Configuration.GetSection(CloudAccessOptions.SectionName))
     .Validate(options => options.ReservationLifetimeMinutes is >= 10 and <= 240,
         "Cloud reservation lifetime is invalid.")
+    .ValidateOnStart();
+builder.Services.AddOptions<SepayOptions>()
+    .Bind(builder.Configuration.GetSection(SepayOptions.SectionName))
+    .Validate(options => options.PaymentExpireMinutes is >= 5 and <= 120,
+        "SePay payment expiration must be between 5 and 120 minutes.")
+    .Validate(options => Uri.TryCreate(options.ApiBaseUrl, UriKind.Absolute, out _),
+        "SePay API base URL is invalid.")
+    .Validate(options => Uri.TryCreate(options.QrBaseUrl, UriKind.Absolute, out _),
+        "SePay QR base URL is invalid.")
+    .Validate(options => PaymentReferenceCodeGenerator.NormalizePrefix(options.TransferCodePrefix) == "SUBVID",
+        "SePay transfer code prefix must be SUBVID.")
+    .Validate(options => builder.Environment.IsDevelopment()
+        || (!string.IsNullOrWhiteSpace(options.WebhookApiKey) && options.HasValidReceiver()),
+        "Production requires SePay WebhookApiKey and complete receiver account configuration.")
     .ValidateOnStart();
 builder.Services
     .AddAuthentication(options =>
@@ -256,6 +273,16 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0,
                 AutoReplenishment = true,
             }));
+    options.AddPolicy("sepay-webhook", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 60,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true,
+            }));
     options.OnRejected = async (context, cancellationToken) =>
     {
         await context.HttpContext.Response.WriteAsJsonAsync(
@@ -274,10 +301,23 @@ builder.Services.AddScoped<EntitlementService>();
 builder.Services.AddScoped<AdminWebAuthService>();
 builder.Services.AddScoped<WebAccountAuthService>();
 builder.Services.AddScoped<AdminSubscriptionService>();
+builder.Services.AddScoped<AdminPurchaseTestService>();
+builder.Services.AddScoped<AdminPurchaseService>();
+builder.Services.AddScoped<PurchaseCheckoutService>();
+builder.Services.AddScoped<PurchaseSettlementService>();
+builder.Services.AddScoped<PaymentReferenceCodeGenerator>();
+builder.Services.AddScoped<SepayWebhookService>();
+builder.Services.AddHttpClient<SepayGatewayClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(8);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("SubVid-SePay/1.0");
+});
+builder.Services.AddScoped<AdminPlanService>();
 builder.Services.AddScoped<AdminUserService>();
 builder.Services.AddScoped<UsageService>();
 builder.Services.AddScoped<QuotaService>();
 builder.Services.AddScoped<CloudCredentialProtector>();
+builder.Services.AddScoped<CloudCredentialAllocationService>();
 builder.Services.AddScoped<CloudAccessService>();
 builder.Services.AddHttpClient<CloudCredentialProbeService>(client =>
 {
@@ -293,8 +333,71 @@ builder.Services.AddScoped<IRegistrationEmailSender, SmtpRegistrationEmailSender
 builder.Services.AddHostedService<RegistrationCleanupService>();
 builder.Services.AddHostedService<QuotaReservationCleanupService>();
 builder.Services.AddHostedService<CloudReservationCleanupService>();
+builder.Services.AddHostedService<CloudAllocationReconciliationService>();
 
 var app = builder.Build();
+
+if (args.Contains("--run-production-purchase-e2e", StringComparer.OrdinalIgnoreCase))
+{
+    if (!args.Contains("--confirm-production-data", StringComparer.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException(
+            "Add --confirm-production-data to acknowledge that the E2E flow writes persistent database rows.");
+    }
+
+    await using var scope = app.Services.CreateAsyncScope();
+    var database = scope.ServiceProvider.GetRequiredService<SubVidDbContext>();
+    var expectedDatabase = args
+        .FirstOrDefault(item => item.StartsWith("--database=", StringComparison.OrdinalIgnoreCase))?
+        .Split('=', 2)[1];
+    var actualDatabase = database.Database.GetDbConnection().Database;
+    if (string.IsNullOrWhiteSpace(expectedDatabase)
+        || !string.Equals(expectedDatabase, actualDatabase, StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException(
+            $"Pass --database={actualDatabase} to confirm the exact target database.");
+    }
+
+    var actorAdminId = await database.Users.AsNoTracking()
+        .Where(item => item.RoleCode == "ADMIN"
+            && item.StatusCode == "ACTIVE"
+            && item.DeletedAtUtc == null)
+        .OrderBy(item => item.CreatedAtUtc)
+        .Select(item => item.UserId)
+        .FirstOrDefaultAsync();
+    if (actorAdminId == Guid.Empty)
+    {
+        throw new InvalidOperationException("No active ADMIN account exists for the E2E audit trail.");
+    }
+
+    var service = scope.ServiceProvider.GetRequiredService<AdminPurchaseTestService>();
+    var pending = await service.CreatePendingProPurchaseAsync(
+        actorAdminId,
+        "CLI_E2E",
+        CancellationToken.None);
+    var paid = await service.ProcessSuccessfulFakeWebhookAsync(
+        actorAdminId,
+        pending.OrderId,
+        "CLI_E2E",
+        CancellationToken.None);
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        database = actualDatabase,
+        paid.RunId,
+        paid.OrderId,
+        paid.OrderNumber,
+        paid.UserId,
+        paid.Email,
+        paid.OrderStatus,
+        paid.ActivePlanCode,
+        paid.ActivatedSubscriptionId,
+        paid.FakeCredentialId,
+        paid.FakeCredentialStatus,
+        paid.FakeCredentialAllocationMode,
+        paid.WebhookCount,
+    }));
+    return;
+}
 
 app.UseExceptionHandler(errorApp => errorApp.Run(async context =>
 {
@@ -388,5 +491,32 @@ static void ConfigureRegistrationSecrets(WebApplicationBuilder builder)
     if (!string.IsNullOrWhiteSpace(smtpPassword))
     {
         builder.Configuration[$"{SmtpOptions.SectionName}:Pass"] = smtpPassword;
+    }
+}
+
+static void ConfigureSepaySecrets(WebApplicationBuilder builder)
+{
+    var mappings = new Dictionary<string, string>
+    {
+        ["SUBVID_SEPAY_API_TOKEN"] = "ApiToken",
+        ["SUBVID_SEPAY_WEBHOOK_API_KEY"] = "WebhookApiKey",
+        ["SUBVID_SEPAY_RECEIVER_BANK_SHORT_NAME"] = "ReceiverBankShortName",
+        ["SUBVID_SEPAY_RECEIVER_BANK_NAME"] = "ReceiverBankName",
+        ["SUBVID_SEPAY_RECEIVER_ACCOUNT_NUMBER"] = "ReceiverAccountNumber",
+        ["SUBVID_SEPAY_RECEIVER_ACCOUNT_NAME"] = "ReceiverAccountName",
+    };
+    foreach (var mapping in mappings)
+    {
+        var value = Environment.GetEnvironmentVariable(mapping.Key);
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            builder.Configuration[$"{SepayOptions.SectionName}:{mapping.Value}"] = value;
+        }
+    }
+
+    var bankAccountId = Environment.GetEnvironmentVariable("SUBVID_SEPAY_BANK_ACCOUNT_ID");
+    if (int.TryParse(bankAccountId, out var parsedBankAccountId) && parsedBankAccountId > 0)
+    {
+        builder.Configuration[$"{SepayOptions.SectionName}:BankAccountId"] = parsedBankAccountId.ToString();
     }
 }

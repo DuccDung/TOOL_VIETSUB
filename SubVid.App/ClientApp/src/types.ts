@@ -348,6 +348,52 @@ export type EntitlementsInfo = {
   evaluatedAtUtc: string
 }
 
+export type PlanCloudOptionInfo = {
+  providerCode: string
+  allocationMode: string
+  monthlyTokenLimit: number
+  allowedModels: string[]
+  allowSharedFallback: boolean
+}
+
+export type PlanCatalogItemInfo = {
+  code: string
+  displayName: string
+  description: string | null
+  priceAmount: number
+  currencyCode: string
+  billingPeriodDays: number
+  monthlyQuotaMinutes: number | null
+  maxVideoMinutes: number | null
+  features: string[]
+  cloudOptions: PlanCloudOptionInfo[]
+}
+
+export type PurchaseCheckoutInfo = {
+  orderId: string
+  orderNumber: string
+  orderStatus: string
+  paymentStatus: string
+  planCode: string
+  planName: string
+  transactionCode: string
+  bankName: string
+  bankShortName: string
+  accountNumber: string
+  accountName: string
+  transferContent: string
+  qrImageUrl: string
+  amount: number
+  currency: string
+  createdAtUtc: string
+  expiresAtUtc: string
+  paidAtUtc: string | null
+  isPaid: boolean
+  isExpired: boolean
+  message: string
+  reusedExistingOrder: boolean
+}
+
 export type UsageHistoryItem = {
   eventId: string
   operationCode: string

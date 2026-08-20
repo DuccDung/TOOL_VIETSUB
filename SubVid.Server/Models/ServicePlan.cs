@@ -33,6 +33,20 @@ public sealed class ServicePlan
     [Column("features_json")]
     public string FeaturesJson { get; set; } = "[]";
 
+    [Column("price_amount", TypeName = "decimal(18, 2)")]
+    public decimal PriceAmount { get; set; }
+
+    [Column("currency_code")]
+    [StringLength(3)]
+    [Unicode(false)]
+    public string CurrencyCode { get; set; } = "VND";
+
+    [Column("billing_period_days")]
+    public int BillingPeriodDays { get; set; } = 30;
+
+    [Column("is_public")]
+    public bool IsPublic { get; set; } = true;
+
     [Column("is_active")]
     public bool IsActive { get; set; }
 
@@ -48,4 +62,8 @@ public sealed class ServicePlan
     public byte[] RowVersion { get; set; } = null!;
 
     public ICollection<UserSubscription> UserSubscriptions { get; set; } = [];
+
+    public ICollection<ServicePlanCloudPolicy> CloudPolicies { get; set; } = [];
+
+    public ICollection<CloudKeyPoolPlan> CloudPoolLinks { get; set; } = [];
 }

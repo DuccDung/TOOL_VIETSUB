@@ -1,0 +1,179 @@
+@page
+@model SubVid.Server.Pages.Admin.CloudKeysModel
+@{
+    Layout = "_AdminLayout";
+    ViewData["Title"] = "Kho Key";
+    var hasMessage = !string.IsNullOrWhiteSpace(Model.SuccessMessage)
+        || !string.IsNullOrWhiteSpace(Model.ProbeMessage);
+    var isSuccess = !string.IsNullOrWhiteSpace(Model.SuccessMessage)
+        || Model.ProbeMessageKind == "success";
+    var message = !string.IsNullOrWhiteSpace(Model.SuccessMessage)
+        ? Model.SuccessMessage
+        : Model.ProbeMessage;
+}
+
+<section class="admin-light-heading admin-key-vault-heading">
+    <div>
+        <span>QUẢN LÝ CLOUD API</span>
+        <h1>Kho Key</h1>
+        <p>Quản lý toàn bộ API key dùng chung và key phân bổ riêng cho từng tài khoản.</p>
+    </div>
+    <div class="admin-key-vault-heading__actions">
+        <a class="admin-key-vault-back" asp-page="/Admin/Cloud">Quay lại Cloud API</a>
+        <a class="admin-key-vault-add" asp-page="/Admin/Cloud" asp-route-returnToVault="true" asp-fragment="cloud-key-editor"><svg class="admin-icon"><use href="#admin-icon-plus"></use></svg><span>Thêm API key</span></a>
+    </div>
+</section>
+
+<section class="admin-light-stats admin-key-vault-stats" aria-label="Trạng thái phân bổ API key">
+    <article><span class="is-blue"><svg class="admin-icon"><use href="#admin-icon-key"></use></svg></span><div><small>ĐANG HIỂN THỊ</small><strong>@Model.TotalCount</strong><em>key phù hợp bộ lọc</em></div></article>
+    <article><span class="is-amber"><svg class="admin-icon"><use href="#admin-icon-clock"></use></svg></span><div><small>CHƯA PHÂN BỔ</small><strong>@Model.UnassignedCount</strong><em>không được dùng cho request</em></div></article>
+    <article><span class="is-emerald"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg></span><div><small>DÙNG CHUNG</small><strong>@Model.SharedCount</strong><em>được cô lập theo pool/gói</em></div></article>
+    <article><span class="is-violet"><svg class="admin-icon"><use href="#admin-icon-info"></use></svg></span><div><small>KEY RIÊNG</small><strong>@Model.DedicatedCount</strong><em>gắn trực tiếp người dùng</em></div></article>
+</section>
+
+<form method="get" class="admin-key-vault-filters">
+    <label><span>Tìm key</span><input asp-for="Search" placeholder="Tên key, pool hoặc email" /></label>
+    <label><span>Phân bổ</span><select asp-for="Allocation"><option value="">Tất cả</option><option value="UNASSIGNED">Chưa phân bổ</option><option value="SHARED">Dùng chung</option><option value="DEDICATED">Key riêng</option></select></label>
+    <label><span>Provider</span><select asp-for="Provider"><option value="">Tất cả</option><option value="openai">OpenAI</option><option value="groq">Groq</option><option value="deepseek">DeepSeek</option><option value="gemini">Gemini</option></select></label>
+    <button type="submit">Lọc danh sách</button>
+    <a asp-page="/Admin/CloudKeys">Đặt lại</a>
+</form>
+
+@if (hasMessage)
+{
+    <dialog class="admin-notification-modal" data-notification-modal data-modal-auto="true" aria-labelledby="key-notification-title">
+        <div class="admin-notification-modal__surface @(isSuccess ? "is-success" : "is-error")">
+            <span class="admin-notification-modal__icon"><svg class="admin-icon"><use href="@(isSuccess ? "#admin-icon-check" : "#admin-icon-alert")"></use></svg></span>
+            <div class="admin-notification-modal__content">
+                <small>@(isSuccess ? "THÔNG BÁO HỆ THỐNG" : "CẦN KIỂM TRA")</small>
+                <h2 id="key-notification-title">@(isSuccess ? "Đã hoàn tất" : "Không thể hoàn tất thao tác")</h2>
+                <p>@message</p>
+            </div>
+            <button type="button" data-notification-modal-close aria-label="Đóng thông báo"><svg class="admin-icon"><use href="#admin-icon-close"></use></svg></button>
+            <div class="admin-notification-modal__actions"><button type="button" data-notification-modal-close>Đã hiểu</button></div>
+        </div>
+    </dialog>
+}
+
+<section class="admin-light-card admin-key-vault-card">
+    <header>
+        <div><span class="admin-card-icon is-blue"><svg class="admin-icon"><use href="#admin-icon-key"></use></svg></span><div><h2>Danh sách API key</h2><p>Giá trị bí mật được mã hóa và chỉ hiển thị phần ký tự cuối để nhận diện.</p></div></div>
+        <span class="admin-count-pill">@Model.TotalCount key</span>
+    </header>
+    <div class="admin-key-list">
+        @if (Model.Credentials.Count == 0)
+        {
+            <div class="admin-empty-state"><span><svg class="admin-icon"><use href="#admin-icon-key"></use></svg></span><strong>Kho key đang trống</strong><p>Thêm key đầu tiên để App có thể xin quyền dịch Cloud.</p></div>
+        }
+        @foreach (var credential in Model.Credentials)
+        {
+            <div class="admin-key-row">
+                <span class="provider-mark provider-@credential.ProviderCode">@credential.ProviderCode[..1].ToUpperInvariant()</span>
+                <div class="admin-key-name"><strong>@credential.DisplayName</strong><small>@credential.ProviderCode · ••••••@credential.KeySuffix</small></div>
+                <div class="admin-key-owner"><small>PHÂN BỔ</small><strong>@(credential.AllocationMode switch { "SHARED" => credential.PoolName ?? "Pool chưa xác định", "DEDICATED" => credential.AssignedEmail ?? "Người dùng chưa xác định", _ => "Chưa phân bổ" })</strong></div>
+                <div class="admin-key-owner"><small>HOẠT ĐỘNG GẦN NHẤT</small><strong>@(credential.LastIssuedAtUtc?.ToLocalTime().ToString("dd/MM HH:mm") ?? "Chưa cấp lần nào")</strong></div>
+                <div class="admin-key-owner"><small>ƯU TIÊN</small><strong>@credential.Priority</strong></div>
+                <span class="admin-status @(credential.Status == "ACTIVE" ? "is-active" : "is-disabled")">@(credential.Status switch { "ACTIVE" => "Đang bật", "ERROR" => "Có lỗi", _ => "Đã tắt" })</span>
+                <div class="admin-row-actions">
+                    <button type="button" data-allocation-open data-id="@credential.CredentialId" data-name="@credential.DisplayName" data-provider="@credential.ProviderCode" data-mode="@credential.AllocationMode" data-pool="@credential.PoolId" data-email="@credential.AssignedEmail">Phân bổ</button>
+                    <form method="post" asp-page-handler="Probe">
+                        <input name="id" type="hidden" value="@credential.CredentialId" />
+                        <button type="submit" title="Kiểm tra key đã lưu">Kiểm tra</button>
+                    </form>
+                    <a asp-page="/Admin/Cloud" asp-route-editCredentialId="@credential.CredentialId" asp-route-returnToVault="true" asp-fragment="cloud-key-editor">Sửa</a>
+                    <form method="post" asp-page-handler="Toggle">
+                        <input name="id" type="hidden" value="@credential.CredentialId" />
+                        <button type="submit" data-confirm="@(credential.Status == "ACTIVE" ? "Tắt key này? App sẽ không thể xin key cho request mới." : "Bật lại key này?")">@(credential.Status == "ACTIVE" ? "Tắt" : "Bật")</button>
+                    </form>
+                </div>
+            </div>
+        }
+    </div>
+    <footer class="admin-user-pagination admin-key-vault-pagination">
+        <span>Trang @Model.PageNumber / @Model.TotalPages</span>
+        <div>
+            <a class="@(Model.PageNumber <= 1 ? "is-disabled" : null)" asp-page="/Admin/CloudKeys" asp-route-search="@Model.Search" asp-route-allocation="@Model.Allocation" asp-route-provider="@Model.Provider" asp-route-pageNumber="@(Model.PageNumber - 1)">Trước</a>
+            <a class="@(Model.PageNumber >= Model.TotalPages ? "is-disabled" : null)" asp-page="/Admin/CloudKeys" asp-route-search="@Model.Search" asp-route-allocation="@Model.Allocation" asp-route-provider="@Model.Provider" asp-route-pageNumber="@(Model.PageNumber + 1)">Sau</a>
+        </div>
+    </footer>
+</section>
+
+<dialog class="admin-provider-modal admin-allocation-modal" data-allocation-modal aria-labelledby="allocation-modal-title">
+    <form method="post" asp-page-handler="Assign" class="admin-provider-modal__surface">
+        <input type="hidden" name="id" data-allocation-id />
+        <header><div><small>PHÂN BỔ API KEY</small><h2 id="allocation-modal-title" data-allocation-title>Phân bổ key</h2><p>Key chưa phân bổ sẽ không được sử dụng cho bất kỳ request nào.</p></div><button type="button" data-allocation-close aria-label="Đóng"><svg class="admin-icon"><use href="#admin-icon-close"></use></svg></button></header>
+        <div class="admin-allocation-form">
+            <label><span>Chế độ</span><select name="allocationMode" data-modal-allocation-mode><option value="UNASSIGNED">Chưa phân bổ</option><option value="SHARED">Dùng chung theo pool</option><option value="DEDICATED">Dành riêng người dùng</option></select></label>
+            <label data-modal-pool><span>Pool</span><select name="poolId" data-modal-pool-select><option value="">Chọn pool</option>@foreach (var pool in Model.Pools) { <option value="@pool.PoolId" data-provider="@pool.ProviderCode">@pool.DisplayName · @string.Join(", ", pool.PlanCodes)</option> }</select></label>
+            <label data-modal-user><span>Email người dùng</span><input name="assignedEmail" type="email" placeholder="user@example.com" data-modal-email /></label>
+        </div>
+        <div class="admin-notification-modal__actions"><button type="button" data-allocation-close>Hủy</button><button type="submit">Lưu phân bổ</button></div>
+    </form>
+</dialog>
+
+@section Scripts {
+    <script>
+        (() => {
+            const notificationModal = document.querySelector('[data-notification-modal]');
+            if (notificationModal instanceof HTMLDialogElement) {
+                document.querySelectorAll('[data-notification-modal-close]').forEach((button) => {
+                    button.addEventListener('click', () => notificationModal.close());
+                });
+                notificationModal.addEventListener('click', (event) => {
+                    if (event.target === notificationModal) notificationModal.close();
+                });
+                if (notificationModal.dataset.modalAuto === 'true') {
+                    requestAnimationFrame(() => notificationModal.showModal());
+                }
+            }
+
+            document.querySelectorAll('[data-confirm]').forEach((button) => {
+                button.addEventListener('click', (event) => {
+                    if (!window.confirm(button.getAttribute('data-confirm'))) event.preventDefault();
+                });
+            });
+
+            const allocationModal = document.querySelector('[data-allocation-modal]');
+            const allocationMode = allocationModal?.querySelector('[data-modal-allocation-mode]');
+            const poolField = allocationModal?.querySelector('[data-modal-pool]');
+            const poolSelect = allocationModal?.querySelector('[data-modal-pool-select]');
+            const userField = allocationModal?.querySelector('[data-modal-user]');
+            const emailInput = allocationModal?.querySelector('[data-modal-email]');
+            let selectedProvider = '';
+            const syncAllocation = () => {
+                const mode = allocationMode?.value || 'UNASSIGNED';
+                if (poolField) poolField.hidden = mode !== 'SHARED';
+                if (userField) userField.hidden = mode !== 'DEDICATED';
+                if (poolSelect) {
+                    poolSelect.disabled = mode !== 'SHARED';
+                    Array.from(poolSelect.options).forEach(option => {
+                        if (!option.value) return;
+                        const matches = option.dataset.provider === selectedProvider;
+                        option.hidden = !matches;
+                        option.disabled = !matches;
+                    });
+                }
+                if (emailInput) emailInput.disabled = mode !== 'DEDICATED';
+            };
+            allocationMode?.addEventListener('change', syncAllocation);
+            document.querySelectorAll('[data-allocation-open]').forEach(button => {
+                button.addEventListener('click', () => {
+                    selectedProvider = button.dataset.provider || '';
+                    allocationModal.querySelector('[data-allocation-id]').value = button.dataset.id || '';
+                    allocationModal.querySelector('[data-allocation-title]').textContent = `Phân bổ ${button.dataset.name || 'API key'}`;
+                    allocationMode.value = button.dataset.mode || 'UNASSIGNED';
+                    poolSelect.value = button.dataset.pool || '';
+                    emailInput.value = button.dataset.email || '';
+                    syncAllocation();
+                    allocationModal.showModal();
+                });
+            });
+            document.querySelectorAll('[data-allocation-close]').forEach(button => {
+                button.addEventListener('click', () => allocationModal?.close());
+            });
+            allocationModal?.addEventListener('click', event => {
+                if (event.target === allocationModal) allocationModal.close();
+            });
+        })();
+    </script>
+}

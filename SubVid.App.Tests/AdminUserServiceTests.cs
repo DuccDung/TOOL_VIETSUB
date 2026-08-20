@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using SubVid.Server.Auth;
+using SubVid.Server.Cloud;
 using SubVid.Server.Data;
 using SubVid.Server.Models;
 
@@ -53,6 +54,9 @@ public sealed class AdminUserServiceTests
                     KeyFingerprint = userId.ToString("N") + userId.ToString("N"),
                     KeySuffix = "test1234",
                     AssignedUserId = userId,
+                    AllocationMode = CloudCredentialAllocationModes.Dedicated,
+                    AllocationSourceCode = CloudCredentialAllocationSources.Admin,
+                    AllocatedAtUtc = nowUtc,
                     StatusCode = "ACTIVE",
                     Priority = 10,
                     CreatedAtUtc = nowUtc,

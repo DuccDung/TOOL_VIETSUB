@@ -17,9 +17,23 @@ public partial class SubVidDbContext
 
     public DbSet<UserSubscription> UserSubscriptions => Set<UserSubscription>();
 
+    public DbSet<PurchaseOrder> PurchaseOrders => Set<PurchaseOrder>();
+
+    public DbSet<PaymentWebhookEvent> PaymentWebhookEvents => Set<PaymentWebhookEvent>();
+
+    public DbSet<PurchasePaymentTransaction> PurchasePaymentTransactions => Set<PurchasePaymentTransaction>();
+
     public DbSet<UsageReservation> UsageReservations => Set<UsageReservation>();
 
     public DbSet<CloudProviderCredential> CloudProviderCredentials => Set<CloudProviderCredential>();
+
+    public DbSet<CloudKeyPool> CloudKeyPools => Set<CloudKeyPool>();
+
+    public DbSet<CloudKeyPoolPlan> CloudKeyPoolPlans => Set<CloudKeyPoolPlan>();
+
+    public DbSet<ServicePlanCloudPolicy> ServicePlanCloudPolicies => Set<ServicePlanCloudPolicy>();
+
+    public DbSet<CloudCredentialAllocationHistory> CloudCredentialAllocationHistory => Set<CloudCredentialAllocationHistory>();
 
     public DbSet<CloudQuotaLimit> CloudQuotaLimits => Set<CloudQuotaLimit>();
 
@@ -36,6 +50,14 @@ public partial class SubVidDbContext
                 .HasDefaultValueSql("(newsequentialid())", "DF_service_plans_id");
             entity.Property(item => item.IsActive)
                 .HasDefaultValue(true, "DF_service_plans_is_active");
+            entity.Property(item => item.PriceAmount)
+                .HasDefaultValue(0m, "DF_service_plans_price");
+            entity.Property(item => item.CurrencyCode)
+                .HasDefaultValue("VND", "DF_service_plans_currency");
+            entity.Property(item => item.BillingPeriodDays)
+                .HasDefaultValue(30, "DF_service_plans_billing_days");
+            entity.Property(item => item.IsPublic)
+                .HasDefaultValue(true, "DF_service_plans_public");
             entity.Property(item => item.CreatedAtUtc)
                 .HasDefaultValueSql("(sysutcdatetime())", "DF_service_plans_created_at");
             entity.Property(item => item.UpdatedAtUtc)
@@ -98,6 +120,8 @@ public partial class SubVidDbContext
                 .HasDefaultValue("ACTIVE", "DF_cloud_credentials_status");
             entity.Property(item => item.Priority)
                 .HasDefaultValue(100, "DF_cloud_credentials_priority");
+            entity.Property(item => item.AllocationMode)
+                .HasDefaultValue("UNASSIGNED", "DF_cloud_credentials_allocation_mode");
             entity.Property(item => item.CreatedAtUtc)
                 .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_credentials_created");
             entity.Property(item => item.UpdatedAtUtc)
@@ -108,6 +132,183 @@ public partial class SubVidDbContext
                 .HasForeignKey(item => item.AssignedUserId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("FK_cloud_credentials_assigned_user");
+            entity.HasOne(item => item.Pool)
+                .WithMany(pool => pool.Credentials)
+                .HasForeignKey(item => item.PoolId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_cloud_credentials_pool");
+            entity.HasOne(item => item.AllocationPlan)
+                .WithMany()
+                .HasForeignKey(item => item.AllocationPlanId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_cloud_credentials_allocation_plan");
+        });
+
+        modelBuilder.Entity<PurchaseOrder>(entity =>
+        {
+            entity.HasIndex(item => item.ExternalPaymentId, "UQ_purchase_orders_external_payment")
+                .IsUnique()
+                .HasFilter("([external_payment_id] IS NOT NULL)");
+            entity.HasIndex(
+                item => new { item.UserId, item.CreatedAtUtc },
+                "IX_purchase_orders_user_timeline").IsDescending(false, true);
+            entity.HasIndex(
+                item => new { item.StatusCode, item.CreatedAtUtc },
+                "IX_purchase_orders_status").IsDescending(false, true);
+            entity.Property(item => item.OrderId)
+                .HasDefaultValueSql("(newsequentialid())", "DF_purchase_orders_id");
+            entity.Property(item => item.StatusCode)
+                .HasDefaultValue("PENDING", "DF_purchase_orders_status");
+            entity.Property(item => item.CreatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_purchase_orders_created");
+            entity.Property(item => item.UpdatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_purchase_orders_updated");
+            entity.Property(item => item.RowVersion).IsRowVersion().IsConcurrencyToken();
+            entity.HasOne(item => item.User)
+                .WithMany()
+                .HasForeignKey(item => item.UserId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_purchase_orders_user");
+            entity.HasOne(item => item.Plan)
+                .WithMany()
+                .HasForeignKey(item => item.PlanId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_purchase_orders_plan");
+            entity.HasOne(item => item.CreatedByAdmin)
+                .WithMany()
+                .HasForeignKey(item => item.CreatedByAdminId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_purchase_orders_admin");
+            entity.HasOne(item => item.FakeCredential)
+                .WithMany()
+                .HasForeignKey(item => item.FakeCredentialId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_purchase_orders_fake_credential");
+            entity.HasOne(item => item.ActivatedSubscription)
+                .WithMany()
+                .HasForeignKey(item => item.ActivatedSubscriptionId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_purchase_orders_subscription");
+        });
+
+        modelBuilder.Entity<PaymentWebhookEvent>(entity =>
+        {
+            entity.Property(item => item.EventId)
+                .HasDefaultValueSql("(newsequentialid())", "DF_payment_webhook_events_id");
+            entity.Property(item => item.ReceivedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_payment_webhook_events_received");
+            entity.HasOne(item => item.Order)
+                .WithMany(order => order.PaymentEvents)
+                .HasForeignKey(item => item.OrderId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_payment_webhook_events_order");
+            entity.HasOne(item => item.PaymentTransaction)
+                .WithMany(payment => payment.WebhookEvents)
+                .HasForeignKey(item => item.PaymentTransactionId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_payment_webhook_events_payment_transaction");
+        });
+
+        modelBuilder.Entity<PurchasePaymentTransaction>(entity =>
+        {
+            entity.HasIndex(item => item.ProviderTransactionId, "UQ_purchase_payment_transactions_provider_tx")
+                .IsUnique()
+                .HasFilter("([provider_transaction_id] IS NOT NULL)");
+            entity.Property(item => item.PaymentTransactionId)
+                .HasDefaultValueSql("(newsequentialid())", "DF_purchase_payment_transactions_id");
+            entity.Property(item => item.ProviderCode)
+                .HasDefaultValue("SEPAY", "DF_purchase_payment_transactions_provider");
+            entity.Property(item => item.StatusCode)
+                .HasDefaultValue(PurchasePaymentStatuses.Pending, "DF_purchase_payment_transactions_status");
+            entity.Property(item => item.CreatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_purchase_payment_transactions_created");
+            entity.Property(item => item.UpdatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_purchase_payment_transactions_updated");
+            entity.Property(item => item.RowVersion).IsRowVersion().IsConcurrencyToken();
+            entity.HasOne(item => item.Order)
+                .WithMany(order => order.PaymentTransactions)
+                .HasForeignKey(item => item.OrderId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_purchase_payment_transactions_order");
+        });
+
+        modelBuilder.Entity<CloudKeyPool>(entity =>
+        {
+            entity.Property(item => item.PoolId)
+                .HasDefaultValueSql("(newsequentialid())", "DF_cloud_key_pools_id");
+            entity.Property(item => item.StatusCode)
+                .HasDefaultValue("ACTIVE", "DF_cloud_key_pools_status");
+            entity.Property(item => item.CreatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_key_pools_created");
+            entity.Property(item => item.UpdatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_key_pools_updated");
+            entity.Property(item => item.RowVersion).IsRowVersion().IsConcurrencyToken();
+        });
+
+        modelBuilder.Entity<CloudKeyPoolPlan>(entity =>
+        {
+            entity.HasKey(item => new { item.PoolId, item.PlanId });
+            entity.Property(item => item.CreatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_key_pool_plans_created");
+            entity.HasOne(item => item.Pool)
+                .WithMany(pool => pool.PlanLinks)
+                .HasForeignKey(item => item.PoolId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("FK_cloud_key_pool_plans_pool");
+            entity.HasOne(item => item.Plan)
+                .WithMany(plan => plan.CloudPoolLinks)
+                .HasForeignKey(item => item.PlanId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("FK_cloud_key_pool_plans_plan");
+        });
+
+        modelBuilder.Entity<ServicePlanCloudPolicy>(entity =>
+        {
+            entity.HasKey(item => new { item.PlanId, item.ProviderCode });
+            entity.Property(item => item.AllocationMode)
+                .HasDefaultValue("SHARED", "DF_service_plan_cloud_policy_mode");
+            entity.Property(item => item.AllowedModelsJson)
+                .HasDefaultValue("[\"*\"]", "DF_service_plan_cloud_policy_models");
+            entity.Property(item => item.IsActive)
+                .HasDefaultValue(true, "DF_service_plan_cloud_policy_active");
+            entity.Property(item => item.CreatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_service_plan_cloud_policy_created");
+            entity.Property(item => item.UpdatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_service_plan_cloud_policy_updated");
+            entity.Property(item => item.RowVersion).IsRowVersion().IsConcurrencyToken();
+            entity.HasOne(item => item.Plan)
+                .WithMany(plan => plan.CloudPolicies)
+                .HasForeignKey(item => item.PlanId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("FK_service_plan_cloud_policy_plan");
+        });
+
+        modelBuilder.Entity<CloudCredentialAllocationHistory>(entity =>
+        {
+            entity.Property(item => item.AllocationHistoryId)
+                .HasDefaultValueSql("(newsequentialid())", "DF_cloud_allocation_history_id");
+            entity.Property(item => item.CreatedAtUtc)
+                .HasDefaultValueSql("(sysutcdatetime())", "DF_cloud_allocation_history_created");
+            entity.HasOne(item => item.Credential)
+                .WithMany(credential => credential.AllocationHistory)
+                .HasForeignKey(item => item.CredentialId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_cloud_allocation_history_credential");
+            entity.HasOne(item => item.Pool)
+                .WithMany()
+                .HasForeignKey(item => item.PoolId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_cloud_allocation_history_pool");
+            entity.HasOne(item => item.AssignedUser)
+                .WithMany()
+                .HasForeignKey(item => item.AssignedUserId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_cloud_allocation_history_user");
+            entity.HasOne(item => item.Plan)
+                .WithMany()
+                .HasForeignKey(item => item.PlanId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("FK_cloud_allocation_history_plan");
         });
 
         modelBuilder.Entity<CloudQuotaLimit>(entity =>

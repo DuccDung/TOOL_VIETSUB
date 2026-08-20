@@ -20,6 +20,9 @@ public sealed class CloudModel(AdminCloudService cloudService) : PageModel
     [BindProperty(SupportsGet = true)]
     public Guid? EditCredentialId { get; set; }
 
+    [BindProperty(SupportsGet = true)]
+    public bool ReturnToVault { get; set; }
+
     [BindProperty]
     public Guid? CredentialId { get; set; }
 
@@ -35,13 +38,23 @@ public sealed class CloudModel(AdminCloudService cloudService) : PageModel
     [BindProperty, StringLength(320, ErrorMessage = "Email phân bổ không được vượt quá 320 ký tự.")]
     public string? AssignedEmail { get; set; }
 
+    [BindProperty]
+    public string AllocationMode { get; set; } = CloudCredentialAllocationModes.Unassigned;
+
+    [BindProperty]
+    public Guid? PoolId { get; set; }
+
     [BindProperty, Range(0, 10000, ErrorMessage = "Độ ưu tiên phải từ 0 đến 10.000.")]
     public int Priority { get; set; } = 100;
 
+    [BindProperty(SupportsGet = true), Range(1, int.MaxValue)]
+    public int LedgerPage { get; set; } = 1;
+
     public AdminCloudOverview Overview { get; private set; } = null!;
     public IReadOnlyList<AdminCloudCredential> Credentials { get; private set; } = [];
+    public IReadOnlyList<AdminCloudKeyPool> Pools { get; private set; } = [];
     public AdminCloudAccount? Account { get; private set; }
-    public IReadOnlyList<AdminCloudLedgerItem> RecentLedger { get; private set; } = [];
+    public AdminCloudLedgerPage Ledger { get; private set; } = null!;
 
     [TempData]
     public string? SuccessMessage { get; set; }
@@ -105,11 +118,45 @@ public sealed class CloudModel(AdminCloudService cloudService) : PageModel
         }
     }
 
+    public async Task<IActionResult> OnPostResetQuotaAsync(CancellationToken cancellationToken)
+    {
+        if (!IsValidEmail(Email))
+        {
+            ModelState.AddModelError(nameof(Email), "Email người dùng không hợp lệ.");
+            await LoadAsync(cancellationToken, loadEditCredential: false);
+            return Page();
+        }
+        if (!TryGetActorId(out var actorId))
+        {
+            return Challenge(WebAdminAuthenticationDefaults.Scheme);
+        }
+        try
+        {
+            var account = await cloudService.ResetQuotaToPlanAsync(
+                actorId,
+                Email!,
+                HttpContext.Connection.RemoteIpAddress?.ToString(),
+                cancellationToken);
+            SuccessMessage = $"Đã đưa hạn mức Cloud của {account.Email} về đúng cấu hình gói.";
+            return RedirectToPage(new { email = account.Email });
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Challenge(WebAdminAuthenticationDefaults.Scheme);
+        }
+        catch (InvalidOperationException exception)
+        {
+            ModelState.AddModelError(string.Empty, exception.Message);
+            await LoadAsync(cancellationToken, loadEditCredential: false);
+            return Page();
+        }
+    }
+
     public async Task<IActionResult> OnPostSaveCredentialAsync(CancellationToken cancellationToken)
     {
         KeepOnlyModelState(
             nameof(CredentialId), nameof(ProviderCode), nameof(CredentialName),
-            nameof(ApiKey), nameof(AssignedEmail), nameof(Priority));
+            nameof(ApiKey), nameof(AllocationMode), nameof(PoolId), nameof(AssignedEmail), nameof(Priority));
         if (string.IsNullOrWhiteSpace(CredentialName))
         {
             ModelState.AddModelError(nameof(CredentialName), "Hãy nhập tên nhận diện cho API key.");
@@ -118,7 +165,16 @@ public sealed class CloudModel(AdminCloudService cloudService) : PageModel
         {
             ModelState.AddModelError(nameof(ApiKey), "Hãy nhập API key mới.");
         }
-        if (!string.IsNullOrWhiteSpace(AssignedEmail) && !IsValidEmail(AssignedEmail))
+        if (!CloudCredentialAllocationModes.IsValid(AllocationMode))
+        {
+            ModelState.AddModelError(nameof(AllocationMode), "Chế độ phân bổ API key không hợp lệ.");
+        }
+        if (AllocationMode == CloudCredentialAllocationModes.Shared && PoolId is null)
+        {
+            ModelState.AddModelError(nameof(PoolId), "Hãy chọn pool cho key dùng chung.");
+        }
+        if (AllocationMode == CloudCredentialAllocationModes.Dedicated
+            && !IsValidEmail(AssignedEmail))
         {
             ModelState.AddModelError(nameof(AssignedEmail), "Email phân bổ key không hợp lệ.");
         }
@@ -136,10 +192,13 @@ public sealed class CloudModel(AdminCloudService cloudService) : PageModel
         try
         {
             var credential = await cloudService.SaveCredentialAsync(
-                actorId, CredentialId, ProviderCode, CredentialName!, ApiKey, AssignedEmail, Priority,
+                actorId, CredentialId, ProviderCode, CredentialName!, ApiKey,
+                AllocationMode, PoolId, AssignedEmail, Priority,
                 HttpContext.Connection.RemoteIpAddress?.ToString(), cancellationToken);
             SuccessMessage = $"Đã lưu key {credential.DisplayName} cho {credential.ProviderCode}.";
-            return RedirectToPage(new { email = Email });
+            return ReturnToVault
+                ? RedirectToPage("/Admin/CloudKeys")
+                : RedirectToPage(new { email = Email });
         }
         catch (UnauthorizedAccessException)
         {
@@ -281,7 +340,8 @@ public sealed class CloudModel(AdminCloudService cloudService) : PageModel
     {
         Overview = await cloudService.GetOverviewAsync(cancellationToken);
         Credentials = await cloudService.GetCredentialsAsync(cancellationToken);
-        RecentLedger = await cloudService.GetRecentLedgerAsync(30, cancellationToken);
+        Pools = await cloudService.GetPoolsAsync(cancellationToken);
+        Ledger = await cloudService.GetLedgerPageAsync(LedgerPage, 15, cancellationToken);
         if (!string.IsNullOrWhiteSpace(Email) && IsValidEmail(Email))
         {
             Account = await cloudService.FindAccountAsync(Email, cancellationToken);
@@ -292,10 +352,6 @@ public sealed class CloudModel(AdminCloudService cloudService) : PageModel
             else
             {
                 MonthlyLlmTokens = Account.MonthlyLimit;
-                if (loadEditCredential && EditCredentialId is null && string.IsNullOrWhiteSpace(AssignedEmail))
-                {
-                    AssignedEmail = Account.Email;
-                }
             }
         }
 
@@ -308,6 +364,8 @@ public sealed class CloudModel(AdminCloudService cloudService) : PageModel
                 ProviderCode = credential.ProviderCode;
                 CredentialName = credential.DisplayName;
                 AssignedEmail = credential.AssignedEmail;
+                AllocationMode = credential.AllocationMode;
+                PoolId = credential.PoolId;
                 Priority = credential.Priority;
             }
         }

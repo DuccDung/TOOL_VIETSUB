@@ -44,6 +44,7 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _sessionTimer;
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly UiModalOperationDispatcher _modalDispatcher;
+    private readonly SemaphoreSlim _purchaseStatusGate = new(1, 1);
     private bool _authInitialized;
     private bool _shutdownStarted;
     private bool _shutdownCompleted;
@@ -104,6 +105,7 @@ public sealed class MainForm : Form
             progress,
         });
         Text = "SubVid Studio";
+        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1180, 720);
         Size = new Size(1480, 860);
@@ -183,7 +185,7 @@ public sealed class MainForm : Form
             webRoot,
             CoreWebView2HostResourceAccessKind.DenyCors);
         core.AddWebResourceRequestedFilter(
-            $"https://{MediaHostName}/video",
+            $"https://{MediaHostName}/video*",
             CoreWebView2WebResourceContext.All);
         core.AddWebResourceRequestedFilter(
             $"https://{MediaHostName}/voice*",
@@ -768,6 +770,15 @@ public sealed class MainForm : Form
                     PostAuthBusy();
                     PostAuthState(await _authSessionManager.RefreshAccountAsync(_lifetimeCancellation.Token));
                     break;
+                case "purchase:plans:load":
+                    await SendPurchasePlansAsync();
+                    break;
+                case "purchase:checkout:create":
+                    await CreatePurchaseCheckoutAsync(document.RootElement);
+                    break;
+                case "purchase:checkout:status":
+                    await RefreshPurchaseCheckoutAsync(document.RootElement);
+                    break;
             }
         }
         catch (JsonException)
@@ -990,6 +1001,104 @@ public sealed class MainForm : Form
     private void PostRegistrationError(string code, string message)
     {
         PostMessage(new { type = "auth:register:error", code, message });
+    }
+
+    private async Task SendPurchasePlansAsync()
+    {
+        try
+        {
+            var plans = await _authSessionManager.ExecuteAuthenticatedAsync(
+                (client, cancellationToken) => client.GetPlansAsync(cancellationToken),
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "purchase:plans", plans });
+        }
+        catch (ApiClientException exception)
+        {
+            HandlePurchaseApiError(exception, "plans");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        {
+            PostPurchaseError("SERVER_UNAVAILABLE", "Không thể tải danh sách gói lúc này.", "plans");
+        }
+    }
+
+    private async Task CreatePurchaseCheckoutAsync(JsonElement message)
+    {
+        if (!TryGetRequiredString(message, "planCode", out var planCode)
+            || !TryGetRequiredString(message, "idempotencyKey", out var idempotencyKey)
+            || !message.TryGetProperty("expectedPriceAmount", out var priceElement)
+            || !priceElement.TryGetDecimal(out var expectedPriceAmount)
+            || expectedPriceAmount <= 0)
+        {
+            PostPurchaseError("PURCHASE_REQUEST_INVALID", "Thông tin mua gói không hợp lệ.", "checkout");
+            return;
+        }
+
+        PostMessage(new { type = "purchase:checkout:busy" });
+        try
+        {
+            var checkout = await _authSessionManager.ExecuteAuthenticatedAsync(
+                (client, cancellationToken) => client.CreatePurchaseCheckoutAsync(
+                    new CreatePurchaseCheckoutApiRequest(planCode, idempotencyKey, expectedPriceAmount),
+                    cancellationToken),
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "purchase:checkout", checkout });
+        }
+        catch (ApiClientException exception)
+        {
+            HandlePurchaseApiError(exception, "checkout");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        {
+            PostPurchaseError("SERVER_UNAVAILABLE", "Không thể tạo mã thanh toán lúc này.", "checkout");
+        }
+    }
+
+    private async Task RefreshPurchaseCheckoutAsync(JsonElement message)
+    {
+        if (!TryGetRequiredString(message, "orderNumber", out var orderNumber))
+        {
+            PostPurchaseError("PURCHASE_REQUEST_INVALID", "Mã đơn thanh toán không hợp lệ.", "status");
+            return;
+        }
+        if (!await _purchaseStatusGate.WaitAsync(0, _lifetimeCancellation.Token))
+        {
+            return;
+        }
+
+        try
+        {
+            var checkout = await _authSessionManager.ExecuteAuthenticatedAsync(
+                (client, cancellationToken) => client.GetPurchaseCheckoutStatusAsync(orderNumber, cancellationToken),
+                _lifetimeCancellation.Token);
+            PostMessage(new { type = "purchase:status", checkout });
+        }
+        catch (ApiClientException exception)
+        {
+            HandlePurchaseApiError(exception, "status");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+        {
+            PostPurchaseError("SERVER_UNAVAILABLE", "Không thể kiểm tra trạng thái thanh toán.", "status");
+        }
+        finally
+        {
+            _purchaseStatusGate.Release();
+        }
+    }
+
+    private void HandlePurchaseApiError(ApiClientException exception, string operation)
+    {
+        if (exception.IsAuthenticationFailure)
+        {
+            PostAuthState(_authSessionManager.CurrentState);
+        }
+        PostPurchaseError(exception.Code, exception.Message, operation);
+    }
+
+    private void PostPurchaseError(string code, string message, string operation)
+    {
+        PostMessage(new { type = "purchase:error", code, message, operation });
     }
 
     private void ToggleMaximize()
@@ -2474,6 +2583,7 @@ public sealed class MainForm : Form
         _lifetimeCancellation.Cancel();
         _lifetimeCancellation.Dispose();
         _authSessionManager.Dispose();
+        _purchaseStatusGate.Dispose();
         _ffmpegProvisioner.Dispose();
     }
 

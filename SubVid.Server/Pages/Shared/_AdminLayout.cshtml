@@ -52,11 +52,20 @@
                 <a asp-page="/Admin/Users/Index" class="@(Context.Request.Path.StartsWithSegments("/Admin/Users") ? "is-active" : null)">
                     <span class="admin-nav-icon"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg></span><span><strong>Người dùng</strong><small>Tài khoản, gói và mức dùng</small></span>
                 </a>
-                <a asp-page="/Admin/Cloud" class="@(Context.Request.Path.StartsWithSegments("/Admin/Cloud") ? "is-active" : null)">
+                <a asp-page="/Admin/Cloud" class="@(Context.Request.Path.StartsWithSegments("/Admin/Cloud") || Context.Request.Path.StartsWithSegments("/Admin/CloudKeys") ? "is-active" : null)">
                     <span class="admin-nav-icon"><svg class="admin-icon"><use href="#admin-icon-cloud"></use></svg></span><span><strong>Cloud API</strong><small>Key, token và ledger</small></span>
                 </a>
                 <a asp-page="/Admin/Subscriptions" class="@(Context.Request.Path.StartsWithSegments("/Admin/Subscriptions") ? "is-active" : null)">
                     <span class="admin-nav-icon"><svg class="admin-icon"><use href="#admin-icon-plans"></use></svg></span><span><strong>Gói thuê</strong><small>Tài khoản và thời hạn</small></span>
+                </a>
+                <a asp-page="/Admin/Purchases" class="@(Context.Request.Path.StartsWithSegments("/Admin/Purchases") ? "is-active" : null)">
+                    <span class="admin-nav-icon"><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg></span><span><strong>Thanh toán</strong><small>Đơn, SePay và webhook</small></span>
+                </a>
+                <a asp-page="/Admin/PurchaseTests" class="@(Context.Request.Path.StartsWithSegments("/Admin/PurchaseTests") ? "is-active" : null)">
+                    <span class="admin-nav-icon"><svg class="admin-icon"><use href="#admin-icon-activity"></use></svg></span><span><strong>Test mua gói</strong><small>Flow E2E và thanh toán giả</small></span>
+                </a>
+                <a asp-page="/Admin/Plans" class="@(Context.Request.Path.StartsWithSegments("/Admin/Plans") ? "is-active" : null)">
+                    <span class="admin-nav-icon"><svg class="admin-icon"><use href="#admin-icon-plans"></use></svg></span><span><strong>Cấu hình gói</strong><small>Quyền lợi, model và key</small></span>
                 </a>
             </nav>
             <div class="admin-light-sidebar-note">

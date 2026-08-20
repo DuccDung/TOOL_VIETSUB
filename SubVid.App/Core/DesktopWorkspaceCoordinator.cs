@@ -1797,7 +1797,7 @@ public sealed class DesktopWorkspaceCoordinator : IAsyncDisposable
                 source.Metadata.HasAudio,
                 source.ImportMode,
                 source.Sha256,
-                PlaybackUrl);
+                $"{PlaybackUrl}?v={Uri.EscapeDataString(source.Sha256)}");
         }
 
         var subtitleCues = new List<DesktopSubtitleCue>();

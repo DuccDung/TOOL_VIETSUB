@@ -75,6 +75,8 @@
                         <strong>@plan.DisplayName</strong>
                         <small>@plan.Description</small>
                         <em>@(plan.MonthlyQuotaMinutes?.ToString("0.##") ?? "∞") phút/tháng · video @(plan.MaxVideoMinutes?.ToString("0.##") ?? "∞") phút</em>
+                        <em>@(plan.MonthlyTokenLimit?.ToString("N0") ?? "0") token · @(plan.UsesDedicatedKeys ? "key riêng" : "pool dùng chung")</em>
+                        <em>@plan.PriceAmount.ToString("N0") @plan.CurrencyCode / @plan.BillingPeriodDays ngày</em>
                     </label>
                 }
             </div>

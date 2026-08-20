@@ -205,6 +205,28 @@ public sealed class AdminUserService(SubVidDbContext database)
         var currentPlan = effectiveSubscription ?? freePlan
             ?? throw new InvalidOperationException("Gói FREE chưa được khởi tạo trong database.");
 
+        var purchaseOrders = await database.PurchaseOrders.AsNoTracking()
+            .Where(item => item.UserId == userId)
+            .OrderByDescending(item => item.CreatedAtUtc)
+            .Select(item => new AdminUserPurchaseItem(
+                item.OrderId,
+                item.OrderNumber,
+                item.StatusCode,
+                item.PlanCodeSnapshot,
+                item.PlanNameSnapshot,
+                item.PriceAmount,
+                item.CurrencyCode,
+                item.BillingPeriodDays,
+                item.PaymentProviderCode,
+                item.ExternalPaymentId,
+                item.SourceCode,
+                item.TestRunId,
+                item.ActivatedSubscriptionId,
+                item.CreatedAtUtc,
+                item.PaidAtUtc))
+            .Take(50)
+            .ToArrayAsync(cancellationToken);
+
         var usedMinutes = await database.UsageRecords.AsNoTracking()
             .Where(item => item.UserId == userId
                 && item.OccurredAtUtc >= periodStartUtc
@@ -230,10 +252,16 @@ public sealed class AdminUserService(SubVidDbContext database)
                 : Math.Max(0, effectiveMinuteLimit.Value - usedMinutes - heldMinutes),
             currentPlan.MaxVideoMinutes);
 
-        var cloudLimit = await database.CloudQuotaLimits.AsNoTracking()
+        var customCloudLimit = await database.CloudQuotaLimits.AsNoTracking()
             .Where(item => item.UserId == userId && item.UnitCode == "LLM_TOKEN")
             .Select(item => (decimal?)item.MonthlyLimit)
-            .SingleOrDefaultAsync(cancellationToken) ?? 0;
+            .SingleOrDefaultAsync(cancellationToken);
+        var planCloudLimit = await database.ServicePlans.AsNoTracking()
+            .Where(item => item.PlanCode == currentPlan.PlanCode && item.IsActive)
+            .SelectMany(item => item.CloudPolicies)
+            .Where(item => item.IsActive)
+            .MaxAsync(item => (decimal?)item.MonthlyTokenLimit, cancellationToken) ?? 0;
+        var cloudLimit = customCloudLimit ?? planCloudLimit;
         var cloudTotals = await database.CloudUsageLedger.AsNoTracking()
             .Where(item => item.UserId == userId
                 && item.UnitCode == "LLM_TOKEN"
@@ -357,6 +385,7 @@ public sealed class AdminUserService(SubVidDbContext database)
             currentPlan with { FeaturesJson = "[]" },
             ParseFeatures(currentPlan.FeaturesJson),
             subscriptions,
+            purchaseOrders,
             minuteUsage,
             cloudUsage,
             minuteReservations,
@@ -503,6 +532,9 @@ public sealed class AdminUserService(SubVidDbContext database)
                 item.Plan.PlanCode,
                 item.Plan.DisplayName,
                 item.Plan.MonthlyQuotaMinutes,
+                CloudTokenLimit = item.Plan.CloudPolicies
+                    .Where(policy => policy.IsActive)
+                    .Max(policy => (decimal?)policy.MonthlyTokenLimit) ?? 0,
             })
             .ToArrayAsync(cancellationToken);
         var currentSubscriptions = subscriptions
@@ -510,7 +542,15 @@ public sealed class AdminUserService(SubVidDbContext database)
             .ToDictionary(group => group.Key, group => group.First());
         var freePlan = await database.ServicePlans.AsNoTracking()
             .Where(item => item.PlanCode == "FREE" && item.IsActive)
-            .Select(item => new { item.PlanCode, item.DisplayName, item.MonthlyQuotaMinutes })
+            .Select(item => new
+            {
+                item.PlanCode,
+                item.DisplayName,
+                item.MonthlyQuotaMinutes,
+                CloudTokenLimit = item.CloudPolicies
+                    .Where(policy => policy.IsActive)
+                    .Max(policy => (decimal?)policy.MonthlyTokenLimit) ?? 0,
+            })
             .SingleOrDefaultAsync(cancellationToken)
             ?? throw new InvalidOperationException("Gói FREE chưa được khởi tạo trong database.");
         var usedMinutes = await database.UsageRecords.AsNoTracking()
@@ -564,7 +604,9 @@ public sealed class AdminUserService(SubVidDbContext database)
             var effectiveMinuteLimit = user.CustomMonthlyQuotaMinutes ?? planQuota;
             var minutesUsed = usedMinutes.GetValueOrDefault(user.UserId);
             var minutesHeld = heldMinutes.GetValueOrDefault(user.UserId);
-            var tokenLimit = cloudLimits.GetValueOrDefault(user.UserId);
+            var tokenLimit = cloudLimits.TryGetValue(user.UserId, out var customTokenLimit)
+                ? customTokenLimit
+                : subscription?.CloudTokenLimit ?? freePlan.CloudTokenLimit;
             var tokensUsed = usedTokens.GetValueOrDefault(user.UserId);
             var tokensHeld = heldTokens.GetValueOrDefault(user.UserId);
             return new AdminUserListItem(
@@ -717,6 +759,23 @@ public sealed record AdminUserSubscriptionItem(
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc);
 
+public sealed record AdminUserPurchaseItem(
+    Guid OrderId,
+    string OrderNumber,
+    string Status,
+    string PlanCode,
+    string PlanDisplayName,
+    decimal PriceAmount,
+    string CurrencyCode,
+    int BillingPeriodDays,
+    string PaymentProviderCode,
+    string? ExternalPaymentId,
+    string SourceCode,
+    string? TestRunId,
+    Guid? ActivatedSubscriptionId,
+    DateTime CreatedAtUtc,
+    DateTime? PaidAtUtc);
+
 public sealed record AdminUserMinuteUsage(
     decimal? EffectiveLimit,
     decimal? PlanLimit,
@@ -801,6 +860,7 @@ public sealed record AdminUserDetail(
     AdminUserSubscriptionItem CurrentPlan,
     IReadOnlyList<string> Features,
     IReadOnlyList<AdminUserSubscriptionItem> Subscriptions,
+    IReadOnlyList<AdminUserPurchaseItem> PurchaseOrders,
     AdminUserMinuteUsage MinuteUsage,
     AdminUserCloudUsage CloudUsage,
     IReadOnlyList<AdminUserMinuteReservationItem> MinuteReservations,

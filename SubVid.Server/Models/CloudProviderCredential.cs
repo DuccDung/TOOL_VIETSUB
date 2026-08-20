@@ -37,6 +37,26 @@ public sealed class CloudProviderCredential
     [Column("assigned_user_id")]
     public Guid? AssignedUserId { get; set; }
 
+    [Column("allocation_mode")]
+    [StringLength(20)]
+    [Unicode(false)]
+    public string AllocationMode { get; set; } = "UNASSIGNED";
+
+    [Column("pool_id")]
+    public Guid? PoolId { get; set; }
+
+    [Column("allocation_plan_id")]
+    public Guid? AllocationPlanId { get; set; }
+
+    [Column("allocation_source_code")]
+    [StringLength(20)]
+    [Unicode(false)]
+    public string? AllocationSourceCode { get; set; }
+
+    [Column("allocated_at_utc")]
+    [Precision(3)]
+    public DateTime? AllocatedAtUtc { get; set; }
+
     [Column("status_code")]
     [StringLength(20)]
     [Unicode(false)]
@@ -61,4 +81,10 @@ public sealed class CloudProviderCredential
     public byte[] RowVersion { get; set; } = null!;
 
     public User? AssignedUser { get; set; }
+
+    public CloudKeyPool? Pool { get; set; }
+
+    public ServicePlan? AllocationPlan { get; set; }
+
+    public ICollection<CloudCredentialAllocationHistory> AllocationHistory { get; set; } = [];
 }

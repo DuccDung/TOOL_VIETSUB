@@ -130,7 +130,20 @@
     </article>
     <article class="admin-glass-card admin-purchase-state">
         <header><div><span class="admin-section-icon"><svg class="admin-icon"><use href="#admin-icon-info"></use></svg></span><div><h2>Dữ liệu mua hàng</h2><p>Phân biệt quyền sử dụng và giao dịch tài chính</p></div></div></header>
-        <div><strong>Chưa tích hợp đơn hàng/thanh toán</strong><p>Hệ thống hiện chỉ xác nhận lịch sử được cấp hoặc đổi gói. Chưa thể kết luận gói nào đã thanh toán, số tiền hoặc phương thức thanh toán.</p><span>Lịch sử bên dưới là subscription, không phải hóa đơn.</span></div>
+        @if (Model.Detail.PurchaseOrders.Count == 0)
+        {
+            <div><strong>Chưa có đơn hàng</strong><p>Tài khoản chưa phát sinh giao dịch mua gói. Các subscription bên dưới có thể do quản trị viên cấp trực tiếp.</p><span>Không suy diễn thanh toán từ lịch sử subscription.</span></div>
+        }
+        else
+        {
+            var latestOrder = Model.Detail.PurchaseOrders[0];
+            <div>
+                <strong>@latestOrder.OrderNumber · @latestOrder.Status</strong>
+                <p>@latestOrder.PlanDisplayName (@latestOrder.PlanCode) · @latestOrder.PriceAmount.ToString("N0") @latestOrder.CurrencyCode · @latestOrder.PaymentProviderCode</p>
+                <span>@(latestOrder.PaidAtUtc?.ToLocalTime().ToString("'Đã thanh toán' dd/MM/yyyy HH:mm:ss") ?? "Đang chờ thanh toán") · @Model.Detail.PurchaseOrders.Count đơn</span>
+                @if (!string.IsNullOrWhiteSpace(latestOrder.TestRunId)) { <a asp-page="/Admin/PurchaseTests" asp-route-highlight="@latestOrder.OrderId">Mở flow @latestOrder.TestRunId</a> }
+            </div>
+        }
     </article>
 </section>
 

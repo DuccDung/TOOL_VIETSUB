@@ -89,6 +89,54 @@ public sealed record EntitlementsResponse(
     IReadOnlyList<string> Features,
     DateTime EvaluatedAtUtc);
 
+public sealed record PlanCatalogItemResponse(
+    string Code,
+    string DisplayName,
+    string? Description,
+    decimal PriceAmount,
+    string CurrencyCode,
+    int BillingPeriodDays,
+    decimal? MonthlyQuotaMinutes,
+    decimal? MaxVideoMinutes,
+    IReadOnlyList<string> Features,
+    IReadOnlyList<PlanCloudOptionResponse> CloudOptions);
+
+public sealed record PlanCloudOptionResponse(
+    string ProviderCode,
+    string AllocationMode,
+    long MonthlyTokenLimit,
+    IReadOnlyList<string> AllowedModels,
+    bool AllowSharedFallback);
+
+public sealed record CreatePurchaseCheckoutApiRequest(
+    string PlanCode,
+    string IdempotencyKey,
+    decimal ExpectedPriceAmount);
+
+public sealed record PurchaseCheckoutResponse(
+    Guid OrderId,
+    string OrderNumber,
+    string OrderStatus,
+    string PaymentStatus,
+    string PlanCode,
+    string PlanName,
+    string TransactionCode,
+    string BankName,
+    string BankShortName,
+    string AccountNumber,
+    string AccountName,
+    string TransferContent,
+    string QrImageUrl,
+    decimal Amount,
+    string Currency,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset ExpiresAtUtc,
+    DateTimeOffset? PaidAtUtc,
+    bool IsPaid,
+    bool IsExpired,
+    string Message,
+    bool ReusedExistingOrder);
+
 public sealed record UsageHistoryItem(
     Guid EventId,
     string OperationCode,

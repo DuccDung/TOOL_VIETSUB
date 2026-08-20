@@ -1,0 +1,75 @@
+@page
+@model SubVid.Server.Pages.Admin.PlansModel
+@{
+    Layout = "_AdminLayout";
+    ViewData["Title"] = "Cấu hình gói";
+    var message = Model.SuccessMessage ?? Model.ErrorMessage;
+    var isSuccess = !string.IsNullOrWhiteSpace(Model.SuccessMessage);
+}
+
+<section class="admin-light-heading">
+    <div><span>PLAN ENTITLEMENTS</span><h1>Cấu hình gói FREE và Chuyên nghiệp</h1><p>Mỗi gói quyết định quota, độ dài video, provider, model và nguồn API key người dùng được phép sử dụng.</p></div>
+    <a class="admin-key-vault-add" asp-page="/Admin/Subscriptions"><svg class="admin-icon"><use href="#admin-icon-users"></use></svg><span>Cấp gói cho người dùng</span></a>
+</section>
+
+@if (!string.IsNullOrWhiteSpace(message))
+{
+    <dialog class="admin-notification-modal" data-plan-notification>
+        <div class="admin-notification-modal__surface @(isSuccess ? "is-success" : "is-error")">
+            <span class="admin-notification-modal__icon"><svg class="admin-icon"><use href="@(isSuccess ? "#admin-icon-check" : "#admin-icon-alert")"></use></svg></span>
+            <div class="admin-notification-modal__content"><small>THÔNG BÁO HỆ THỐNG</small><h2>@(isSuccess ? "Đã lưu cấu hình" : "Không thể lưu cấu hình")</h2><p>@message</p></div>
+            <button type="button" data-plan-notification-close aria-label="Đóng"><svg class="admin-icon"><use href="#admin-icon-close"></use></svg></button>
+            <div class="admin-notification-modal__actions"><button type="button" data-plan-notification-close>Đã hiểu</button></div>
+        </div>
+    </dialog>
+}
+
+<div class="admin-plan-settings-list">
+@foreach (var plan in Model.Plans)
+{
+    <section class="admin-light-card admin-plan-settings-card">
+        <header><div><span class="admin-card-icon is-violet"><svg class="admin-icon"><use href="#admin-icon-plans"></use></svg></span><div><h2>@plan.DisplayName</h2><p>@plan.PlanCode · @plan.Description</p></div></div><span class="admin-status @(plan.IsActive ? "is-active" : "is-disabled")">@(plan.IsActive ? "Đang hoạt động" : "Đã tắt")</span></header>
+        <form method="post" asp-page-handler="SavePlan" class="admin-plan-base-form">
+            <input type="hidden" name="planId" value="@plan.PlanId" />
+            <label><span>Phút mỗi tháng</span><input name="monthlyQuotaMinutes" type="number" min="0" step="1" value="@plan.MonthlyQuotaMinutes" /></label>
+            <label><span>Video tối đa (phút)</span><input name="maxVideoMinutes" type="number" min="1" step="1" value="@plan.MaxVideoMinutes" /></label>
+            <label><span>Giá</span><input name="priceAmount" type="number" min="0" step="0.01" value="@plan.PriceAmount" /></label>
+            <label><span>Tiền tệ</span><input name="currencyCode" maxlength="3" value="@plan.CurrencyCode" /></label>
+            <label><span>Chu kỳ (ngày)</span><input name="billingPeriodDays" type="number" min="1" max="3650" value="@plan.BillingPeriodDays" /></label>
+            <label class="admin-plan-check"><input name="isPublic" type="checkbox" value="true" checked="@(plan.IsPublic ? "checked" : null)" /><span>Hiển thị để người dùng mua</span></label>
+            <label class="is-wide"><span>Tính năng</span><textarea name="features" rows="3">@string.Join(", ", plan.Features)</textarea><small>Phân tách bằng dấu phẩy hoặc xuống dòng.</small></label>
+            <button type="submit">Lưu quyền lợi gói</button>
+        </form>
+
+        <div class="admin-plan-policy-list">
+        @foreach (var policy in plan.CloudPolicies)
+        {
+            <form method="post" asp-page-handler="SavePolicy" class="admin-plan-policy-row">
+                <input type="hidden" name="planId" value="@plan.PlanId" />
+                <input type="hidden" name="providerCode" value="@policy.ProviderCode" />
+                <div class="admin-plan-policy-name"><span class="provider-mark provider-@policy.ProviderCode">@policy.ProviderCode[..1].ToUpperInvariant()</span><div><strong>@policy.ProviderCode</strong><small>@(policy.PoolNames.Count == 0 ? "Chưa liên kết pool" : string.Join(" · ", policy.PoolNames))</small></div></div>
+                <label><span>Chế độ key</span><select name="allocationMode"><option value="SHARED" selected="@(policy.AllocationMode == "SHARED" ? "selected" : null)">Dùng chung</option><option value="DEDICATED" selected="@(policy.AllocationMode == "DEDICATED" ? "selected" : null)">Key riêng</option></select></label>
+                <label><span>Token/tháng</span><input name="monthlyTokenLimit" type="number" min="0" max="1000000000000" value="@policy.MonthlyTokenLimit" /></label>
+                <label><span>Model cho phép</span><input name="allowedModels" value="@string.Join(", ", policy.AllowedModels)" /></label>
+                <label class="admin-plan-check"><input name="allowSharedFallback" type="checkbox" value="true" checked="@(policy.AllowSharedFallback ? "checked" : null)" /><span>Cho phép pool dự phòng</span></label>
+                <label class="admin-plan-check"><input name="isActive" type="checkbox" value="true" checked="@(policy.IsActive ? "checked" : null)" /><span>Đang bật</span></label>
+                <button type="submit">Lưu policy</button>
+            </form>
+        }
+        </div>
+    </section>
+}
+</div>
+
+@section Scripts {
+<script>
+(() => {
+    const modal = document.querySelector('[data-plan-notification]');
+    if (modal instanceof HTMLDialogElement) {
+        document.querySelectorAll('[data-plan-notification-close]').forEach(button => button.addEventListener('click', () => modal.close()));
+        modal.addEventListener('click', event => { if (event.target === modal) modal.close(); });
+        requestAnimationFrame(() => modal.showModal());
+    }
+})();
+</script>
+}

@@ -4,6 +4,7 @@ import {
   CalendarDays,
   Check,
   Clock3,
+  CreditCard,
   Crown,
   History,
   Download,
@@ -21,6 +22,7 @@ import type {
   EntitlementsInfo,
   FfmpegInstallProgress,
   FfmpegRuntimeStatus,
+  PlanCatalogItemInfo,
   UsageHistory,
 } from '../types'
 
@@ -30,11 +32,15 @@ type AccountViewProps = {
   history: UsageHistory | null
   ffmpegStatus: FfmpegRuntimeStatus
   ffmpegProgress: FfmpegInstallProgress | null
+  plans: PlanCatalogItemInfo[]
+  plansLoading: boolean
+  purchaseBusy: boolean
   onRefresh: () => void
   onLogout: () => void
   onManageFfmpeg: () => void
   onSelectFfmpegFolder: () => void
   onOpenFfmpegFolder: () => void
+  onPurchasePlan: (plan: PlanCatalogItemInfo) => void
 }
 
 const featureLabels: Record<string, string> = {
@@ -75,17 +81,28 @@ function formatQuantity(value: number, unit: string) {
   return `${new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(value)} ${labels[unit] ?? unit}`
 }
 
+function formatPlanPrice(value: number, currency: string) {
+  if (value <= 0) return 'Miễn phí'
+  return new Intl.NumberFormat('vi-VN', {
+    style: 'currency', currency, maximumFractionDigits: 0,
+  }).format(value)
+}
+
 export function AccountView({
   account,
   entitlements,
   history,
   ffmpegStatus,
   ffmpegProgress,
+  plans,
+  plansLoading,
+  purchaseBusy,
   onRefresh,
   onLogout,
   onManageFfmpeg,
   onSelectFfmpegFolder,
   onOpenFfmpegFolder,
+  onPurchasePlan,
 }: AccountViewProps) {
   const { plan, quota, features } = entitlements
   const quotaPercent = quota.monthlyMinutes && quota.monthlyMinutes > 0
@@ -155,6 +172,49 @@ export function AccountView({
           <p>Còn lại {quota.remainingMinutes?.toLocaleString('vi-VN') ?? 'không giới hạn'} phút</p>
           {quota.reservedMinutes > 0 ? <p>Đang giữ {quota.reservedMinutes.toLocaleString('vi-VN')} phút cho công việc đang chạy</p> : null}
         </article>
+      </section>
+
+      <section className="account-plan-catalog">
+        <header>
+          <div><CreditCard size={18} /><span><strong>Gói SubVid</strong><small>Chọn quyền lợi phù hợp và thanh toán an toàn qua SePay</small></span></div>
+          <span>{plansLoading ? 'Đang tải...' : `${plans.length} gói`}</span>
+        </header>
+        <div className="account-plan-grid">
+          {plans.map((catalogPlan) => {
+            const isCurrent = catalogPlan.code.toLocaleUpperCase() === plan.code.toLocaleUpperCase()
+            const isFree = catalogPlan.priceAmount <= 0
+            return (
+              <article className={`account-plan-option ${isCurrent ? 'is-current' : ''}`} key={catalogPlan.code}>
+                <div className="account-plan-option__heading">
+                  <div><span>{catalogPlan.code}</span><h3>{catalogPlan.displayName}</h3></div>
+                  {isCurrent ? <em>Đang sử dụng</em> : null}
+                </div>
+                <p>{catalogPlan.description}</p>
+                <strong className="account-plan-option__price">
+                  {formatPlanPrice(catalogPlan.priceAmount, catalogPlan.currencyCode)}
+                  {!isFree ? <small> / {catalogPlan.billingPeriodDays} ngày</small> : null}
+                </strong>
+                <ul>
+                  <li>{catalogPlan.monthlyQuotaMinutes?.toLocaleString('vi-VN') ?? 'Không giới hạn'} phút/tháng</li>
+                  <li>Tối đa {catalogPlan.maxVideoMinutes?.toLocaleString('vi-VN') ?? 'không giới hạn'} phút/video</li>
+                  <li>{catalogPlan.cloudOptions.length} cấu hình AI cloud</li>
+                </ul>
+                {!isFree ? (
+                  <button
+                    type="button"
+                    disabled={isCurrent || purchaseBusy}
+                    onClick={() => onPurchasePlan(catalogPlan)}
+                  >
+                    <CreditCard size={15} /> {isCurrent ? 'Gói hiện tại' : 'Mua hoặc nâng cấp'}
+                  </button>
+                ) : <span className="account-plan-option__free">Không cần thanh toán</span>}
+              </article>
+            )
+          })}
+          {!plansLoading && plans.length === 0 ? (
+            <div className="account-empty-state"><CreditCard size={25} /><strong>Chưa tải được danh sách gói</strong><span>Hãy bấm Làm mới để thử lại.</span></div>
+          ) : null}
+        </div>
       </section>
 
       <section className="account-content-grid">

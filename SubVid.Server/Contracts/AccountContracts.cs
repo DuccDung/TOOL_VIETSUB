@@ -32,3 +32,22 @@ public sealed record EntitlementsResponse(
     QuotaResponse Quota,
     IReadOnlyList<string> Features,
     DateTime EvaluatedAtUtc);
+
+public sealed record PlanCatalogItemResponse(
+    string Code,
+    string DisplayName,
+    string? Description,
+    decimal PriceAmount,
+    string CurrencyCode,
+    int BillingPeriodDays,
+    decimal? MonthlyQuotaMinutes,
+    decimal? MaxVideoMinutes,
+    IReadOnlyList<string> Features,
+    IReadOnlyList<PlanCloudOptionResponse> CloudOptions);
+
+public sealed record PlanCloudOptionResponse(
+    string ProviderCode,
+    string AllocationMode,
+    long MonthlyTokenLimit,
+    IReadOnlyList<string> AllowedModels,
+    bool AllowSharedFallback);

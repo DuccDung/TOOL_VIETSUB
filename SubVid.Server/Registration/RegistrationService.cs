@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using SubVid.Server.Auth;
+using SubVid.Server.Cloud;
 using SubVid.Server.Contracts;
 using SubVid.Server.Data;
 using SubVid.Server.Models;
@@ -367,6 +368,13 @@ public sealed class RegistrationService(
         challenge.VerifiedAtUtc = nowUtc;
         challenge.UpdatedAtUtc = nowUtc;
         AddAudit(user.UserId, "REGISTER_VERIFY", "SUCCESS", ipAddress, deviceId, nowUtc);
+
+        await new CloudCredentialAllocationService(database).SynchronizeForPlanAsync(
+            user.UserId,
+            freePlan.PlanId,
+            null,
+            "Đồng bộ API key khi kích hoạt gói FREE.",
+            cancellationToken);
 
         await database.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);

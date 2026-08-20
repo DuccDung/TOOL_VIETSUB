@@ -36,6 +36,7 @@ packages/
 !packages/build/
 
 # Logs and temporary files
+.codex-build/
 *.log
 *.tmp
 *.temp

@@ -16,6 +16,7 @@ import { ImportProgress } from './components/ImportProgress'
 import { ImportVideoDialog } from './components/ImportVideoDialog'
 import { PreviewPanel } from './components/PreviewPanel'
 import { ProjectDialog } from './components/ProjectDialog'
+import { PurchasePaymentModal } from './components/PurchasePaymentModal'
 import { SettingsPanel } from './components/SettingsPanel'
 import { SubtitlePanel } from './components/SubtitlePanel'
 import { Timeline } from './components/Timeline'
@@ -25,6 +26,7 @@ import { VoiceWorkspace } from './components/VoiceWorkspace'
 import { demoSegments } from './data/mock'
 import { fitVerticalEditorLayout } from './lib/editorLayout'
 import { hasNativeHost, postToHost, subscribeToHost } from './lib/host'
+import { parseServerUtcTimestamp } from './lib/purchasePolling'
 import { defaultSubtitleStyle } from './lib/subtitleStyle'
 import type {
   AuthState,
@@ -34,6 +36,8 @@ import type {
   LocalJobInfo,
   ProjectInfo,
   ProjectSummaryInfo,
+  PlanCatalogItemInfo,
+  PurchaseCheckoutInfo,
   RegistrationChallenge,
   RegistrationState,
   SubtitleRemovalSettings,
@@ -404,6 +408,12 @@ function App() {
     ...emptyRegistrationState,
     challenge: authPreviewMode === 'otp' ? otpPreviewChallenge : null,
   })
+  const [purchasePlans, setPurchasePlans] = useState<PlanCatalogItemInfo[]>([])
+  const [purchasePlansLoading, setPurchasePlansLoading] = useState(false)
+  const [purchaseBusy, setPurchaseBusy] = useState(false)
+  const [purchasePollPending, setPurchasePollPending] = useState(false)
+  const [purchaseCheckout, setPurchaseCheckout] = useState<PurchaseCheckoutInfo | null>(null)
+  const [purchaseError, setPurchaseError] = useState<string | null>(null)
   const [video, setVideo] = useState<VideoInfo | null>(demoMode ? demoVideo : null)
   const [projects, setProjects] = useState<ProjectSummaryInfo[]>(demoMode ? demoProjects : [])
   const [currentProject, setCurrentProject] = useState<ProjectInfo | null>(demoMode ? demoProject : null)
@@ -454,6 +464,10 @@ function App() {
   const timingWarningNotifications = useRef(new Set<string>())
   const subtitleStyleSaveTimer = useRef<number | null>(null)
   const audioSettingsSaveTimer = useRef<number | null>(null)
+  const purchasePlansRequested = useRef(false)
+  const purchaseSuccessOrder = useRef<string | null>(null)
+  const purchaseAttempt = useRef<{ planCode: string, idempotencyKey: string } | null>(null)
+  const currentProjectIdRef = useRef<string | null>(demoMode ? demoProject.projectId : null)
 
   useEffect(() => () => {
     if (subtitleStyleSaveTimer.current !== null) {
@@ -644,6 +658,19 @@ function App() {
     }, 4200)
   }, [])
 
+  const loadPurchasePlans = useCallback(() => {
+    if (!hasNativeHost()) return
+    purchasePlansRequested.current = true
+    setPurchasePlansLoading(true)
+    postToHost('purchase:plans:load')
+  }, [])
+
+  const pollPurchaseStatus = useCallback(() => {
+    if (!purchaseCheckout || purchasePollPending || purchaseCheckout.isPaid || purchaseCheckout.isExpired) return
+    setPurchasePollPending(true)
+    postToHost('purchase:checkout:status', { orderNumber: purchaseCheckout.orderNumber })
+  }, [purchaseCheckout, purchasePollPending])
+
   const loadVideo = useCallback((nextVideo: VideoInfo) => {
     setVideo(nextVideo)
     setSegments(demoSegments)
@@ -704,6 +731,15 @@ function App() {
         && message.project !== null
       ) {
         const project = message.project as ProjectInfo
+        const projectChanged = currentProjectIdRef.current !== project.projectId
+        currentProjectIdRef.current = project.projectId
+        if (projectChanged) {
+          setPlaying(false)
+          setPlaybackActive(false)
+          setCurrentTime(0)
+          setVoicePreviewBusy(false)
+          setVoicePreviewDataUrl(null)
+        }
         setCurrentProject(project)
         setProjectBusy(false)
         setProjectError(null)
@@ -1063,9 +1099,59 @@ function App() {
         if (nextState.status === 'authenticated') {
           setRegistrationState(emptyRegistrationState)
         } else if (nextState.status === 'unauthenticated') {
+          currentProjectIdRef.current = null
           setProjects([])
           setCurrentProject(null)
           setVideo(null)
+          setPurchaseCheckout(null)
+          setPurchasePlans([])
+          purchaseAttempt.current = null
+          purchasePlansRequested.current = false
+        }
+      }
+
+      if (message.type === 'purchase:plans' && Array.isArray(message.plans)) {
+        setPurchasePlans(message.plans as PlanCatalogItemInfo[])
+        setPurchasePlansLoading(false)
+      }
+
+      if (message.type === 'purchase:checkout:busy') {
+        setPurchaseBusy(true)
+        setPurchaseError(null)
+      }
+
+      if (message.type === 'purchase:checkout'
+        && typeof message.checkout === 'object'
+        && message.checkout !== null) {
+        setPurchaseBusy(false)
+        setPurchasePollPending(false)
+        setPurchaseError(null)
+        setPurchaseCheckout(message.checkout as PurchaseCheckoutInfo)
+      }
+
+      if (message.type === 'purchase:status'
+        && typeof message.checkout === 'object'
+        && message.checkout !== null) {
+        setPurchasePollPending(false)
+        setPurchaseError(null)
+        setPurchaseCheckout(message.checkout as PurchaseCheckoutInfo)
+      }
+
+      if (message.type === 'purchase:error') {
+        const operation = String(message.operation ?? 'checkout')
+        const errorCode = String(message.code ?? 'PURCHASE_FAILED')
+        const errorMessage = String(message.message ?? 'Không thể xử lý thanh toán.')
+        if (operation === 'plans') {
+          setPurchasePlansLoading(false)
+          purchasePlansRequested.current = false
+        } else if (operation === 'status') {
+          setPurchasePollPending(false)
+          setPurchaseError(errorMessage)
+        } else {
+          setPurchaseBusy(false)
+          setPurchaseError(errorMessage)
+          if (errorCode !== 'SERVER_UNAVAILABLE') purchaseAttempt.current = null
+          notify('Chưa thể tạo thanh toán', errorMessage, 'warning')
         }
       }
 
@@ -1117,6 +1203,25 @@ function App() {
       postToHost('ffmpeg:status')
     }
   }, [authState.status])
+
+  useEffect(() => {
+    if (authState.status === 'authenticated'
+      && activeNav === 'account'
+      && !purchasePlansRequested.current) {
+      loadPurchasePlans()
+    }
+  }, [activeNav, authState.status, loadPurchasePlans])
+
+  useEffect(() => {
+    if (!purchaseCheckout?.isPaid
+      || purchaseSuccessOrder.current === purchaseCheckout.orderNumber) return
+    purchaseSuccessOrder.current = purchaseCheckout.orderNumber
+    purchaseAttempt.current = null
+    setPurchasePollPending(false)
+    notify('Thanh toán thành công', `Gói ${purchaseCheckout.planName} đã được kích hoạt.`, 'success')
+    postToHost('auth:refresh')
+    loadPurchasePlans()
+  }, [loadPurchasePlans, notify, purchaseCheckout])
 
   useEffect(() => {
     if (!playing || !video || video.playbackUrl) return
@@ -1670,7 +1775,13 @@ function App() {
           history={authState.history}
           ffmpegStatus={ffmpegStatus}
           ffmpegProgress={ffmpegProgress}
-          onRefresh={() => postToHost('auth:refresh')}
+          plans={purchasePlans}
+          plansLoading={purchasePlansLoading}
+          purchaseBusy={purchaseBusy}
+          onRefresh={() => {
+            postToHost('auth:refresh')
+            loadPurchasePlans()
+          }}
           onLogout={() => postToHost('auth:logout')}
           onManageFfmpeg={() => {
             if (jobBusy || importState.active) {
@@ -1690,6 +1801,23 @@ function App() {
             postToHost('ffmpeg:folder:select')
           }}
           onOpenFfmpegFolder={() => postToHost('ffmpeg:folder:open')}
+          onPurchasePlan={(selectedPlan) => {
+            const currentAttempt = purchaseAttempt.current
+            const idempotencyKey = currentAttempt?.planCode === selectedPlan.code
+              ? currentAttempt.idempotencyKey
+              : typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : `purchase-${Date.now()}-${Math.random().toString(16).slice(2)}`
+            purchaseAttempt.current = { planCode: selectedPlan.code, idempotencyKey }
+            setPurchaseBusy(true)
+            setPurchaseError(null)
+            purchaseSuccessOrder.current = null
+            postToHost('purchase:checkout:create', {
+              planCode: selectedPlan.code,
+              expectedPriceAmount: selectedPlan.priceAmount,
+              idempotencyKey,
+            })
+          }}
         />
       ) : activeNav === 'voice' || activeNav === 'library' ? (
         <VoiceWorkspace
@@ -2034,6 +2162,25 @@ function App() {
           if (hasNativeHost()) postToHost('project:rename', { name })
         }}
       />
+
+      {purchaseCheckout ? (
+        <PurchasePaymentModal
+          checkout={purchaseCheckout}
+          pollPending={purchasePollPending}
+          error={purchaseError}
+          onPoll={pollPurchaseStatus}
+          onClose={() => {
+            if (purchaseCheckout.isPaid
+              || purchaseCheckout.isExpired
+              || parseServerUtcTimestamp(purchaseCheckout.expiresAtUtc) <= Date.now()) {
+              purchaseAttempt.current = null
+            }
+            setPurchaseCheckout(null)
+            setPurchasePollPending(false)
+            setPurchaseError(null)
+          }}
+        />
+      ) : null}
 
       <FfmpegSetupDialog
         open={ffmpegDialogOpen}
